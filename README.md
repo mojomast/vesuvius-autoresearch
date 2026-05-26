@@ -34,6 +34,22 @@ The current next moves are documented in `docs/next_best_moves_may2026.md` and s
 - TTA/seed ensembling: average flip TTA and independent seed probabilities only after single-seed LOO behavior is understood.
 - 2.5D residual U-Net: prepare multi-z-channel NPZs first, then test a residual U-Net family behind the same LOO gate.
 
+## Standalone Dashboard
+
+Launch the read-only Vesuvius dashboard without Hermes:
+
+```bash
+python3 run_dashboard.py --host 127.0.0.1 --port 8765
+```
+
+The shared snapshot contract can also be exported with:
+
+```bash
+python3 scripts/export_dashboard_snapshot.py --pretty
+```
+
+See `docs/dashboard.md` for data sources, safety rules, and the parallel-development workflow for keeping standalone and host dashboards aligned.
+
 Useful local sanity commands:
 
 ```bash
