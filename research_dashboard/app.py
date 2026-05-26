@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -688,6 +690,15 @@ HTML = """<!doctype html>
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
 
+    const dashboardToken = new URLSearchParams(window.location.search).get('token') || sessionStorage.getItem('vesuvius_dashboard_token') || '';
+    if (dashboardToken) sessionStorage.setItem('vesuvius_dashboard_token', dashboardToken);
+    function apiUrl(path) {
+      if (!dashboardToken) return path;
+      const url = new URL(path, window.location.origin);
+      url.searchParams.set('token', dashboardToken);
+      return url.pathname + url.search;
+    }
+
     function showToast(message) {
       const wrapper = document.getElementById('toast-wrapper');
       const t = document.createElement('div');
@@ -699,7 +710,7 @@ HTML = """<!doctype html>
 
     async function loadDashboard() {
       try {
-        const response = await fetch('/api/research');
+        const response = await fetch(apiUrl('/api/research'));
         if (!response.ok) throw new Error(`Snapshot fetch failure: ${response.statusText}`);
         rawData = await response.json();
         renderDashboard();
@@ -1051,7 +1062,7 @@ HTML = """<!doctype html>
       panel.scrollIntoView({ behavior: 'smooth' });
 
       try {
-        const response = await fetch(`/api/artifact?path=${encodeURIComponent(filePath)}`);
+        const response = await fetch(apiUrl(`/api/artifact?path=${encodeURIComponent(filePath)}`));
         if (!response.ok) throw new Error(response.statusText);
         const data = await response.json();
         
@@ -1292,11 +1303,14 @@ HTML = """<!doctype html>
 
 
 
-def make_handler(project_root: Path):
+def make_handler(project_root: Path, auth_token: str | None = None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             parsed = urlparse(self.path)
             try:
+                if not self._authorized(parsed):
+                    self._send(401, "Unauthorized\n", "text/plain; charset=utf-8", {"WWW-Authenticate": "Bearer"})
+                    return
                 if parsed.path == "/":
                     self._send(200, HTML, "text/html; charset=utf-8")
                 elif parsed.path == "/health":
@@ -1317,11 +1331,25 @@ def make_handler(project_root: Path):
         def _json(self, status: int, payload: dict):
             self._send(status, json.dumps(payload, sort_keys=True, default=str).encode(), "application/json")
 
-        def _send(self, status: int, body, content_type: str):
+        def _authorized(self, parsed) -> bool:
+            if not auth_token:
+                return True
+            query_token = parse_qs(parsed.query).get("token", [""])[0]
+            header = self.headers.get("Authorization", "")
+            bearer = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
+            return hmac.compare_digest(query_token, auth_token) or hmac.compare_digest(bearer, auth_token)
+
+        def _send(self, status: int, body, content_type: str, extra_headers: dict[str, str] | None = None):
             if isinstance(body, str):
                 body = body.encode()
             self.send_response(status)
             self.send_header("Content-Type", content_type)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cache-Control", "no-store")
+            if extra_headers:
+                for key, value in extra_headers.items():
+                    self.send_header(key, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1333,10 +1361,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--auth-token", default=os.getenv("VESUVIUS_DASHBOARD_TOKEN"), help="Require this bearer/query token for all dashboard routes")
     args = parser.parse_args(argv)
     root = resolve_project_root(args.repo_root)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(root))
-    print(f"Vesuvius dashboard running at http://{args.host}:{args.port} for {root}")
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(root, args.auth_token))
+    auth_note = " with token auth" if args.auth_token else " without auth"
+    print(f"Vesuvius dashboard running at http://{args.host}:{args.port} for {root}{auth_note}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

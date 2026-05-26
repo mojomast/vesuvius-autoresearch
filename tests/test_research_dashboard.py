@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
 from research_dashboard.artifacts import preview_artifact
+from research_dashboard.app import make_handler
 from research_dashboard.inventory import build_inventory
 from research_dashboard.snapshot import build_snapshot
 
@@ -84,6 +89,24 @@ class ResearchDashboardTest(unittest.TestCase):
             text = path.read_text()
             for term in forbidden:
                 self.assertNotIn(term, text, f"{term} leaked into {path}")
+
+    def test_standalone_dashboard_token_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root, "secret-token"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(base + "/api/research", timeout=5)
+                self.assertEqual(ctx.exception.code, 401)
+                resp = urllib.request.urlopen(base + "/api/research?token=secret-token", timeout=5)
+                data = json.loads(resp.read().decode())
+                self.assertEqual(data["schema_version"], "vesuvius-dashboard/v1")
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":
