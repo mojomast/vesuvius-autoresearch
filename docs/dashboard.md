@@ -32,6 +32,7 @@ python3 run_dashboard.py --repo-root /path/to/vesuvius-autoresearch
 - prepared-data metadata under `data/prepared`, `data/real*`, and fold roots
 - `data/**/fold_map.json`
 - `logs/autoresearch.log` and `logs/autoresearch.lock`
+- `logs/*summary.json` leave-one-out summaries with promotion readiness fields
 
 The dashboard does not load model weights, NPZ arrays, or full tile probability maps by default.
 
@@ -55,9 +56,12 @@ datasets
 configs
 experiments
 progress
+research_summary
 operations
 capabilities
 ```
+
+`research_summary.decision.promotion_gate.criteria` is the compact promotion checklist the UI renders as the Promotion Gate. It is intentionally stricter than peak validation score and expects robust held-out validation, seed-repeat leave-one-out evidence, full-tile evidence, and no promotion blockers.
 
 Keep Vesuvius-specific data parsing and command inventory in `research_dashboard/*`. Hermes or any other host dashboard should render or proxy this contract instead of copying the domain logic.
 

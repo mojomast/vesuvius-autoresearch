@@ -133,7 +133,7 @@ def _sample_patch_indices(images: np.ndarray, labels: np.ndarray, max_samples: i
     count = images.shape[0]
     if max_samples <= 0 or count <= max_samples:
         return np.arange(count, dtype=np.int64), {"patch_sampling": "all", "selected_patches": int(count)}
-    strategy = str(train_cfg.get("patch_sampling", "random"))
+    strategy = str(train_cfg.get("patch_sampling", train_cfg.get("sampling_strategy", "random")))
     if strategy != "hard_mining":
         return rng.choice(count, size=max_samples, replace=False), {"patch_sampling": "random", "selected_patches": int(max_samples)}
 
@@ -245,9 +245,18 @@ def _validation_setup(train_meta: Dict[str, Any], val_meta: Dict[str, Any]) -> D
     val_scroll = str(val_data.get("scroll_id") or val_meta.get("scroll_id") or "?")
     train_segment = str(train_data.get("segment_id") or train_meta.get("segment_id") or "?")
     val_segment = str(val_data.get("segment_id") or val_meta.get("segment_id") or "?")
+    train_segments_raw = train_data.get("train_segments") or train_meta.get("train_segments") or []
+    train_segments = {str(segment) for segment in train_segments_raw if segment is not None} if isinstance(train_segments_raw, list) else set()
+    heldout_segment = str(train_data.get("heldout_segment") or train_meta.get("heldout_segment") or "?")
     if train_scroll != "?" and val_scroll != "?" and train_scroll != val_scroll:
         mode = "cross-scroll"
         warning = None
+    elif train_segments and val_segment != "?" and val_segment not in train_segments:
+        mode = "leave-one-segment-out" if heldout_segment in {"?", val_segment} else "cross-segment"
+        warning = None
+    elif train_segments and val_segment != "?" and val_segment in train_segments:
+        mode = "spatial-same-segment"
+        warning = "Validation segment is present in train_segments metadata; this is not held-out validation."
     elif train_segment != "?" and val_segment != "?" and train_segment != val_segment:
         mode = "cross-segment"
         warning = None
@@ -261,6 +270,8 @@ def _validation_setup(train_meta: Dict[str, Any], val_meta: Dict[str, Any]) -> D
         "val_scroll_id": val_scroll,
         "train_segment_id": train_segment,
         "val_segment_id": val_segment,
+        "train_segments": sorted(train_segments),
+        "heldout_segment": heldout_segment,
     }
 
 

@@ -780,7 +780,8 @@ HTML = """<!doctype html>
 
     // A. Milestones Readiness
     function renderMilestones(milestones, readinessPercent) {
-      document.getElementById('foundation-readiness-title').innerHTML = `Readiness Check <span class="indicator-badge badge-success" style="float:right;">${readinessPercent}%</span>`;
+      const readinessClass = readinessPercent >= 100 ? 'badge-success' : 'badge-warning';
+      document.getElementById('foundation-readiness-title').innerHTML = `Promotion Gate <span class="indicator-badge ${readinessClass}" style="float:right;">${readinessPercent}%</span>`;
       const container = document.getElementById('milestone-checklist');
       if (!milestones) return;
       container.innerHTML = milestones.map(m => {

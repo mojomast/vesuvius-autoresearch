@@ -39,7 +39,7 @@ class AuditResearchStateTest(unittest.TestCase):
                 "schema_version": "vesuvius-dashboard/v1",
                 "research_summary": {
                     "champions": {"peak_score": {"run_id": "run1"}},
-                    "decision": {"blocker_counts": {"missing_val_f1": 2, "zero_precision_or_recall": 1}},
+                    "decision": {"next_action": "Run seed-repeat LOO.", "promotion_gate": {"ready": False, "criteria": [{"id": "seed_repeat_loo", "label": "Seed-repeat LOO", "state": "warning", "detail": "missing"}]}, "blocker_counts": {"missing_val_f1": 2, "zero_precision_or_recall": 1}},
                 },
             }
             with mock.patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
@@ -52,6 +52,8 @@ class AuditResearchStateTest(unittest.TestCase):
         self.assertEqual(report["logs"]["summary_json_count"], 1)
         self.assertTrue(report["dashboard"]["snapshot_contract_available"])
         self.assertEqual(report["dashboard"]["champions"]["peak_score"]["run_id"], "run1")
+        self.assertFalse(report["dashboard"]["promotion_gate_ready"])
+        self.assertEqual(report["dashboard"]["next_action"], "Run seed-repeat LOO.")
         self.assertEqual(report["dashboard"]["top_promotion_blockers"][0], {"code": "missing_val_f1", "count": 2})
 
     def test_markdown_renders_when_snapshot_unavailable(self) -> None:

@@ -83,12 +83,16 @@ def _dashboard_summary(root: Path) -> dict[str, Any]:
     research_summary = snapshot.get("research_summary") if isinstance(snapshot, dict) else None
     decision = research_summary.get("decision", {}) if isinstance(research_summary, dict) else {}
     blocker_counts = decision.get("blocker_counts", {}) if isinstance(decision, dict) else {}
+    promotion_gate = decision.get("promotion_gate", {}) if isinstance(decision, dict) else {}
     summary.update(
         {
             "snapshot_contract_available": True,
             "schema_version": snapshot.get("schema_version"),
             "champions": research_summary.get("champions", {}) if isinstance(research_summary, dict) else {},
             "research_summary": research_summary or {},
+            "next_action": decision.get("next_action") if isinstance(decision, dict) else None,
+            "promotion_gate_ready": promotion_gate.get("ready") if isinstance(promotion_gate, dict) else None,
+            "promotion_gate_criteria": promotion_gate.get("criteria", []) if isinstance(promotion_gate, dict) else [],
             "top_promotion_blockers": _top_blockers(blocker_counts if isinstance(blocker_counts, dict) else {}),
         }
     )
@@ -125,6 +129,14 @@ def render_markdown(report: dict[str, Any]) -> str:
     ]
     if dashboard.get("schema_version"):
         lines.append(f"- Dashboard schema version: `{dashboard['schema_version']}`")
+    if dashboard.get("next_action"):
+        lines.append(f"- Next action: {dashboard['next_action']}")
+    if dashboard.get("promotion_gate_ready") is not None:
+        lines.append(f"- Promotion gate ready: {dashboard['promotion_gate_ready']}")
+    criteria = dashboard.get("promotion_gate_criteria") or []
+    if criteria:
+        lines.extend(["", "## Promotion Gate"])
+        lines.extend(f"- {item.get('label', item.get('id', 'criterion'))}: {item.get('state')} - {item.get('detail', '')}" for item in criteria)
     blockers = dashboard.get("top_promotion_blockers") or []
     if blockers:
         lines.extend(["", "## Top Promotion Blockers"])

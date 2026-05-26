@@ -92,7 +92,7 @@ class ResearchDashboardTest(unittest.TestCase):
                     "promotable_lower",
                     "2026-05-26T00:01:00Z",
                     {**base_eval, "model": {"name": "tiny_torch_unet"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}},
-                    {"val_f1": 0.60, "average_precision": 0.35, "precision": 0.7, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+                    {"val_f1": 0.60, "average_precision": 0.35, "precision": 0.7, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "loo_promotion_ready": True, "full_tile_promotion_ready": True, "fixed_threshold_f1": 0.55},
                     0.60,
                 )
                 conn.commit()
@@ -109,6 +109,7 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("peak_score", next(run for run in snapshot["experiments"]["recent"] if run["run_id"] == "peak_only")["champion_classes"])
         self.assertIn("robust_candidate", next(run for run in snapshot["experiments"]["recent"] if run["run_id"] == "robust_blocked")["champion_classes"])
         self.assertIn("promotion_eligible", next(run for run in snapshot["experiments"]["recent"] if run["run_id"] == "promotable_lower")["champion_classes"])
+        self.assertTrue(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"])
 
     def test_snapshot_classifies_promotion_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -148,6 +149,83 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(snapshot["research_summary"]["blocker_counts"]["zero_precision_or_recall"], 1)
         self.assertIn("next_action", snapshot["research_summary"]["decision"])
         self.assertIsInstance(snapshot["research_summary"]["next_action"], str)
+
+    def test_robust_candidate_prefers_held_out_over_same_segment_score(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+
+                def insert(run_id: str, mode: str, f1: float) -> None:
+                    artifact_dir = root / "experiments" / "runs" / run_id
+                    artifact_dir.mkdir(parents=True)
+                    cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": mode, "train_segment_id": "a", "val_segment_id": "b"}}
+                    metrics = {"val_f1": f1, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}
+                    conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", (run_id, "2026-05-26T00:00:00Z", json.dumps(cfg), f1, json.dumps(metrics), str(artifact_dir)))
+
+                insert("same_segment_high", "spatial-same-segment", 0.8)
+                insert("heldout_lower", "cross-segment", 0.5)
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        self.assertEqual(snapshot["experiments"]["champions"]["robust_candidate"]["run_id"], "heldout_lower")
+
+    def test_dashboard_gate_surfaces_missing_loo_and_full_tile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "robust"
+            run_dir.mkdir(parents=True)
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute(
+                    "INSERT INTO experiments VALUES (?,?,?,?,?,?)",
+                    (
+                        "robust",
+                        "2026-05-26T00:00:00Z",
+                        json.dumps(cfg),
+                        0.4,
+                        json.dumps({"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.3}),
+                        str(run_dir),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        codes = {blocker["code"] for blocker in snapshot["experiments"]["recent"][0]["promotion_blockers"]}
+        self.assertIn("missing_seed_repeat_loo", codes)
+        self.assertIn("missing_full_tile_evidence", codes)
+        self.assertFalse(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"])
+        self.assertLess(snapshot["progress"]["summary"]["foundation_readiness"], 100)
+
+    def test_dashboard_reads_loo_summary_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "robust.summary.json").write_text(json.dumps({"promotion_ready": True, "median_over_seeds_median_val_f1": 0.2, "worst_fold_val_f1": 0.08, "mean_average_precision": 0.11, "promotion_warnings": []}))
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        self.assertEqual(len(snapshot["experiments"]["loo_summaries"]), 1)
+        gate = snapshot["research_summary"]["decision"]["promotion_gate"]
+        loo_item = next(item for item in gate["criteria"] if item["id"] == "seed_repeat_loo")
+        self.assertEqual(loo_item["state"], "done")
 
     def test_artifact_preview_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

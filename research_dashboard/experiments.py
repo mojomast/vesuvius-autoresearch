@@ -64,6 +64,17 @@ def _scope_priority(scope: str, scope_policy: str) -> int:
     return 5
 
 
+def _validation_priority(run: dict[str, Any]) -> int:
+    mode = str((run.get("validation_setup") or {}).get("mode") or "")
+    if mode == "cross-scroll":
+        return 0
+    if mode == "leave-one-segment-out":
+        return 1
+    if mode == "cross-segment":
+        return 2
+    return 3
+
+
 def _is_robust_candidate(run: dict[str, Any]) -> bool:
     cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
     dataset = cfg.get("dataset", {}) if isinstance(cfg.get("dataset"), dict) else {}
@@ -73,6 +84,20 @@ def _is_robust_candidate(run: dict[str, Any]) -> bool:
     scope_policy = str(autoresearch.get("scope_policy") or scope)
     label = f"{model_name} {scope} {scope_policy}".lower()
     return "torch" in label and any(token in label for token in ("multi_segment_robust", "expanded_multi_segment", "expanded_leave_one_out", "focused_pair_residual_25d_cpu"))
+
+
+def _loo_ready(metrics: dict[str, Any]) -> bool:
+    summary = metrics.get("loo_summary") if isinstance(metrics.get("loo_summary"), dict) else {}
+    return bool(metrics.get("loo_promotion_ready") or summary.get("promotion_ready"))
+
+
+def _full_tile_ready(run: dict[str, Any]) -> bool:
+    metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+    checks = metrics.get("promotion_checks") if isinstance(metrics.get("promotion_checks"), dict) else {}
+    if metrics.get("full_tile_promotion_ready") or checks.get("full_tile_evidence"):
+        return True
+    names = {str(item.get("name") or "") for item in run.get("artifacts") or [] if isinstance(item, dict)}
+    return any("full_tile" in name or "probability_map" in name for name in names)
 
 
 def _promotion_blockers(run: dict[str, Any]) -> list[dict[str, str]]:
@@ -106,6 +131,18 @@ def _promotion_blockers(run: dict[str, Any]) -> list[dict[str, str]]:
     mode = str(run.get("validation_setup", {}).get("mode") or "unknown")
     if mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
         add("validation_not_held_out", "validation")
+    if _is_robust_candidate(run):
+        if not _loo_ready(metrics):
+            add("missing_seed_repeat_loo", "validation")
+        if not _full_tile_ready(run):
+            add("missing_full_tile_evidence", "inference")
+    best_threshold = metrics.get("best_threshold")
+    if best_threshold is not None:
+        threshold = float(best_threshold)
+        if threshold <= 0.03 or threshold >= 0.94:
+            add("best_threshold_at_sweep_edge", "calibration", "warning")
+    if float(metrics.get("val_f1") or 0.0) >= 0.2 and float(metrics.get("fixed_threshold_f1") or metrics.get("val_f1") or 0.0) < 0.05:
+        add("fixed_threshold_f1_low", "calibration", "warning")
     return blockers
 
 
@@ -125,7 +162,23 @@ def _compact_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, robust: dict[str, Any] | None, promotable: dict[str, Any] | None) -> dict[str, Any]:
+def _promotion_gate(runs: list[dict[str, Any]], loo_summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    robust_runs = [run for run in runs if _is_robust_candidate(run)]
+    has_loo = any(bool(summary.get("promotion_ready")) for summary in loo_summaries) or any(_loo_ready(run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}) for run in runs)
+    has_full_tile = any(_full_tile_ready(run) for run in robust_runs)
+    has_heldout = any((run.get("validation_setup", {}) or {}).get("mode") in {"cross-segment", "cross-scroll", "leave-one-segment-out"} for run in robust_runs)
+    no_blocked_promotable = any(run.get("promotion_status") == "eligible" for run in robust_runs)
+    criteria = [
+        {"id": "robust_candidate", "label": "Robust candidate", "state": "done" if robust_runs else "pending", "detail": f"{len(robust_runs)} robust-scope runs"},
+        {"id": "heldout_validation", "label": "Held-out validation", "state": "done" if has_heldout else "warning", "detail": "cross-segment/scroll or LOO" if has_heldout else "missing robust held-out run"},
+        {"id": "seed_repeat_loo", "label": "Seed-repeat LOO", "state": "done" if has_loo else "warning", "detail": "promotion-ready summary found" if has_loo else "run evaluate_leave_one_out.py --seeds"},
+        {"id": "full_tile", "label": "Full-tile evidence", "state": "done" if has_full_tile else "warning", "detail": "full-tile artifact/check present" if has_full_tile else "run infer_full_tile.py before promotion"},
+        {"id": "promotion_clear", "label": "No promotion blockers", "state": "done" if no_blocked_promotable else "warning", "detail": "eligible robust run exists" if no_blocked_promotable else "blockers remain"},
+    ]
+    return {"criteria": criteria, "ready": all(item["state"] == "done" for item in criteria)}
+
+
+def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, robust: dict[str, Any] | None, promotable: dict[str, Any] | None, loo_summaries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     blocker_counts: dict[str, int] = {}
     for run in runs:
         for blocker in run.get("promotion_blockers") or []:
@@ -143,13 +196,20 @@ def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, 
     plateau_epsilon = 0.002
     plateau_detected = plateau_delta is not None and plateau_window >= 5 and plateau_delta <= plateau_epsilon
 
+    gate = _promotion_gate(runs, loo_summaries or [])
+
     if promotable:
         next_action = f"Promote or seed-repeat verify {promotable.get('run_id')} before release."
         status = "promotion_eligible"
     elif robust:
         top = robust.get("promotion_blockers") or []
         suffix = f"; top blocker: {top[0].get('code')}" if top else ""
-        next_action = f"Resolve blockers for robust candidate {robust.get('run_id')}{suffix}."
+        if any(item["id"] == "seed_repeat_loo" and item["state"] != "done" for item in gate["criteria"]):
+            next_action = f"Run seed-repeat leave-one-out for robust candidate {robust.get('run_id')}{suffix}."
+        elif any(item["id"] == "full_tile" and item["state"] != "done" for item in gate["criteria"]):
+            next_action = f"Run full-tile inference for robust candidate {robust.get('run_id')}{suffix}."
+        else:
+            next_action = f"Resolve blockers for robust candidate {robust.get('run_id')}{suffix}."
         status = "blocked"
     elif peak:
         next_action = f"Convert peak run {peak.get('run_id')} into a robust held-out candidate."
@@ -162,6 +222,7 @@ def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, 
         "status": status,
         "next_action": next_action,
         "blocker_counts": dict(sorted(blocker_counts.items())),
+        "promotion_gate": gate,
         "plateau": {"detected": plateau_detected, "window_runs": plateau_window, "metric_delta": plateau_delta, "epsilon": plateau_epsilon},
         "staleness": {"stale_runs_since_peak": stale_runs_since_peak, "peak_run_id": peak.get("run_id") if peak else None},
     }
@@ -182,6 +243,21 @@ def _validation_setup(run: dict[str, Any]) -> dict[str, Any]:
     if not warning and mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
         warning = "Validation is not cross-segment/cross-scroll/leave-one-segment-out."
     return {"mode": mode, "warning": warning, "train_segment_id": train_segment, "val_segment_id": val_segment}
+
+
+def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, Any]]:
+    summaries = []
+    for path in sorted((project_root / "logs").glob("*summary.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict) or "promotion_ready" not in data:
+            continue
+        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision")})
+        if len(summaries) >= limit:
+            break
+    return summaries
 
 
 def _config_diff(before: dict[str, Any] | None, after: dict[str, Any] | None, limit: int = 24) -> list[dict[str, Any]]:
@@ -207,7 +283,8 @@ def _config_diff(before: dict[str, Any] | None, after: dict[str, Any] | None, li
 
 def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
     db_path = project_root / "experiments" / "experiments.db"
-    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None), "metric_trends": [], "validation_matrix": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
+    loo_summaries = _load_loo_summaries(project_root)
+    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries), "loo_summaries": loo_summaries, "metric_trends": [], "validation_matrix": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
     if not db_path.exists():
         return empty
     try:
@@ -238,7 +315,7 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
     robust_candidates = [run for run in runs if _is_robust_candidate(run)]
     robust = min(
         robust_candidates,
-        key=lambda run: (_scope_priority(str(_get_nested(run.get("config", {}), ("dataset", "research_scope"), "")), str(_get_nested(run.get("config", {}), ("autoresearch", "scope_policy"), ""))), _metric_direction(run) * float(run.get("main_metric", 0.0))),
+        key=lambda run: (_validation_priority(run), _scope_priority(str(_get_nested(run.get("config", {}), ("dataset", "research_scope"), "")), str(_get_nested(run.get("config", {}), ("autoresearch", "scope_policy"), ""))), _metric_direction(run) * float(run.get("main_metric", 0.0))),
         default=None,
     )
     eligible_runs = [run for run in runs if run.get("promotion_status") == "eligible"]
@@ -272,7 +349,8 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         "latest": latest,
         "recent": runs,
         "champions": {"peak_score": _compact_run(best), "robust_candidate": _compact_run(robust), "promotion_eligible": _compact_run(promotable)},
-        "decision": _decision_snapshot(runs, best, robust, promotable),
+        "decision": _decision_snapshot(runs, best, robust, promotable, loo_summaries),
+        "loo_summaries": loo_summaries,
         "metric_trends": [{"run_id": r["run_id"], "timestamp": r["timestamp"], "main_metric": r["main_metric"], "val_f1": r.get("metrics", {}).get("val_f1"), "average_precision": r.get("metrics", {}).get("average_precision")} for r in chronological],
         "validation_matrix": sorted(matrix.values(), key=lambda item: (item["train_segment_id"], item["val_segment_id"])),
         "config_diffs": {"latest_vs_previous": _config_diff(previous.get("config") if previous else None, latest.get("config") if latest else None), "latest_vs_best": _config_diff(best.get("config") if best else None, latest.get("config") if latest else None), "latest_vs_baseline": _config_diff(baseline.get("config") if baseline else None, latest.get("config") if latest else None)},
