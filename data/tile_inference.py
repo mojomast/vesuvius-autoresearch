@@ -34,6 +34,15 @@ def parse_offsets(raw: str | Iterable[int]) -> list[int]:
     return [int(x) for x in raw]
 
 
+def _validate_tiling_args(patch_size: int, stride: int, batch_size: int | None = None) -> None:
+    if patch_size <= 0:
+        raise ValueError("patch_size must be positive")
+    if stride <= 0:
+        raise ValueError("stride must be positive")
+    if batch_size is not None and batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+
 def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catalog_source: str = "public-directory") -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Open a public labeled segment and return normalized image [C,H,W] plus label [H,W]."""
     from scripts.prepare_vesuvius_segment_npz import _align_label, _normalize, _open_layers, _read_label, _segment_meta
@@ -59,10 +68,9 @@ def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catal
 
 
 def tile_origins(height: int, width: int, patch_size: int = 64, stride: int = 32) -> list[tuple[int, int]]:
+    _validate_tiling_args(int(patch_size), int(stride))
     if height < patch_size or width < patch_size:
         raise ValueError(f"Patch size {patch_size} exceeds image shape {(height, width)}")
-    if stride <= 0:
-        raise ValueError("stride must be positive")
 
     def starts(length: int) -> list[int]:
         vals = list(range(0, length - patch_size + 1, stride))
@@ -75,6 +83,8 @@ def tile_origins(height: int, width: int, patch_size: int = 64, stride: int = 32
 
 
 def blending_window(patch_size: int, floor: float = 0.05) -> np.ndarray:
+    if patch_size <= 0:
+        raise ValueError("patch_size must be positive")
     one = np.hanning(patch_size).astype(np.float32)
     if not np.any(one):
         one = np.ones(patch_size, dtype=np.float32)
@@ -208,7 +218,11 @@ def load_torch_unet_artifact(artifact_or_config: Path, in_channels: int, device:
         if not model_file.exists():
             raise FileNotFoundError(f"No torch model artifact found at {model_file}")
         model = _build_model(model_name, in_channels, base)
-        model.load_state_dict(torch.load(model_file, map_location=device))
+        try:
+            state = torch.load(model_file, map_location=device, weights_only=True)
+        except TypeError:
+            state = torch.load(model_file, map_location=device)
+        model.load_state_dict(state)
         model.to(torch.device(device))
         model.eval()
         models.append(model)
@@ -216,6 +230,7 @@ def load_torch_unet_artifact(artifact_or_config: Path, in_channels: int, device:
 
 
 def stitch_probabilities_from_predictor(predict_batch: Any, image: np.ndarray, patch_size: int = 64, stride: int = 32, batch_size: int = 8) -> tuple[np.ndarray, dict[str, Any]]:
+    _validate_tiling_args(int(patch_size), int(stride), int(batch_size))
     if image.ndim != 3:
         raise ValueError(f"Expected image [C,H,W], got shape {image.shape}")
     _, h, w = image.shape
@@ -306,6 +321,12 @@ def _average_precision(probs: np.ndarray, labels: np.ndarray) -> float:
 
 
 def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_threshold: float = 0.5) -> tuple[dict[str, Any], list[dict[str, float]]]:
+    if prob_map.ndim != 2:
+        raise ValueError(f"Expected probability map [H,W], got shape {prob_map.shape}")
+    if label.ndim != 2:
+        raise ValueError(f"Expected label [H,W], got shape {label.shape}")
+    if prob_map.shape != label.shape:
+        raise ValueError(f"Probability map shape {prob_map.shape} does not match label shape {label.shape}")
     probs = prob_map.reshape(-1).astype(np.float32)
     labels = label.reshape(-1).astype(np.float32)
     score_quantiles = np.quantile(probs, np.linspace(0.001, 0.999, 160, dtype=np.float32))
@@ -324,6 +345,9 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
         "tile_loss": loss,
         "tile_f1": float(best_f1["f1"]),
         "tile_f05": float(best_f05["f05"]),
+        "val_loss": loss,
+        "val_f1": float(best_f1["f1"]),
+        "val_f05": float(best_f05["f05"]),
         "best_threshold": float(best_f1["threshold"]),
         "precision": float(best_f1["precision"]),
         "recall": float(best_f1["recall"]),
@@ -333,6 +357,7 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
         "fixed_threshold_recall": float(fixed["recall"]),
         "average_precision": _average_precision(probs, labels),
         "label_positive_rate": float((labels > 0.5).mean()),
+        "val_positive_rate": float((labels > 0.5).mean()),
         "pred_positive_rate": float(best_f1["pred_positive_rate"]),
         "prob_min": float(np.min(probs)),
         "prob_mean": float(np.mean(probs)),
@@ -343,11 +368,15 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
     return metrics, rows
 
 
-def write_outputs(output_dir: Path, prob_map: np.ndarray, metrics: dict[str, Any], threshold_rows: list[dict[str, float]]) -> dict[str, str]:
+def write_outputs(output_dir: Path, prob_map: np.ndarray, metrics: dict[str, Any], threshold_rows: list[dict[str, float]], overwrite: bool = False) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     prob_path = output_dir / "probability_map.npy"
     metrics_path = output_dir / "metrics.json"
     csv_path = output_dir / "metrics_by_threshold.csv"
+    paths = [prob_path, metrics_path, csv_path]
+    existing = [path for path in paths if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError("Refusing to overwrite existing output files without overwrite=True: " + ", ".join(str(path) for path in existing))
     np.save(prob_path, prob_map.astype(np.float32))
     metrics_path.write_text(json.dumps(_jsonable(metrics), indent=2, sort_keys=True) + "\n")
     with csv_path.open("w", newline="") as fh:
@@ -357,12 +386,40 @@ def write_outputs(output_dir: Path, prob_map: np.ndarray, metrics: dict[str, Any
     return {"probability_map": str(prob_path), "metrics_json": str(metrics_path), "threshold_csv": str(csv_path)}
 
 
-def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory") -> dict[str, Any]:
+def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
+    setup = cfg.get("validation_setup") if isinstance(cfg.get("validation_setup"), dict) else {}
+    resolved = cfg.get("resolved_data") if isinstance(cfg.get("resolved_data"), dict) else {}
+    train_meta = resolved.get("train", {}).get("metadata", {}) if isinstance(resolved.get("train"), dict) else {}
+    val_meta = resolved.get("val", {}).get("metadata", {}) if isinstance(resolved.get("val"), dict) else {}
+    train_segment = str(setup.get("train_segment_id") or train_meta.get("segment_id") or "")
+    val_segment = str(setup.get("val_segment_id") or val_meta.get("segment_id") or "")
+    mode = str(setup.get("mode") or cfg.get("dataset", {}).get("validation_mode") or "unknown")
+    warnings = []
+    if train_segment and train_segment == str(segment_id):
+        warnings.append("inference segment matches training segment; treat as diagnostic-only")
+    if mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
+        warnings.append(f"validation mode is {mode}; promotion requires held-out segment evidence")
+    if val_segment and val_segment != str(segment_id):
+        warnings.append("inference segment does not match recorded validation segment")
+    return {
+        "eligible": not warnings,
+        "warnings": warnings,
+        "validation_mode": mode,
+        "train_segment_id": train_segment or None,
+        "val_segment_id": val_segment or None,
+        "inference_segment_id": str(segment_id),
+        "validation_setup": setup,
+        "resolved_data": resolved,
+    }
+
+
+def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False) -> dict[str, Any]:
     offsets = z_offsets if z_offsets is not None else [0]
     image, label, segment_meta = load_public_segment(segment_id, level, offsets, catalog_source)
     models, cfg, artifact_dir, model_meta = load_torch_unet_artifact(artifact, image.shape[0], device)
-    patch = int(patch_size or cfg.get("dataset", {}).get("patch_size", 64))
-    step = int(stride or max(1, patch // 2))
+    patch = int(cfg.get("dataset", {}).get("patch_size", 64) if patch_size is None else patch_size)
+    step = int(max(1, patch // 2) if stride is None else stride)
+    _validate_tiling_args(patch, step, int(batch_size))
     fixed_threshold = float(cfg.get("evaluation", {}).get("threshold", 0.5))
     tta_flips = bool(model_meta.get("tta_flips", cfg.get("evaluation", {}).get("tta_flips", False)))
     prob_map, tile_meta = stitch_probabilities(models, image, patch, step, batch_size, device, tta_flips)
@@ -373,8 +430,23 @@ def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, l
         "model_meta": model_meta,
         "segment": segment_meta,
         "tile_inference": tile_meta,
+        "evaluation_region": {
+            "type": "whole_segment",
+            "segment_id": str(segment_id),
+            "shape": [int(label.shape[0]), int(label.shape[1])],
+        },
+        "inference_provenance": {
+            "artifact": str(artifact),
+            "artifact_dir": str(artifact_dir),
+            "catalog_source": str(catalog_source),
+            "device": str(device),
+            "level": str(level),
+            "z_offsets": [int(x) for x in offsets],
+            "overwrite": bool(overwrite),
+        },
+        "promotion_checks": _promotion_checks(cfg, segment_id),
     })
-    outputs = write_outputs(output_dir, prob_map, metrics, threshold_rows)
+    outputs = write_outputs(output_dir, prob_map, metrics, threshold_rows, overwrite=overwrite)
     return {"metrics": metrics, "outputs": outputs}
 
 

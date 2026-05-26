@@ -57,11 +57,22 @@ Patch-sampled F1 can overstate segment utility when validation patches are posit
 
 Record these fields from `metrics.json` for full-tile runs:
 
+- `evaluation_region.type: whole_segment`
 - `best_threshold`
 - `average_precision`
+- `val_f1`, `val_f05`, and `val_loss`
 - `val_positive_rate`
 - `pred_positive_rate`
 - `prob_p95`, `prob_mean`, and `prob_max`
+- `promotion_checks.validation_setup` and `promotion_checks.resolved_data`
+- `promotion_checks.eligible` and `promotion_checks.warnings`
+
+Promotion criteria for full-tile results:
+
+- Use only runs with whole-segment evaluation provenance, matching validation setup metadata, and `promotion_checks.eligible: true`.
+- Preserve or improve tiled `val_f1` and `val_f05` without a large jump in `pred_positive_rate`.
+- Keep `val_positive_rate` consistent with the held-out segment metadata.
+- Inspect probability quantiles before promotion when a threshold sweep is the main source of lift.
 
 If a model only wins on positive-biased validation but fails on tiled validation, keep it diagnostic-only.
 
@@ -81,9 +92,9 @@ The current `tiny_torch_unet` already consumes multi-channel NPZs, so 2.5D data 
 
 Minimum config intent:
 
-- `model.name: residual_25d_torch_unet` once implemented.
+- `model.name: residual_25d_torch_unet` for residual 2.5D experiments.
 - `model.input_mode: z_offsets_as_channels`.
 - `dataset.z_offsets` matching the preparation command.
 - LOO seed-repeat promotion before comparing against champions.
 
-Until `residual_25d_torch_unet` exists in `experiments/runner.py`, use `configs/next_best_moves_robust_template.yaml` as a planning template and keep runnable experiments on `tiny_torch_unet`.
+Use `configs/next_best_moves_robust_template.yaml` as the planning template, and keep runnable experiments tied to model names supported by the current training and inference entry points.

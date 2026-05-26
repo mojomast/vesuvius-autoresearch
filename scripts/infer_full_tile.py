@@ -26,6 +26,7 @@ def main() -> int:
     parser.add_argument("--stride", type=int, default=None, help="Patch stride; defaults to patch_size/2")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--device", default="cpu", help="Torch device, e.g. cpu or cuda")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files")
     parser.add_argument("--self-test", action="store_true", help="Run a lightweight synthetic tiling/evaluation self-test")
     args = parser.parse_args()
 
@@ -46,6 +47,7 @@ def main() -> int:
         batch_size=args.batch_size,
         device=args.device,
         catalog_source=args.catalog_source,
+        overwrite=args.overwrite,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
