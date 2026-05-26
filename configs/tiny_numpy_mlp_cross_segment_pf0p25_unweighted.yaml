@@ -1,0 +1,28 @@
+# Dependency-free MLP with modest positive pixel enrichment and no class-weight inflation.
+dataset:
+  research_scope: focused_pair
+  train_npz: data/real_cross/segment_20230827161847_pf0p15_n2048/train.npz
+  val_npz: data/real_cross/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: cross-segment
+model:
+  name: tiny_numpy_mlp
+  depth: 3
+  hidden_units: 32
+training:
+  epochs: 10
+  batch_size: 8192
+  max_train_pixels: 700000
+  sample_positive_fraction: 0.25
+  learning_rate: 0.008
+  weight_decay: 0.0001
+  pos_weight: 1.0
+  seed: 2026
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+autoresearch:
+  parent_reason: nonlinear MLP with modest positive enrichment and unweighted BCE to improve ranking without inflated prior
+  scope_policy: focused_pair_only
+outputs:
+  runs_dir: experiments/runs

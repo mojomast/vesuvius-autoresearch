@@ -1,0 +1,34 @@
+# AutoResearch generated config.
+# Hyperparameter change: higher regularization to test whether high predicted-positive rate is overfit confidence
+# Constraint: only one small hyperparameter change from the selected best recent config.
+autoresearch:
+  parent_reason: higher regularization to test whether high predicted-positive rate
+    is overfit confidence
+  scope_policy: focused_pair_only
+  search_signature:
+  - 3
+  - 5
+  - 0.1152
+  - 0.1578219
+  - 8.0
+dataset:
+  research_scope: focused_pair
+  scope_note: One train segment and one held-out validation segment; add folds only
+    through explicit configs.
+  train_npz: data/real_cross/segment_20230827161847/train.npz
+  val_npz: data/real_cross/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: cross-segment
+evaluation:
+  main_metric: val_f1
+  threshold: 0.031
+model:
+  depth: 3
+  name: tiny_numpy_ink_logreg
+outputs:
+  runs_dir: experiments/runs
+training:
+  epochs: 5
+  learning_rate: 0.1152
+  pos_weight: 8.0
+  weight_decay: 0.1578219

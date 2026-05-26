@@ -1,0 +1,24 @@
+# AutoResearch generated config.
+# Hyperparameter change: higher learning rate to test faster convergence on small subsets
+# Constraint: only one small hyperparameter change from the selected best recent config.
+autoresearch:
+  parent_reason: higher learning rate to test faster convergence on small subsets
+dataset:
+  max_samples_per_split: 48
+  patch_size: 32
+  prepared_root: data/prepared
+  train_scroll_id: '1'
+  val_scroll_id: '2'
+evaluation:
+  main_metric: val_loss
+  threshold: 0.5
+model:
+  depth: 2
+  name: tiny_numpy_ink_logreg
+outputs:
+  runs_dir: experiments/runs
+training:
+  epochs: 4
+  learning_rate: 0.4394
+  pos_weight: 2.0
+  weight_decay: 0.0001

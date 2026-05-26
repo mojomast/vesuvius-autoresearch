@@ -1,0 +1,24 @@
+# Real cross-segment experiment with lower-positive train sampling.
+# Hypothesis: train patches closer to tiled validation prevalence improve ranking/separation.
+dataset:
+  research_scope: focused_pair
+  train_npz: data/real_cross/segment_20230827161847_pf0p15_n2048/train.npz
+  val_npz: data/real_cross/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: cross-segment
+model:
+  name: tiny_numpy_ink_logreg
+  depth: 3
+training:
+  epochs: 5
+  learning_rate: 0.144
+  weight_decay: 0.0001
+  pos_weight: 1.0
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+autoresearch:
+  parent_reason: lower train positive oversampling to reduce train/validation distribution mismatch and improve AP/ranking
+  scope_policy: focused_pair_only
+outputs:
+  runs_dir: experiments/runs

@@ -1,0 +1,27 @@
+# Dependency-free stronger model baseline: one-hidden-layer NumPy MLP over pixel features.
+dataset:
+  research_scope: focused_pair
+  train_npz: data/real_cross/segment_20230827161847_pf0p15_n2048/train.npz
+  val_npz: data/real_cross/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: cross-segment
+model:
+  name: tiny_numpy_mlp
+  depth: 3
+  hidden_units: 24
+training:
+  epochs: 8
+  batch_size: 8192
+  max_train_pixels: 600000
+  learning_rate: 0.01
+  weight_decay: 0.0001
+  pos_weight: auto
+  seed: 1337
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+autoresearch:
+  parent_reason: stronger dependency-free nonlinear model to improve ranking/separation beyond logistic features
+  scope_policy: focused_pair_only
+outputs:
+  runs_dir: experiments/runs

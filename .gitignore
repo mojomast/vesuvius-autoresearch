@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+data/
+data/prepared/
+archive/synthetic_data/
+archive/synthetic_experiments/
+experiments/experiments.db
+experiments/runs/
+logs/
+logs/*.log
+logs/*.lock

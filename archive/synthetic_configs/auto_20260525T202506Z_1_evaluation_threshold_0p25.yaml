@@ -1,0 +1,25 @@
+# AutoResearch generated config.
+# Hyperparameter change: lower decision threshold because validation probabilities can be below 0.5 while still ranking ink pixels
+# Constraint: only one small hyperparameter change from the selected best recent config.
+dataset:
+  max_samples_per_split: 48
+  patch_size: 32
+  prepared_root: data/prepared
+  train_scroll_id: '1'
+  val_scroll_id: '2'
+evaluation:
+  main_metric: val_f1
+  threshold: 0.25
+model:
+  depth: 2
+  name: tiny_numpy_ink_logreg
+outputs:
+  runs_dir: experiments/runs
+training:
+  epochs: 4
+  learning_rate: 0.2
+  pos_weight: auto
+  weight_decay: 0.0001
+autoresearch:
+  parent_reason: lower decision threshold because validation probabilities can be
+    below 0.5 while still ranking ink pixels

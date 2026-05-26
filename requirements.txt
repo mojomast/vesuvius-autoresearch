@@ -1,0 +1,7 @@
+numpy
+PyYAML
+torch
+# Optional real-data ingestion dependencies:
+# pip install vesuvius tifffile pillow zarr s3fs lxml nest_asyncio
+# First official-tooling run may require accepting terms:
+# python -m vesuvius.accept_terms --yes

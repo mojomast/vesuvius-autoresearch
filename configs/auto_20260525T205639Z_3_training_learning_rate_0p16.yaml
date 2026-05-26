@@ -1,0 +1,23 @@
+# AutoResearch generated config.
+# Hyperparameter change: slightly lower learning rate to test stability after threshold-aware F1 scoring
+# Constraint: only one small hyperparameter change from the selected best recent config.
+dataset:
+  patch_size: 64
+  train_npz: data/real/segment_20230827161847/train.npz
+  val_npz: data/real/segment_20230827161847/val.npz
+evaluation:
+  main_metric: val_f1
+  threshold: 0.5
+model:
+  depth: 2
+  name: tiny_numpy_ink_logreg
+outputs:
+  runs_dir: experiments/runs
+training:
+  epochs: 4
+  learning_rate: 0.16
+  pos_weight: auto
+  weight_decay: 0.0001
+autoresearch:
+  parent_reason: slightly lower learning rate to test stability after threshold-aware
+    F1 scoring

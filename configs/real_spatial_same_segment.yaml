@@ -1,0 +1,21 @@
+# Spatial same-segment real-data experiment retained for comparison only.
+dataset:
+  research_scope: focused_pair
+  scope_note: "Same-segment comparison only; do not mix with cross-segment leaderboard."
+  train_npz: data/real/segment_20230827161847/train.npz
+  val_npz: data/real/segment_20230827161847/val.npz
+  patch_size: 64
+  validation_mode: spatial-same-segment
+model:
+  name: tiny_numpy_ink_logreg
+  depth: 2
+training:
+  epochs: 4
+  learning_rate: 0.20
+  weight_decay: 0.0001
+  pos_weight: auto
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+outputs:
+  runs_dir: experiments/runs

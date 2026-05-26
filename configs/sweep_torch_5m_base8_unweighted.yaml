@@ -1,0 +1,27 @@
+dataset:
+  research_scope: focused_pair
+  train_npz: data/real_cross/segment_20230827161847_pf0p15_n2048/train.npz
+  val_npz: data/real_cross/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: cross-segment
+model:
+  name: tiny_torch_unet
+  base_channels: 8
+training:
+  epochs: 3
+  batch_size: 8
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  pos_weight: 1.0
+  max_train_samples: 512
+  num_threads: 4
+  seed: 2004
+  allow_cuda: false
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+autoresearch:
+  parent_reason: "5-minute parallel torch sweep: base8 unweighted"
+  scope_policy: focused_pair_only
+outputs:
+  runs_dir: experiments/runs

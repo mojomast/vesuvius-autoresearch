@@ -1,0 +1,23 @@
+# Cross-segment real-data experiment.
+# Train and validate on distinct public labeled Scroll 1 segments; no synthetic data.
+dataset:
+  research_scope: focused_pair
+  scope_note: "One train segment and one held-out validation segment; add folds only through explicit configs."
+  train_npz: data/real_cross/segment_20230827161847/train.npz
+  val_npz: data/real_cross/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: cross-segment
+model:
+  name: tiny_numpy_ink_logreg
+  # depth 3 adds gradients/laplacian and multi-slice depth statistics when C>1.
+  depth: 3
+training:
+  epochs: 5
+  learning_rate: 0.12
+  weight_decay: 0.0001
+  pos_weight: auto
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+outputs:
+  runs_dir: experiments/runs
