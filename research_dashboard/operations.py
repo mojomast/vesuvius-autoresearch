@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import os
 import subprocess
 import time
@@ -13,13 +16,35 @@ def lock_active(project_root: Path) -> bool:
     if not lock_path.exists():
         return False
     try:
-        with lock_path.open("a+") as fh:
+        if fcntl is not None:
+            with lock_path.open("a+") as fh:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                    return False
+                except BlockingIOError:
+                    return True
+        else:
             try:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(fh, fcntl.LOCK_UN)
-                return False
-            except BlockingIOError:
-                return True
+                import msvcrt
+                with lock_path.open("r+") as fh:
+                    try:
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        # Unlock immediately if we successfully acquired it
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                        return False
+                    except (BlockingIOError, PermissionError, OSError):
+                        return True
+            except (ImportError, AttributeError, OSError):
+                try:
+                    # Generic Windows sharing violation check
+                    with lock_path.open("r+") as fh:
+                        pass
+                    return False
+                except OSError:
+                    return True
     except Exception:
         return False
 

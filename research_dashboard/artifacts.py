@@ -46,5 +46,18 @@ def preview_artifact(project_root: Path, artifact_path: str) -> dict[str, Any]:
         out["preview"] = text[:24000]
         out["truncated"] = len(text) > 24000
         return out
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        try:
+            import base64
+            data = path.read_bytes()
+            encoded = base64.b64encode(data).decode("utf-8")
+            mime = f"image/{suffix.lstrip('.')}"
+            if mime == "image/jpg":
+                mime = "image/jpeg"
+            out["preview"] = f"data:{mime};base64,{encoded}"
+            return out
+        except Exception as exc:
+            out["preview_error"] = f"Failed to load image preview: {exc}"
+            return out
     out["preview_error"] = "Preview unavailable for binary or unsupported artifact type"
     return out

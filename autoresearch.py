@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import copy
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import json
 import os
 import sqlite3
@@ -294,8 +297,17 @@ def main() -> int:
     CONFIGS.mkdir(parents=True, exist_ok=True)
     with open(LOCK_PATH, "w") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                try:
+                    import msvcrt
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                except (ImportError, AttributeError, OSError):
+                    # Basic fallback if msvcrt isn't available or fails
+                    pass
+        except (BlockingIOError, PermissionError, OSError):
             print(f"{datetime.now(timezone.utc).isoformat()} another autoresearch run is active; exiting safely")
             return 0
         init_db(DB_PATH)
