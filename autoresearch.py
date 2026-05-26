@@ -24,28 +24,51 @@ BASELINE = CONFIGS / "baseline.yaml"
 SCOPE_KEYS = ("train_npz", "val_npz", "validation_mode", "research_scope")
 SEARCH_PATHS = (
     ("model", "name"),
+    ("model", "base_channels"),
     ("model", "depth"),
     ("model", "hidden_units"),
+    ("dataset", "research_scope"),
+    ("dataset", "train_npz"),
+    ("dataset", "val_npz"),
     ("training", "epochs"),
+    ("training", "batch_size"),
     ("training", "learning_rate"),
     ("training", "weight_decay"),
     ("training", "pos_weight"),
+    ("training", "max_train_samples"),
     ("training", "max_train_pixels"),
     ("training", "sample_positive_fraction"),
+    ("training", "dice_loss_weight"),
+    ("training", "augment_flips"),
     ("training", "seed"),
+    ("evaluation", "tta_flips"),
 )
 SIGNATURE_DEFAULTS = {
     ("model", "name"): "tiny_numpy_ink_logreg",
+    ("model", "base_channels"): None,
     ("model", "depth"): 2,
     ("model", "hidden_units"): 24,
+    ("dataset", "research_scope"): None,
+    ("dataset", "train_npz"): None,
+    ("dataset", "val_npz"): None,
     ("training", "epochs"): 5,
+    ("training", "batch_size"): None,
     ("training", "learning_rate"): 0.2,
     ("training", "weight_decay"): 0.0,
     ("training", "pos_weight"): 2.0,
+    ("training", "max_train_samples"): None,
     ("training", "max_train_pixels"): 600000,
     ("training", "sample_positive_fraction"): None,
+    ("training", "dice_loss_weight"): None,
+    ("training", "augment_flips"): None,
     ("training", "seed"): 1337,
+    ("evaluation", "tta_flips"): None,
 }
+PIVOT_CONFIGS = (
+    "residual_25d_torch_unet_cpu.yaml",
+    "robust_multisegment_dice035_expanded.yaml",
+    "robust_tta_seed_ensemble.yaml",
+)
 
 
 def _metric_direction(cfg: Dict[str, Any]) -> int:
@@ -132,21 +155,43 @@ def _tested_signatures(runs: List[Dict[str, Any]]) -> set[Tuple[Any, ...]]:
     return {_search_signature(run.get("config", {})) for run in runs}
 
 
-def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3) -> List[Tuple[str, Dict[str, Any], str]]:
-    """Change only 1 hyperparameter per proposal for interpretable search."""
-    baseline_dataset = load_config(BASELINE).get("dataset", {})
+def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], Any, str]]:
     model_name = str(_get_nested(base, ("model", "name"), "tiny_numpy_ink_logreg"))
     lr = float(_get_nested(base, ("training", "learning_rate"), 0.2))
-    depth = int(_get_nested(base, ("model", "depth"), 2))
-    hidden_units = int(_get_nested(base, ("model", "hidden_units"), 24))
     epochs = int(_get_nested(base, ("training", "epochs"), 5))
     weight_decay = float(_get_nested(base, ("training", "weight_decay"), 0.0))
-    max_train_pixels = int(_get_nested(base, ("training", "max_train_pixels"), 600000))
     seed = int(_get_nested(base, ("training", "seed"), 1337))
-    sample_positive_fraction = _get_nested(base, ("training", "sample_positive_fraction"), None)
     pos_weight_raw = _get_nested(base, ("training", "pos_weight"), 2.0)
     pos_weight = 2.0 if isinstance(pos_weight_raw, str) and pos_weight_raw.lower() == "auto" else float(pos_weight_raw)
-    tested = _tested_signatures(runs)
+
+    if "torch" in model_name:
+        base_channels = int(_get_nested(base, ("model", "base_channels"), 8))
+        batch_size = int(_get_nested(base, ("training", "batch_size"), 8))
+        max_train_samples = int(_get_nested(base, ("training", "max_train_samples"), 512) or 0)
+        dice = float(_get_nested(base, ("training", "dice_loss_weight"), 0.0) or 0.0)
+        augment_flips = bool(_get_nested(base, ("training", "augment_flips"), False))
+        tta_flips = bool(_get_nested(base, ("evaluation", "tta_flips"), False))
+        bounded_samples = max_train_samples if max_train_samples > 0 else 1024
+        return [
+            (("training", "learning_rate"), round(max(0.0002, lr * 0.6), 6), "lower torch learning rate to test calibration on the current robust/residual base"),
+            (("training", "learning_rate"), round(min(0.006, lr * 1.5), 6), "raise torch learning rate modestly to test convergence-limited behavior"),
+            (("training", "dice_loss_weight"), round(max(0.0, dice - 0.15), 4), "reduce Dice weight to test whether BCE precision improves"),
+            (("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), "increase Dice weight to test ink-recall stability"),
+            (("model", "base_channels"), max(4, base_channels // 2), "smaller torch U-Net width for faster regularized CPU search"),
+            (("model", "base_channels"), min(16, base_channels * 2), "larger torch U-Net width to test capacity without changing data scope"),
+            (("training", "epochs"), max(2, epochs - 1), "shorter torch training to test overfit/probability inflation"),
+            (("training", "epochs"), min(8, epochs + 1), "one extra torch epoch to test under-convergence"),
+            (("training", "batch_size"), max(2, batch_size // 2), "smaller torch batch for noisier but possibly better CPU generalization"),
+            (("training", "max_train_samples"), bounded_samples, "bound full robust training to a CPU-safe sample budget for cron exploration"),
+            (("training", "augment_flips"), not augment_flips, "toggle train-time flip augmentation on this torch base"),
+            (("evaluation", "tta_flips"), not tta_flips, "toggle test-time flip TTA to measure ensemble-like lift"),
+            (("training", "seed"), seed + 17, "repeat torch setup with a deterministic seed change"),
+        ]
+
+    depth = int(_get_nested(base, ("model", "depth"), 2))
+    hidden_units = int(_get_nested(base, ("model", "hidden_units"), 24))
+    max_train_pixels = int(_get_nested(base, ("training", "max_train_pixels"), 600000))
+    sample_positive_fraction = _get_nested(base, ("training", "sample_positive_fraction"), None)
     candidates = [
         (("training", "pos_weight"), round(max(0.25, pos_weight * 0.5), 4), "reduce positive weight because current best predicts positives far above the validation ink rate"),
         (("training", "pos_weight"), round(min(8.0, pos_weight * 1.25), 4), "test a modest positive-weight increase under the tempered auto-weight policy"),
@@ -161,9 +206,7 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         (("training", "seed"), seed + 17, "repeat the selected setup with a different deterministic sampling/initialization seed"),
     ]
     if model_name != "tiny_numpy_mlp":
-        candidates.extend([
-            (("model", "name"), "tiny_numpy_mlp", "switch to the local NumPy MLP for a nonlinear baseline without using external LLM/API tokens"),
-        ])
+        candidates.append((("model", "name"), "tiny_numpy_mlp", "switch to the local NumPy MLP for a nonlinear baseline without using external LLM/API tokens"))
     else:
         candidates.extend([
             (("model", "hidden_units"), max(8, hidden_units // 2), "smaller MLP hidden layer to test under/overfit boundary"),
@@ -172,6 +215,14 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
             (("training", "max_train_pixels"), max(100000, max_train_pixels // 2), "fewer local pixels for faster noise-check MLP runs"),
             (("training", "sample_positive_fraction"), 0.25 if sample_positive_fraction != 0.25 else 0.5, "adjust MLP positive sampling fraction to probe prevalence calibration"),
         ])
+    return candidates
+
+
+def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True) -> List[Tuple[str, Dict[str, Any], str]]:
+    """Change only 1 hyperparameter per proposal for interpretable search."""
+    baseline_dataset = load_config(BASELINE).get("dataset", {})
+    tested = _tested_signatures(runs)
+    candidates = _proposal_candidates(base)
     # Rotate deterministically by minute slot so cron does not emit identical batches forever.
     slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
     candidates = candidates[slot:] + candidates[:slot]
@@ -181,7 +232,8 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         cfg = copy.deepcopy(base)
         cfg.pop("resolved_data", None)
         cfg.pop("validation_setup", None)
-        cfg["dataset"] = copy.deepcopy(baseline_dataset)
+        if lock_to_baseline_scope:
+            cfg["dataset"] = copy.deepcopy(baseline_dataset)
         if _get_nested(cfg, path, None) == value:
             continue
         _set_nested(cfg, path, value)
@@ -190,13 +242,41 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
             print(f"Skipping already-tested search signature {signature}")
             continue
         cfg.setdefault("autoresearch", {})["parent_reason"] = reason
-        cfg.setdefault("autoresearch", {})["scope_policy"] = "focused_pair_only"
+        cfg.setdefault("autoresearch", {})["scope_policy"] = scope_policy
         cfg.setdefault("autoresearch", {})["search_signature"] = list(signature)
         name = f"auto_{stamp}_{len(proposals) + 1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
         proposals.append((name, cfg, reason))
         if len(proposals) >= count:
             break
     return proposals
+
+
+def _pivot_bases() -> list[tuple[str, Dict[str, Any], str]]:
+    bases = []
+    for name in PIVOT_CONFIGS:
+        path = CONFIGS / name
+        if not path.exists():
+            continue
+        cfg = load_config(path)
+        if not (cfg.get("dataset", {}).get("train_npz") and cfg.get("dataset", {}).get("val_npz")):
+            continue
+        bases.append((name, _canonicalize_config(cfg), str(cfg.get("autoresearch", {}).get("scope_policy") or cfg.get("dataset", {}).get("research_scope") or "strategy_pivot")))
+    return bases
+
+
+def _propose_with_pivots(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:
+    proposals = _propose_configs(base, runs, count=count)
+    if proposals:
+        return proposals
+    print("Focused-pair NumPy search is exhausted; trying curated robust/torch pivot bases", flush=True)
+    out: list[Tuple[str, Dict[str, Any], str]] = []
+    for name, pivot, scope_policy in _pivot_bases():
+        remaining = count - len(out)
+        if remaining <= 0:
+            break
+        print(f"Trying AutoResearch pivot base {name} scope={scope_policy}", flush=True)
+        out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False))
+    return out
 
 
 def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> None:
@@ -227,9 +307,9 @@ def main() -> int:
         base = _best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
-        proposals = _propose_configs(base, runs, count=proposal_count)
+        proposals = _propose_with_pivots(base, runs, count=proposal_count)
         if not proposals:
-            print("No novel one-change proposals remain for this focused pair; pause instead of repeating runs")
+            print("No novel one-change proposals remain across focused and curated pivot bases; pause instead of repeating runs")
             return 0
         for name, cfg, reason in proposals:
             cfg_path = CONFIGS / name
