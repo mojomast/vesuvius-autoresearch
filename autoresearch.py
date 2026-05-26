@@ -11,6 +11,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -27,12 +28,14 @@ BASELINE = CONFIGS / "baseline.yaml"
 SCOPE_KEYS = ("train_npz", "val_npz", "validation_mode", "research_scope")
 SEARCH_PATHS = (
     ("model", "name"),
+    ("model", "input_mode"),
     ("model", "base_channels"),
     ("model", "depth"),
     ("model", "hidden_units"),
     ("dataset", "research_scope"),
     ("dataset", "train_npz"),
     ("dataset", "val_npz"),
+    ("dataset", "z_offsets"),
     ("training", "epochs"),
     ("training", "batch_size"),
     ("training", "learning_rate"),
@@ -42,18 +45,29 @@ SEARCH_PATHS = (
     ("training", "max_train_pixels"),
     ("training", "sample_positive_fraction"),
     ("training", "dice_loss_weight"),
+    ("training", "tversky_loss_weight"),
+    ("training", "tversky_alpha"),
+    ("training", "tversky_beta"),
+    ("training", "focal_tversky_gamma"),
     ("training", "augment_flips"),
     ("training", "seed"),
+    ("training", "seeds"),
+    ("training", "deterministic"),
+    ("training", "sampling_strategy"),
+    ("training", "hard_negative_fraction"),
+    ("evaluation", "threshold"),
     ("evaluation", "tta_flips"),
 )
 SIGNATURE_DEFAULTS = {
     ("model", "name"): "tiny_numpy_ink_logreg",
+    ("model", "input_mode"): None,
     ("model", "base_channels"): None,
     ("model", "depth"): 2,
     ("model", "hidden_units"): 24,
     ("dataset", "research_scope"): None,
     ("dataset", "train_npz"): None,
     ("dataset", "val_npz"): None,
+    ("dataset", "z_offsets"): None,
     ("training", "epochs"): 5,
     ("training", "batch_size"): None,
     ("training", "learning_rate"): 0.2,
@@ -63,8 +77,17 @@ SIGNATURE_DEFAULTS = {
     ("training", "max_train_pixels"): 600000,
     ("training", "sample_positive_fraction"): None,
     ("training", "dice_loss_weight"): None,
+    ("training", "tversky_loss_weight"): None,
+    ("training", "tversky_alpha"): None,
+    ("training", "tversky_beta"): None,
+    ("training", "focal_tversky_gamma"): None,
     ("training", "augment_flips"): None,
     ("training", "seed"): 1337,
+    ("training", "seeds"): None,
+    ("training", "deterministic"): None,
+    ("training", "sampling_strategy"): None,
+    ("training", "hard_negative_fraction"): None,
+    ("evaluation", "threshold"): 0.5,
     ("evaluation", "tta_flips"): None,
 }
 PIVOT_CONFIGS = (
@@ -137,6 +160,8 @@ def _get_nested(cfg: Dict[str, Any], path: Tuple[str, ...], default: Any) -> Any
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
     if path == ("model", "depth") and isinstance(value, int) and value > 3:
         return 3
+    if isinstance(value, list):
+        return tuple(value)
     if isinstance(value, float):
         return round(value, 10)
     return value
@@ -179,6 +204,16 @@ def _tested_signatures(runs: List[Dict[str, Any]]) -> set[Tuple[Any, ...]]:
     return {_search_signature(run.get("config", {})) for run in runs}
 
 
+def _reserved_signatures(runs: List[Dict[str, Any]]) -> set[Tuple[Any, ...]]:
+    signatures = _tested_signatures(runs)
+    for path in CONFIGS.glob("auto_*.yaml"):
+        try:
+            signatures.add(_search_signature(load_config(path)))
+        except Exception:
+            continue
+    return signatures
+
+
 def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], Any, str]]:
     model_name = str(_get_nested(base, ("model", "name"), "tiny_numpy_ink_logreg"))
     lr = float(_get_nested(base, ("training", "learning_rate"), 0.2))
@@ -196,11 +231,15 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         augment_flips = bool(_get_nested(base, ("training", "augment_flips"), False))
         tta_flips = bool(_get_nested(base, ("evaluation", "tta_flips"), False))
         bounded_samples = max_train_samples if max_train_samples > 0 else 1024
-        return [
+        candidates = [
             (("training", "learning_rate"), round(max(0.0002, lr * 0.6), 6), "lower torch learning rate to test calibration on the current robust/residual base"),
             (("training", "learning_rate"), round(min(0.006, lr * 1.5), 6), "raise torch learning rate modestly to test convergence-limited behavior"),
             (("training", "dice_loss_weight"), round(max(0.0, dice - 0.15), 4), "reduce Dice weight to test whether BCE precision improves"),
             (("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), "increase Dice weight to test ink-recall stability"),
+            (("training", "tversky_loss_weight"), 0.15, "add a light Tversky term to test recall/precision balance on the current robust base"),
+            (("training", "tversky_beta"), 0.8, "bias Tversky toward false-negative reduction for rare ink recall"),
+            (("training", "sampling_strategy"), "hard_mining", "try hard-negative mining to improve precision against textured non-ink"),
+            (("evaluation", "threshold"), 0.35, "evaluate a calibrated fixed threshold closer to recent swept-F1 optima"),
             (("model", "base_channels"), max(4, base_channels // 2), "smaller torch U-Net width for faster regularized CPU search"),
             (("model", "base_channels"), min(16, base_channels * 2), "larger torch U-Net width to test capacity without changing data scope"),
             (("training", "epochs"), max(2, epochs - 1), "shorter torch training to test overfit/probability inflation"),
@@ -211,6 +250,9 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("evaluation", "tta_flips"), not tta_flips, "toggle test-time flip TTA to measure ensemble-like lift"),
             (("training", "seed"), seed + 17, "repeat torch setup with a deterministic seed change"),
         ]
+        if max_train_samples and max_train_samples < 2048 and int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024")) >= 2048:
+            candidates.append((("training", "max_train_samples"), 2048, "increase robust torch sample budget after local hyperparameter plateau"))
+        return candidates
 
     depth = int(_get_nested(base, ("model", "depth"), 2))
     hidden_units = int(_get_nested(base, ("model", "hidden_units"), 24))
@@ -245,7 +287,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
 def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True, name_index_offset: int = 0) -> List[Tuple[str, Dict[str, Any], str]]:
     """Change only 1 hyperparameter per proposal for interpretable search."""
     baseline_dataset = load_config(BASELINE).get("dataset", {})
-    tested = _tested_signatures(runs)
+    tested = _reserved_signatures(runs)
     candidates = _proposal_candidates(base)
     # Rotate deterministically by minute slot so cron does not emit identical batches forever.
     slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
@@ -261,13 +303,27 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         if _get_nested(cfg, path, None) == value:
             continue
         _set_nested(cfg, path, value)
+        if path == ("training", "sampling_strategy") and value == "hard_mining":
+            cfg.setdefault("training", {}).setdefault("hard_negative_fraction", 0.5)
+        if path == ("training", "tversky_loss_weight"):
+            cfg.setdefault("training", {}).setdefault("tversky_alpha", 0.3)
+            cfg.setdefault("training", {}).setdefault("tversky_beta", 0.7)
+        if path == ("training", "tversky_beta"):
+            cfg.setdefault("training", {}).setdefault("tversky_loss_weight", 0.15)
+            cfg.setdefault("training", {})["tversky_alpha"] = round(1.0 - float(value), 4)
         signature = _search_signature(cfg)
         if signature in tested:
             print(f"Skipping already-tested search signature {signature}")
             continue
-        cfg.setdefault("autoresearch", {})["parent_reason"] = reason
-        cfg.setdefault("autoresearch", {})["scope_policy"] = scope_policy
-        cfg.setdefault("autoresearch", {})["search_signature"] = list(signature)
+        autoresearch = cfg.setdefault("autoresearch", {})
+        autoresearch["parent_reason"] = reason
+        autoresearch["scope_policy"] = scope_policy
+        autoresearch["search_signature"] = list(signature)
+        autoresearch["intent"] = "cron_exploration"
+        autoresearch["promotable"] = False
+        autoresearch["proposal_status"] = "generated"
+        autoresearch["changed_path"] = ".".join(path)
+        autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
         name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
         proposals.append((name, cfg, reason))
         if len(proposals) >= count:
@@ -300,6 +356,54 @@ def _scope_priority(scope: str, scope_policy: str) -> int:
     return 5
 
 
+def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
+    cfg = run.get("config", {})
+    metrics = run.get("metrics", {})
+    warnings: list[str] = []
+    if metrics.get("val_f1") is None:
+        warnings.append("missing_val_f1")
+    if metrics.get("average_precision") is None:
+        warnings.append("missing_average_precision")
+    if float(metrics.get("precision") or 0.0) <= 0.0 or float(metrics.get("recall") or 0.0) <= 0.0:
+        warnings.append("zero_precision_or_recall")
+    pred_rate = metrics.get("pred_positive_rate")
+    val_rate = metrics.get("val_positive_rate")
+    if pred_rate is not None and val_rate is not None:
+        ratio = float(pred_rate) / max(float(val_rate), 1e-6)
+        if ratio > 4.0 or ratio < 0.1:
+            warnings.append("pred_positive_rate_ratio_suspicious")
+    checks = metrics.get("promotion_checks") or {}
+    if isinstance(checks, dict) and checks.get("eligible") is False:
+        warnings.append("promotion_checks_ineligible")
+    if cfg.get("autoresearch", {}).get("cron_safety"):
+        warnings.append("cron_safety_run_not_promotable")
+    scope = str(cfg.get("dataset", {}).get("research_scope") or cfg.get("autoresearch", {}).get("scope_policy") or "")
+    if "multi_segment" not in scope and "leave_one_out" not in scope:
+        warnings.append("not_multisegment_scope")
+    return not warnings, warnings
+
+
+def _run_quality_score(run: Dict[str, Any]) -> float:
+    metrics = run.get("metrics", {})
+    score = float(metrics.get("val_f1") or run.get("main_metric") or 0.0)
+    score += 0.25 * float(metrics.get("average_precision") or 0.0)
+    score += 0.10 * float(metrics.get("val_f05") or 0.0)
+    pred_rate = metrics.get("pred_positive_rate")
+    val_rate = metrics.get("val_positive_rate")
+    if pred_rate is not None and val_rate is not None:
+        ratio = float(pred_rate) / max(float(val_rate), 1e-6)
+        if ratio > 3.0:
+            score -= min(0.25, 0.03 * (ratio - 3.0))
+        elif ratio < 0.25:
+            score -= min(0.25, 0.03 * (0.25 / max(ratio, 1e-6)))
+    eligible, warnings = _promotion_gate(run)
+    if eligible:
+        score += 0.05
+    else:
+        score -= 0.01 * len(warnings)
+    return score
+
+
 def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:
     robust_scopes = (
         "multi_segment_robust",
@@ -307,7 +411,7 @@ def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[st
         "expanded_leave_one_out",
         "focused_pair_residual_25d_cpu",
     )
-    ranked: list[tuple[int, float, str, Dict[str, Any], str]] = []
+    ranked: list[tuple[int, float, int, str, Dict[str, Any], str, list[str]]] = []
     seen: set[Tuple[Any, ...]] = set()
     for run in runs:
         cfg = run.get("config", {})
@@ -329,11 +433,16 @@ def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[st
         if signature in seen:
             continue
         seen.add(signature)
-        direction = _metric_direction(prepared)
-        ranked.append((_scope_priority(scope, scope_policy), direction * value, str(run.get("run_id") or "unknown"), prepared, scope_policy or "recent_robust_torch_winner"))
-    ranked.sort(key=lambda item: (item[0], item[1]))
+        eligible, warnings = _promotion_gate(run)
+        ranked.append((0 if eligible else 1, -_run_quality_score(run), _scope_priority(scope, scope_policy), str(run.get("run_id") or "unknown"), prepared, scope_policy or "recent_robust_torch_winner", warnings))
+    ranked.sort(key=lambda item: (item[0], item[2], item[1]))
     limit = int(os.environ.get("AUTORESEARCH_RECENT_WINNER_BASES", "6"))
-    return [(cfg, f"recent winner {run_id} scope={scope_policy}") for _priority, _score, run_id, cfg, scope_policy in ranked[:limit]]
+    out = []
+    for eligible_rank, _score, _scope_rank, run_id, cfg, scope_policy, warnings in ranked[:limit]:
+        kind = "promotion-eligible recent base" if eligible_rank == 0 else "diagnostic recent base"
+        suffix = "" if not warnings else " warnings=" + ",".join(warnings)
+        out.append((cfg, f"{kind} {run_id} scope={scope_policy}{suffix}"))
+    return out
 
 
 def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0) -> List[Tuple[str, Dict[str, Any], str]]:
@@ -431,7 +540,12 @@ def main() -> int:
         if not proposals:
             print("No novel one-change proposals remain across the robust best path and focused fallback; pause instead of repeating runs")
             return 0
+        deadline_seconds = int(os.environ.get("AUTORESEARCH_DEADLINE_SECONDS", "0") or 0)
+        deadline = time.monotonic() + deadline_seconds if deadline_seconds > 0 else None
         for name, cfg, reason in proposals:
+            if deadline is not None and time.monotonic() > deadline - 90:
+                print("AutoResearch deadline is near; stopping before launching another experiment", flush=True)
+                break
             cfg_path = CONFIGS / name
             _dump_config_with_comment(cfg_path, cfg, reason)
             print(f"Running generated experiment {cfg_path.name}: {reason}", flush=True)

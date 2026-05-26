@@ -83,11 +83,11 @@ def active_autoresearch_processes() -> list[str]:
 def choose_proposals(load1: float, mem_gib: float) -> int:
     # Idle machine: exploit the slack.  Moderate machine: still useful.  Busy: tiny pulse.
     if load1 <= MAX_LOAD_SOFT and mem_gib >= 64:
-        return int(os.environ.get("SCROLL_RESEARCH_PROPOSALS_IDLE", "8"))
+        return int(os.environ.get("SCROLL_RESEARCH_PROPOSALS_IDLE", "4"))
     if load1 <= MAX_LOAD_HARD and mem_gib >= MIN_MEM_SOFT_GIB:
-        return int(os.environ.get("SCROLL_RESEARCH_PROPOSALS_NORMAL", "6"))
+        return int(os.environ.get("SCROLL_RESEARCH_PROPOSALS_NORMAL", "2"))
     if load1 <= MAX_LOAD_HARD and mem_gib >= MIN_MEM_HARD_GIB:
-        return int(os.environ.get("SCROLL_RESEARCH_PROPOSALS_LOW", "2"))
+        return int(os.environ.get("SCROLL_RESEARCH_PROPOSALS_LOW", "1"))
     return 0
 
 
@@ -124,6 +124,7 @@ def main() -> int:
         "OPENBLAS_NUM_THREADS": env.get("OPENBLAS_NUM_THREADS", "2"),
         "MKL_NUM_THREADS": env.get("MKL_NUM_THREADS", "2"),
         "NUMEXPR_NUM_THREADS": env.get("NUMEXPR_NUM_THREADS", "2"),
+        "AUTORESEARCH_DEADLINE_SECONDS": env.get("AUTORESEARCH_DEADLINE_SECONDS", str(max(60, TIMEOUT_SECONDS - 30))),
     })
 
     cmd = ["nice", "-n", "15"]

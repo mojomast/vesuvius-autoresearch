@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from autoresearch import _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _propose_best_path, _propose_from_recent_winners, _propose_with_pivots, _search_signature, _set_nested
+import autoresearch
+from autoresearch import _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _promotion_gate, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested
 from experiments.runner import load_config
 
 
@@ -26,7 +30,7 @@ class AutoResearchPivotTest(unittest.TestCase):
             _set_nested(cfg, path, value)
             runs.append({"config": cfg})
 
-        proposals = _propose_with_pivots(base, runs, count=2)
+        proposals = autoresearch._propose_with_pivots(base, runs, count=2)
 
         self.assertTrue(proposals)
         for _name, cfg, _reason in proposals:
@@ -62,7 +66,7 @@ class AutoResearchPivotTest(unittest.TestCase):
     def test_recent_winner_followups_create_second_order_torch_moves(self) -> None:
         winner = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
         _set_nested(winner, ("training", "learning_rate"), 0.003)
-        runs = [{"run_id": "winner", "config": winner, "main_metric": 0.39, "metrics": {"val_f1": 0.39}}]
+        runs = [{"run_id": "winner", "config": winner, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}}]
 
         proposals = _propose_from_recent_winners(runs, count=2)
 
@@ -71,7 +75,7 @@ class AutoResearchPivotTest(unittest.TestCase):
             self.assertIn("torch", cfg["model"]["name"])
             self.assertEqual(cfg["dataset"].get("research_scope"), "multi_segment_robust_expanded")
             self.assertNotIn(_search_signature(cfg), {_search_signature(winner)})
-            self.assertIn("recent winner", reason)
+            self.assertIn("recent base", reason)
 
     def test_recent_winner_followups_prefer_expanded_robust_over_focused_residual_score(self) -> None:
         robust = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
@@ -79,14 +83,50 @@ class AutoResearchPivotTest(unittest.TestCase):
         residual = _prepare_autoresearch_base(load_config("configs/residual_25d_torch_unet_cpu.yaml"))
         _set_nested(residual, ("training", "seed"), 1354)
         runs = [
-            {"run_id": "residual", "config": residual, "main_metric": 0.45, "metrics": {"val_f1": 0.45}},
-            {"run_id": "robust", "config": robust, "main_metric": 0.39, "metrics": {"val_f1": 0.39}},
+            {"run_id": "residual", "config": residual, "main_metric": 0.45, "metrics": {"val_f1": 0.45, "average_precision": 0.3, "precision": 0.3, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "robust", "config": robust, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
         ]
 
         proposals = _propose_from_recent_winners(runs, count=1)
 
         self.assertEqual(proposals[0][1]["dataset"].get("research_scope"), "multi_segment_robust_expanded")
         self.assertIn("robust", proposals[0][2])
+
+    def test_generated_auto_configs_are_reserved_signatures(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        candidate_path, candidate_value, _reason = _proposal_candidates(cfg)[0]
+        reserved_cfg = copy.deepcopy(cfg)
+        _set_nested(reserved_cfg, candidate_path, candidate_value)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            try:
+                (autoresearch.CONFIGS / "auto_reserved.yaml").write_text(autoresearch.yaml.safe_dump(reserved_cfg, sort_keys=False))
+                reserved = _reserved_signatures([])
+                proposals = _propose_configs(cfg, [], count=1, lock_to_baseline_scope=False)
+            finally:
+                autoresearch.CONFIGS = old_configs
+
+        self.assertIn(_search_signature(reserved_cfg), reserved)
+        self.assertTrue(proposals)
+        self.assertNotEqual(_search_signature(proposals[0][1]), _search_signature(reserved_cfg))
+
+    def test_promotion_gate_flags_bad_positive_rate(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        eligible, warnings = _promotion_gate({"config": cfg, "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.1, "recall": 0.9, "pred_positive_rate": 0.8, "val_positive_rate": 0.1}})
+
+        self.assertFalse(eligible)
+        self.assertIn("pred_positive_rate_ratio_suspicious", warnings)
+
+    def test_signature_distinguishes_seed_ensemble_and_threshold(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        ensemble = copy.deepcopy(cfg)
+        ensemble["training"]["seeds"] = [1, 2, 3]
+        thresholded = copy.deepcopy(cfg)
+        thresholded.setdefault("evaluation", {})["threshold"] = 0.35
+
+        self.assertNotEqual(_search_signature(cfg), _search_signature(ensemble))
+        self.assertNotEqual(_search_signature(cfg), _search_signature(thresholded))
 
     def test_best_path_uses_recent_winners_after_static_bases_are_exhausted(self) -> None:
         base = load_config("configs/baseline.yaml")
@@ -98,14 +138,15 @@ class AutoResearchPivotTest(unittest.TestCase):
                 runs.append({"run_id": "tested", "config": cfg, "main_metric": 0.1, "metrics": {"val_f1": 0.1}})
         winner = copy.deepcopy(runs[0]["config"])
         winner["training"]["learning_rate"] = 0.003
-        runs.insert(0, {"run_id": "winner", "config": winner, "main_metric": 0.39, "metrics": {"val_f1": 0.39}})
+        runs.insert(0, {"run_id": "winner", "config": winner, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}})
 
-        proposals = _propose_best_path(base, runs, count=2)
+        with patch("autoresearch._pivot_bases", return_value=[]):
+            proposals = _propose_best_path(base, runs, count=2)
 
         self.assertTrue(proposals)
         for _name, cfg, reason in proposals:
             self.assertIn("torch", cfg["model"]["name"])
-            self.assertIn("recent winner", reason)
+            self.assertIn("recent base", reason)
 
 
 if __name__ == "__main__":

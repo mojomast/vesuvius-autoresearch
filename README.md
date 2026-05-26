@@ -12,7 +12,7 @@ The active workflow uses real Vesuvius data only. If real prepared NPZs or offic
 - Log threshold diagnostics for every run in `metrics_by_threshold.csv` and inspect `best_threshold`, `average_precision`, `pred_positive_rate`, and probability quantiles before trusting a result.
 - Keep AutoResearch proposals interpretable: one change per generated config.
 - Keep each research cycle focused on one data scope. The active baseline uses one train segment and one held-out validation segment; AutoResearch preserves those exact NPZ paths and only changes model/training/evaluation knobs. Add additional segments only by creating an explicit fold config, then compare folds separately.
-- AutoResearch follows the robust/torch best path first: it starts from `robust_multisegment_dice035_expanded.yaml`, then the TTA/seed-ensemble and residual 2.5D configs, with CPU-safe sample bounds for unattended cron. After those static bases are exhausted, it mutates the best recent robust/torch winners before using the old focused NumPy fallback.
+- AutoResearch follows the robust/torch best path first: it starts from `robust_multisegment_dice035_expanded.yaml`, then the TTA/seed-ensemble and residual 2.5D configs, with CPU-safe sample bounds for unattended cron. It reserves generated configs to avoid pending reruns, labels cron output as non-promotable exploration, gates recent bases with AP/precision/recall/positive-rate checks, and tries strategic Tversky, hard-mining, and threshold-calibration moves before using the old focused NumPy fallback.
 - Treat `source: vesuvius_segment_zarr`, `vesuvius_public_segment_zarr`, and validated `prepared_npz` as valid active research sources.
 
 ## Run Artifacts
