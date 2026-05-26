@@ -30,6 +30,17 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[s
     experiments = load_experiments(root)
     datasets = {"summary": dataset_summary(), "prepared": prepared_datasets(root), "fold_maps": fold_maps(root)}
     operations = operations_snapshot(root)
+    progress = build_progress(experiments, datasets, operations)
+    decision = experiments.get("decision", {}) if isinstance(experiments.get("decision"), dict) else {}
+    research_summary = {
+        "status": decision.get("status"),
+        "next_action": decision.get("next_action"),
+        "blocker_counts": decision.get("blocker_counts", {}),
+        "plateau": decision.get("plateau", {}),
+        "staleness": decision.get("staleness", {}),
+        "decision": decision,
+        "champions": experiments.get("champions", {}),
+    }
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -38,7 +49,8 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[s
         "datasets": datasets,
         "configs": load_configs(root),
         "experiments": experiments,
-        "progress": build_progress(experiments, datasets, operations),
+        "progress": progress,
+        "research_summary": research_summary,
         "operations": operations,
         "capabilities": {"enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1", "artifact_preview": True, "standalone": True},
     }

@@ -30,7 +30,8 @@ class AutoResearchPivotTest(unittest.TestCase):
             _set_nested(cfg, path, value)
             runs.append({"config": cfg})
 
-        proposals = autoresearch._propose_with_pivots(base, runs, count=2)
+        with patch("autoresearch._reserved_signatures", side_effect=lambda current_runs: {_search_signature(run.get("config", {})) for run in current_runs}):
+            proposals = autoresearch._propose_with_pivots(base, runs, count=2)
 
         self.assertTrue(proposals)
         for _name, cfg, _reason in proposals:
@@ -56,7 +57,8 @@ class AutoResearchPivotTest(unittest.TestCase):
     def test_best_path_does_not_start_with_focused_numpy_when_robust_available(self) -> None:
         base = load_config("configs/baseline.yaml")
 
-        proposals = _propose_best_path(base, [], count=2)
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            proposals = _propose_best_path(base, [], count=2)
 
         self.assertTrue(proposals)
         for _name, cfg, _reason in proposals:

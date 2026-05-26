@@ -49,6 +49,13 @@ The shared snapshot contract can also be exported with:
 python3 scripts/export_dashboard_snapshot.py --pretty
 ```
 
+For a read-only project state audit in JSON or Markdown:
+
+```bash
+python3 scripts/audit_research_state.py
+python3 scripts/audit_research_state.py --markdown
+```
+
 See `docs/dashboard.md` for data sources, safety rules, and the parallel-development workflow for keeping standalone and host dashboards aligned.
 
 Useful local sanity commands:

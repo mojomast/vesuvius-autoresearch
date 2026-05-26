@@ -35,6 +35,22 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _row_id(row: dict[str, Any]) -> str:
+    fold = str(row.get("heldout_segment", "unknown"))
+    if "seed" in row and row.get("seed") is not None:
+        return f"{fold}:seed={row['seed']}"
+    return fold
+
+
+def _as_float(row: dict[str, Any], key: str) -> float | None:
+    if key not in row or row.get(key) is None:
+        return None
+    try:
+        return float(row[key])
+    except (TypeError, ValueError):
+        return None
+
+
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if rows and all(row.get("dry_run") for row in rows):
         return {
@@ -42,8 +58,21 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "folds_successful": len(rows),
             "folds_failed": 0,
             "dry_run": True,
+            "folds_with_zero_precision_or_recall": [],
+            "folds_with_positive_rate_alarm": [],
+            "promotion_ready": False,
+            "promotion_warnings": ["dry_run_no_promotion_metrics"],
         }
-    successful = [row for row in rows if row.get("returncode", 0) == 0 and "val_f1" in row]
+    promotion_warnings: list[str] = []
+    failed_rows = [row for row in rows if row.get("returncode", 0) != 0]
+    for row in failed_rows:
+        detail = row.get("error")
+        promotion_warnings.append(f"failed_fold:{_row_id(row)}" + (f":{detail}" if detail else ""))
+
+    successful = [row for row in rows if row.get("returncode", 0) == 0 and _as_float(row, "val_f1") is not None]
+    for row in rows:
+        if row.get("returncode", 0) == 0 and row not in successful:
+            promotion_warnings.append(f"missing_or_invalid_val_f1:{_row_id(row)}")
     summary: dict[str, Any] = {
         "folds_requested": len(rows),
         "folds_successful": len(successful),
@@ -53,25 +82,77 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         by_fold: dict[str, list[float]] = {}
         ap_by_fold: dict[str, list[float]] = {}
         by_seed: dict[str, list[float]] = {}
+        ap_by_seed: dict[str, list[float]] = {}
+        all_ap: list[float] = []
+        zero_precision_or_recall: list[str] = []
+        positive_rate_alarm: list[str] = []
         for row in successful:
             fold = str(row["heldout_segment"])
-            by_fold.setdefault(fold, []).append(float(row["val_f1"]))
-            ap_by_fold.setdefault(fold, []).append(float(row.get("average_precision", 0.0)))
+            val_f1 = _as_float(row, "val_f1")
+            average_precision = _as_float(row, "average_precision")
+            if val_f1 is None:
+                promotion_warnings.append(f"invalid_val_f1:{_row_id(row)}")
+                continue
+            if average_precision is None:
+                promotion_warnings.append(f"missing_average_precision:{_row_id(row)}")
+                average_precision = 0.0
+            by_fold.setdefault(fold, []).append(val_f1)
+            ap_by_fold.setdefault(fold, []).append(average_precision)
+            all_ap.append(average_precision)
             if "seed" in row:
-                by_seed.setdefault(str(row["seed"]), []).append(float(row["val_f1"]))
+                seed = str(row["seed"])
+                by_seed.setdefault(seed, []).append(val_f1)
+                ap_by_seed.setdefault(seed, []).append(average_precision)
+
+            precision = _as_float(row, "precision")
+            recall = _as_float(row, "recall")
+            if precision == 0.0 or recall == 0.0:
+                zero_precision_or_recall.append(_row_id(row))
+
+            pred_positive_rate = _as_float(row, "pred_positive_rate")
+            val_positive_rate = _as_float(row, "val_positive_rate")
+            if pred_positive_rate is not None and val_positive_rate is not None and val_positive_rate > 0:
+                ratio = pred_positive_rate / val_positive_rate
+                if ratio > 4.0 or ratio < 0.1:
+                    positive_rate_alarm.append(_row_id(row))
         per_fold_f1 = {fold: float(statistics.mean(values)) for fold, values in by_fold.items()}
         per_fold_ap = {fold: float(statistics.mean(values)) for fold, values in ap_by_fold.items()}
+        worst_fold_id = min(per_fold_f1, key=per_fold_f1.get)
         summary.update({
             "median_val_f1": float(statistics.median(per_fold_f1.values())),
             "mean_val_f1": float(statistics.mean(per_fold_f1.values())),
             "min_val_f1": float(min(per_fold_f1.values())),
             "max_val_f1": float(max(per_fold_f1.values())),
             "mean_average_precision": float(statistics.mean(per_fold_ap.values())),
+            "median_average_precision": float(statistics.median(all_ap)),
+            "worst_fold_val_f1": float(per_fold_f1[worst_fold_id]),
+            "worst_fold_id": worst_fold_id,
             "per_fold_val_f1": per_fold_f1,
             "per_fold_average_precision": per_fold_ap,
+            "folds_with_zero_precision_or_recall": zero_precision_or_recall,
+            "folds_with_positive_rate_alarm": positive_rate_alarm,
         })
         if by_seed:
             summary["per_seed_mean_val_f1"] = {seed: float(statistics.mean(values)) for seed, values in by_seed.items()}
+            per_seed_median = {seed: float(statistics.median(values)) for seed, values in by_seed.items()}
+            summary["per_seed_median_val_f1"] = per_seed_median
+            summary["per_seed_min_val_f1"] = {seed: float(min(values)) for seed, values in by_seed.items()}
+            summary["per_seed_mean_average_precision"] = {seed: float(statistics.mean(values)) for seed, values in ap_by_seed.items()}
+            summary["median_over_seeds_median_val_f1"] = float(statistics.median(per_seed_median.values()))
+            summary["worst_seed_median_val_f1"] = float(min(per_seed_median.values()))
+
+        for row_id in zero_precision_or_recall:
+            promotion_warnings.append(f"zero_precision_or_recall:{row_id}")
+        for row_id in positive_rate_alarm:
+            promotion_warnings.append(f"positive_rate_alarm:{row_id}")
+    else:
+        summary["folds_with_zero_precision_or_recall"] = []
+        summary["folds_with_positive_rate_alarm"] = []
+        if rows:
+            promotion_warnings.append("no_successful_folds")
+
+    summary["promotion_warnings"] = promotion_warnings
+    summary["promotion_ready"] = bool(successful) and not promotion_warnings
     return summary
 
 

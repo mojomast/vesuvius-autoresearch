@@ -52,9 +52,102 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertTrue(snapshot["project"]["exists"])
         self.assertEqual(snapshot["experiments"]["count"], 1)
         self.assertEqual(snapshot["experiments"]["latest"]["run_id"], "run1")
+        self.assertIn("next_action", snapshot["research_summary"])
+        self.assertIn("blocker_counts", snapshot["research_summary"])
         self.assertIn("inventory", snapshot)
         self.assertIn("progress", snapshot)
         self.assertFalse(snapshot["capabilities"]["enable_runs"])
+
+    def test_snapshot_separates_peak_robust_and_promotable_champions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs").mkdir()
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+
+                def insert(run_id: str, timestamp: str, cfg: dict, metrics: dict, main_metric: float) -> None:
+                    artifact_dir = root / "experiments" / "runs" / run_id
+                    artifact_dir.mkdir(parents=True)
+                    conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", (run_id, timestamp, json.dumps(cfg), main_metric, json.dumps(metrics), str(artifact_dir)))
+
+                base_eval = {"evaluation": {"main_metric": "val_f1"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
+                insert(
+                    "peak_only",
+                    "2026-05-26T00:03:00Z",
+                    {**base_eval, "model": {"name": "tiny_numpy"}, "dataset": {"research_scope": "focused_single_segment"}},
+                    {"val_f1": 0.90, "average_precision": 0.50, "precision": 0.8, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+                    0.90,
+                )
+                insert(
+                    "robust_blocked",
+                    "2026-05-26T00:02:00Z",
+                    {**base_eval, "model": {"name": "tiny_torch_unet"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}},
+                    {"val_f1": 0.70, "average_precision": 0.40, "precision": 0.7, "recall": 0.7, "pred_positive_rate": 0.9, "val_positive_rate": 0.1},
+                    0.70,
+                )
+                insert(
+                    "promotable_lower",
+                    "2026-05-26T00:01:00Z",
+                    {**base_eval, "model": {"name": "tiny_torch_unet"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}},
+                    {"val_f1": 0.60, "average_precision": 0.35, "precision": 0.7, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+                    0.60,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        champions = snapshot["experiments"]["champions"]
+        self.assertEqual(champions["peak_score"]["run_id"], "peak_only")
+        self.assertEqual(champions["robust_candidate"]["run_id"], "robust_blocked")
+        self.assertEqual(champions["promotion_eligible"]["run_id"], "promotable_lower")
+        self.assertIn("peak_score", next(run for run in snapshot["experiments"]["recent"] if run["run_id"] == "peak_only")["champion_classes"])
+        self.assertIn("robust_candidate", next(run for run in snapshot["experiments"]["recent"] if run["run_id"] == "robust_blocked")["champion_classes"])
+        self.assertIn("promotion_eligible", next(run for run in snapshot["experiments"]["recent"] if run["run_id"] == "promotable_lower")["champion_classes"])
+
+    def test_snapshot_classifies_promotion_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "blocked"
+            run_dir.mkdir(parents=True)
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute(
+                    "INSERT INTO experiments VALUES (?,?,?,?,?,?)",
+                    (
+                        "blocked",
+                        "2026-05-26T00:00:00Z",
+                        json.dumps(cfg),
+                        0.4,
+                        json.dumps({"val_f1": 0.4, "average_precision": 0.2, "precision": 0.0, "recall": 0.8, "pred_positive_rate": 0.8, "val_positive_rate": 0.1}),
+                        str(run_dir),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        codes = {blocker["code"] for blocker in run["promotion_blockers"]}
+        self.assertEqual(run["promotion_status"], "blocked")
+        self.assertIn("zero_precision_or_recall", codes)
+        self.assertIn("pred_positive_rate_ratio_suspicious", codes)
+        self.assertEqual(snapshot["research_summary"]["decision"]["blocker_counts"]["zero_precision_or_recall"], 1)
+        self.assertEqual(snapshot["research_summary"]["blocker_counts"]["zero_precision_or_recall"], 1)
+        self.assertIn("next_action", snapshot["research_summary"]["decision"])
+        self.assertIsInstance(snapshot["research_summary"]["next_action"], str)
 
     def test_artifact_preview_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -22,6 +22,151 @@ def _metric_direction(run: dict[str, Any]) -> int:
     return 1 if "loss" in metric else -1
 
 
+def _metric_value(run: dict[str, Any]) -> float | None:
+    metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+    metric_name = str(_get_nested(run.get("config", {}), ("evaluation", "main_metric"), "val_loss"))
+    value = metrics.get(metric_name, run.get("main_metric"))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_quality_score(run: dict[str, Any]) -> float:
+    metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+    score = float(metrics.get("val_f1") or run.get("main_metric") or 0.0)
+    score += 0.25 * float(metrics.get("average_precision") or 0.0)
+    score += 0.10 * float(metrics.get("val_f05") or 0.0)
+    pred_rate = metrics.get("pred_positive_rate")
+    val_rate = metrics.get("val_positive_rate")
+    if pred_rate is not None and val_rate is not None:
+        ratio = float(pred_rate) / max(float(val_rate), 1e-6)
+        if ratio > 3.0:
+            score -= min(0.25, 0.03 * (ratio - 3.0))
+        elif ratio < 0.25:
+            score -= min(0.25, 0.03 * (0.25 / max(ratio, 1e-6)))
+    score -= 0.01 * len(run.get("promotion_blockers") or [])
+    return score
+
+
+def _scope_priority(scope: str, scope_policy: str) -> int:
+    label = f"{scope} {scope_policy}"
+    if "multi_segment_robust_expanded_tta_ensemble" in label:
+        return 0
+    if "multi_segment_robust_expanded" in label:
+        return 1
+    if "expanded_multi_segment" in label or "expanded_leave_one_out" in label:
+        return 2
+    if "multi_segment" in label:
+        return 3
+    if "focused_pair_residual_25d_cpu" in label:
+        return 4
+    return 5
+
+
+def _is_robust_candidate(run: dict[str, Any]) -> bool:
+    cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+    dataset = cfg.get("dataset", {}) if isinstance(cfg.get("dataset"), dict) else {}
+    autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+    model_name = str(_get_nested(cfg, ("model", "name"), ""))
+    scope = str(dataset.get("research_scope") or "")
+    scope_policy = str(autoresearch.get("scope_policy") or scope)
+    label = f"{model_name} {scope} {scope_policy}".lower()
+    return "torch" in label and any(token in label for token in ("multi_segment_robust", "expanded_multi_segment", "expanded_leave_one_out", "focused_pair_residual_25d_cpu"))
+
+
+def _promotion_blockers(run: dict[str, Any]) -> list[dict[str, str]]:
+    cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+    metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+    blockers: list[dict[str, str]] = []
+
+    def add(code: str, category: str, severity: str = "blocker") -> None:
+        blockers.append({"code": code, "category": category, "severity": severity})
+
+    if metrics.get("val_f1") is None:
+        add("missing_val_f1", "metrics")
+    if metrics.get("average_precision") is None:
+        add("missing_average_precision", "metrics")
+    if float(metrics.get("precision") or 0.0) <= 0.0 or float(metrics.get("recall") or 0.0) <= 0.0:
+        add("zero_precision_or_recall", "calibration")
+    pred_rate = metrics.get("pred_positive_rate")
+    val_rate = metrics.get("val_positive_rate")
+    if pred_rate is not None and val_rate is not None:
+        ratio = float(pred_rate) / max(float(val_rate), 1e-6)
+        if ratio > 4.0 or ratio < 0.1:
+            add("pred_positive_rate_ratio_suspicious", "calibration")
+    checks = metrics.get("promotion_checks") or {}
+    if isinstance(checks, dict) and checks.get("eligible") is False:
+        add("promotion_checks_ineligible", "promotion_checks")
+    if cfg.get("autoresearch", {}).get("cron_safety"):
+        add("cron_safety_run_not_promotable", "policy")
+    scope = str(cfg.get("dataset", {}).get("research_scope") or cfg.get("autoresearch", {}).get("scope_policy") or "")
+    if "multi_segment" not in scope and "leave_one_out" not in scope:
+        add("not_multisegment_scope", "validation")
+    mode = str(run.get("validation_setup", {}).get("mode") or "unknown")
+    if mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
+        add("validation_not_held_out", "validation")
+    return blockers
+
+
+def _compact_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(run, dict):
+        return None
+    return {
+        "run_id": run.get("run_id"),
+        "timestamp": run.get("timestamp"),
+        "main_metric": run.get("main_metric"),
+        "metrics": run.get("metrics", {}),
+        "validation_setup": run.get("validation_setup", {}),
+        "promotion_status": run.get("promotion_status"),
+        "promotion_blockers": run.get("promotion_blockers", []),
+        "champion_class": run.get("champion_class"),
+        "champion_classes": run.get("champion_classes", []),
+    }
+
+
+def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, robust: dict[str, Any] | None, promotable: dict[str, Any] | None) -> dict[str, Any]:
+    blocker_counts: dict[str, int] = {}
+    for run in runs:
+        for blocker in run.get("promotion_blockers") or []:
+            code = str(blocker.get("code") or "unknown")
+            blocker_counts[code] = blocker_counts.get(code, 0) + 1
+
+    chronological = list(reversed(runs))
+    peak_index = next((idx for idx, run in enumerate(chronological) if peak and run.get("run_id") == peak.get("run_id")), None)
+    stale_runs_since_peak = (len(chronological) - peak_index - 1) if peak_index is not None else None
+    window = chronological[-5:]
+    values = [_metric_value(run) for run in window]
+    values = [value for value in values if value is not None]
+    plateau_delta = (max(values) - min(values)) if len(values) >= 2 else None
+    plateau_window = len(values)
+    plateau_epsilon = 0.002
+    plateau_detected = plateau_delta is not None and plateau_window >= 5 and plateau_delta <= plateau_epsilon
+
+    if promotable:
+        next_action = f"Promote or seed-repeat verify {promotable.get('run_id')} before release."
+        status = "promotion_eligible"
+    elif robust:
+        top = robust.get("promotion_blockers") or []
+        suffix = f"; top blocker: {top[0].get('code')}" if top else ""
+        next_action = f"Resolve blockers for robust candidate {robust.get('run_id')}{suffix}."
+        status = "blocked"
+    elif peak:
+        next_action = f"Convert peak run {peak.get('run_id')} into a robust held-out candidate."
+        status = "needs_robust_candidate"
+    else:
+        next_action = "Run a held-out validation experiment before promotion review."
+        status = "no_runs"
+
+    return {
+        "status": status,
+        "next_action": next_action,
+        "blocker_counts": dict(sorted(blocker_counts.items())),
+        "plateau": {"detected": plateau_detected, "window_runs": plateau_window, "metric_delta": plateau_delta, "epsilon": plateau_epsilon},
+        "staleness": {"stale_runs_since_peak": stale_runs_since_peak, "peak_run_id": peak.get("run_id") if peak else None},
+    }
+
+
 def _validation_setup(run: dict[str, Any]) -> dict[str, Any]:
     cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
     setup = cfg.get("validation_setup") if isinstance(cfg.get("validation_setup"), dict) else {}
@@ -62,7 +207,7 @@ def _config_diff(before: dict[str, Any] | None, after: dict[str, Any] | None, li
 
 def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
     db_path = project_root / "experiments" / "experiments.db"
-    empty = {"count": 0, "best": None, "latest": None, "recent": [], "metric_trends": [], "validation_matrix": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
+    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None), "metric_trends": [], "validation_matrix": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
     if not db_path.exists():
         return empty
     try:
@@ -82,10 +227,28 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         run = {"run_id": row["run_id"], "timestamp": row["timestamp"], "main_metric": float(row["main_metric"]), "metrics": json.loads(row["secondary_metrics_json"] or "{}"), "config": json.loads(row["config_json"] or "{}"), "artifact_dir": row["artifact_dir"]}
         run["validation_setup"] = _validation_setup(run)
         run["artifacts"] = list_artifact_files(row["artifact_dir"])
+        run["promotion_blockers"] = _promotion_blockers(run)
+        run["promotion_status"] = "eligible" if not run["promotion_blockers"] else "blocked"
+        run["champion_class"] = None
+        run["champion_classes"] = []
         return run
 
     runs = [row_to_run(row) for row in rows]
     best = min(runs, key=lambda run: _metric_direction(run) * float(run.get("main_metric", 0.0)), default=None)
+    robust_candidates = [run for run in runs if _is_robust_candidate(run)]
+    robust = min(
+        robust_candidates,
+        key=lambda run: (_scope_priority(str(_get_nested(run.get("config", {}), ("dataset", "research_scope"), "")), str(_get_nested(run.get("config", {}), ("autoresearch", "scope_policy"), ""))), _metric_direction(run) * float(run.get("main_metric", 0.0))),
+        default=None,
+    )
+    eligible_runs = [run for run in runs if run.get("promotion_status") == "eligible"]
+    promotable = max(eligible_runs, key=_run_quality_score, default=None)
+    for label, run in (("peak_score", best), ("robust_candidate", robust), ("promotion_eligible", promotable)):
+        if isinstance(run, dict):
+            run.setdefault("champion_classes", []).append(label)
+    for run in runs:
+        classes = run.get("champion_classes") or []
+        run["champion_class"] = ",".join(classes) if classes else None
     latest = runs[0] if runs else None
     previous = runs[1] if len(runs) > 1 else None
     baseline = runs[-1] if runs else None
@@ -108,6 +271,8 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         "best": best,
         "latest": latest,
         "recent": runs,
+        "champions": {"peak_score": _compact_run(best), "robust_candidate": _compact_run(robust), "promotion_eligible": _compact_run(promotable)},
+        "decision": _decision_snapshot(runs, best, robust, promotable),
         "metric_trends": [{"run_id": r["run_id"], "timestamp": r["timestamp"], "main_metric": r["main_metric"], "val_f1": r.get("metrics", {}).get("val_f1"), "average_precision": r.get("metrics", {}).get("average_precision")} for r in chronological],
         "validation_matrix": sorted(matrix.values(), key=lambda item: (item["train_segment_id"], item["val_segment_id"])),
         "config_diffs": {"latest_vs_previous": _config_diff(previous.get("config") if previous else None, latest.get("config") if latest else None), "latest_vs_best": _config_diff(best.get("config") if best else None, latest.get("config") if latest else None), "latest_vs_baseline": _config_diff(baseline.get("config") if baseline else None, latest.get("config") if latest else None)},

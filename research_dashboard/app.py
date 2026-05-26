@@ -538,24 +538,24 @@ HTML = """<!doctype html>
     <!-- Scorecard row -->
     <section class="telemetry-row">
       <div class="panel">
-        <h2>Best F1 Score</h2>
+        <h2>Peak Score</h2>
         <div class="panel-val" id="best-f1">-</div>
-        <p class="panel-detail" id="best-f1-detail">Best run ID</p>
+        <p class="panel-detail" id="best-f1-detail">Peak run ID</p>
       </div>
       <div class="panel">
-        <h2>Latest Run F1</h2>
-        <div class="panel-val" id="latest-f1">-</div>
-        <p class="panel-detail" id="latest-f1-detail">Latest run ID</p>
+        <h2>Robust Champion</h2>
+        <div class="panel-val" id="robust-f1">-</div>
+        <p class="panel-detail" id="robust-detail">Robust candidate</p>
       </div>
       <div class="panel">
-        <h2>Ink Calibration</h2>
-        <div class="panel-val" id="calibration-val">-</div>
-        <p class="panel-detail" id="calibration-detail">Sanity state</p>
+        <h2>Promotion Eligible</h2>
+        <div class="panel-val" id="promote-f1">-</div>
+        <p class="panel-detail" id="promote-detail">Promotion gate</p>
       </div>
       <div class="panel">
-        <h2>System Lock & Ops</h2>
+        <h2>Decision Brief</h2>
         <div class="panel-val" id="ops-lock-status">-</div>
-        <p class="panel-detail" id="ops-process-detail">Live processes</p>
+        <p class="panel-detail" id="ops-process-detail">Next action</p>
       </div>
     </section>
 
@@ -738,22 +738,28 @@ HTML = """<!doctype html>
       const score = rawData.progress.scorecard || {};
       const summary = rawData.progress.summary || {};
       const sanity = rawData.progress.sanity || {};
+      const decision = rawData.research_summary?.decision || rawData.experiments.decision || {};
+      const champions = rawData.research_summary?.champions || rawData.experiments.champions || {};
+      const peak = champions.peak_score || rawData.experiments.best || {};
+      const robust = champions.robust_candidate || {};
+      const promotable = champions.promotion_eligible || {};
+      const blockerCounts = decision.blocker_counts || summary.blocker_counts || {};
+      const blockerText = Object.entries(blockerCounts).slice(0, 2).map(([k, v]) => `${k}:${v}`).join(', ') || 'none';
       
-      document.getElementById('best-f1').textContent = fmt(score.best);
-      document.getElementById('best-f1-detail').innerHTML = `<span class="run-pill" style="cursor:pointer;" onclick="selectRun('${score.best_run_id}')">${esc(score.best_run_id ? score.best_run_id.slice(0, 8) : 'n/a')}</span> · gain ${fmt(score.gain_vs_baseline, 4)}`;
+      document.getElementById('best-f1').textContent = fmt(peak.metrics?.val_f1 ?? score.best);
+      document.getElementById('best-f1-detail').innerHTML = `<span class="run-pill" style="cursor:pointer;" onclick="selectRun('${peak.run_id || score.best_run_id}')">${esc((peak.run_id || score.best_run_id || 'n/a').slice(0, 8))}</span> · gain ${fmt(score.gain_vs_baseline, 4)}`;
       
-      document.getElementById('latest-f1').textContent = fmt(score.latest);
-      document.getElementById('latest-f1-detail').innerHTML = `<span class="run-pill" style="cursor:pointer;" onclick="selectRun('${score.latest_run_id}')">${esc(score.latest_run_id ? score.latest_run_id.slice(0, 8) : 'n/a')}</span> · percent ${summary.percent}%`;
-      
-      const ratio = sanity.pred_positive_rate && sanity.val_positive_rate ? (parseFloat(sanity.pred_positive_rate) / Math.max(parseFloat(sanity.val_positive_rate), 1e-12)) : 1.0;
-      document.getElementById('calibration-val').textContent = `${ratio.toFixed(2)}x`;
-      document.getElementById('calibration-val').className = `panel-val ${sanity.status === 'ok' ? 'badge-success' : 'badge-warning'}`;
-      document.getElementById('calibration-detail').innerHTML = `<span class="indicator-badge ${sanity.status === 'ok' ? 'badge-success':'badge-warning'}">${esc(sanity.status)}</span> · val ${fmt(sanity.val_positive_rate, 3)} vs pred ${fmt(sanity.pred_positive_rate, 3)}`;
+      document.getElementById('robust-f1').textContent = fmt(robust.metrics?.val_f1 ?? robust.main_metric);
+      document.getElementById('robust-detail').innerHTML = robust.run_id ? `<span class="run-pill" style="cursor:pointer;" onclick="selectRun('${robust.run_id}')">${esc(robust.run_id.slice(0, 8))}</span> · ${esc(robust.promotion_status || 'unknown')}` : 'No robust candidate';
+
+      document.getElementById('promote-f1').textContent = fmt(promotable.metrics?.val_f1 ?? promotable.main_metric);
+      document.getElementById('promote-f1').className = `panel-val ${promotable.run_id ? 'badge-success' : 'badge-warning'}`;
+      document.getElementById('promote-detail').innerHTML = promotable.run_id ? `<span class="run-pill" style="cursor:pointer;" onclick="selectRun('${promotable.run_id}')">${esc(promotable.run_id.slice(0, 8))}</span> · eligible` : `blocked · ${esc(blockerText)}`;
       
       const ops = rawData.operations || {};
-      document.getElementById('ops-lock-status').textContent = ops.lock_active ? "LOCKED" : "IDLE";
-      document.getElementById('ops-lock-status').className = `panel-val ${ops.lock_active ? 'badge-warning' : 'badge-success'}`;
-      document.getElementById('ops-process-detail').textContent = `${(ops.processes || []).length} active runs · next: LOO Repeat`;
+      document.getElementById('ops-lock-status').textContent = ops.lock_active ? "LOCKED" : esc(decision.status || summary.status || 'IDLE').toUpperCase().slice(0, 14);
+      document.getElementById('ops-lock-status').className = `panel-val ${ops.lock_active || decision.status === 'blocked' ? 'badge-warning' : 'badge-success'}`;
+      document.getElementById('ops-process-detail').textContent = `${(ops.processes || []).length} active runs · next: ${decision.next_action || summary.next_action || 'review'}`;
       
       // Auto-select latest run initially if nothing selected
       if (!selectedRunId && score.latest_run_id) {
