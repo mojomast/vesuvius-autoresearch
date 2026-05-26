@@ -24,6 +24,36 @@ Each experiment writes:
 - `weights.npy`: tiny NumPy logistic-regression weights.
 - `run_summary.md`: human-readable steering summary.
 
+## Next-Best Move Protocols
+
+The current next moves are documented in `docs/next_best_moves_may2026.md` and sketched in `configs/next_best_moves_robust_template.yaml`. Treat them as promotion protocols, not one-off sweep ideas:
+
+- Seed-repeat leave-one-out: run each LOO fold across several seeds and promote by median-over-seeds, then median-over-folds.
+- Safe data expansion: add labeled public segments only through explicit fold maps; never mix a held-out segment into its training NPZ.
+- Full-tile inference: validate thresholded predictions on uniformly tiled validation regions, not only positive-biased sampled patches.
+- TTA/seed ensembling: average flip TTA and independent seed probabilities only after single-seed LOO behavior is understood.
+- 2.5D residual U-Net: prepare multi-z-channel NPZs first, then test a residual U-Net family behind the same LOO gate.
+
+Useful local sanity commands:
+
+```bash
+python scripts/evaluate_leave_one_out.py \
+  --base-config configs/robust_multisegment_dice035_expanded.yaml \
+  --fold-map data/real_cross_folds_expanded_combined/fold_map.json \
+  --output-jsonl logs/robust_multisegment_dice035_expanded_seed11001_loo.jsonl \
+  --summary-json logs/robust_multisegment_dice035_expanded_seed11001_loo.summary.json \
+  --dry-run
+
+python scripts/prepare_vesuvius_segment_npz.py \
+  --segment-id 20230827161847 \
+  --catalog-source public-directory \
+  --output-dir data/real_25d/segment_20230827161847 \
+  --patch-size 64 \
+  --z-offsets=-8,-4,0,4,8 \
+  --val-tiled \
+  --val-stride 64
+```
+
 ## Real Vesuvius Data Ingestion
 
 The runner consumes prepared NPZ files with this schema:

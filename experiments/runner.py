@@ -412,15 +412,18 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     try:
         import torch
         import torch.nn as nn
+        import torch.nn.functional as F
         from torch.utils.data import DataLoader, TensorDataset
     except ImportError as exc:
-        raise ImportError("model.name=tiny_torch_unet requires PyTorch installed in the project venv") from exc
+        raise ImportError("model.name=tiny_torch_unet or residual_25d_torch_unet requires PyTorch installed in the project venv") from exc
 
     tr = np.load(train_npz); va = np.load(val_npz)
     Xtr_img, ytr_img = tr["images"].astype(np.float32), tr["labels"].astype(np.float32)
     Xva_img, yva_img = va["images"].astype(np.float32), va["labels"].astype(np.float32)
     model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
+    eval_cfg = cfg.get("evaluation", {})
+    model_name = str(model_cfg.get("name", "tiny_torch_unet"))
     base = int(model_cfg.get("base_channels", 8))
     epochs = int(train_cfg.get("epochs", 3))
     batch_size = int(train_cfg.get("batch_size", 8))
@@ -435,11 +438,25 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     tversky_beta = float(train_cfg.get("tversky_beta", 0.7))
     focal_tversky_gamma = float(train_cfg.get("focal_tversky_gamma", 1.0))
     augment_flips = bool(train_cfg.get("augment_flips", False))
+    tta_flips = bool(eval_cfg.get("tta_flips", eval_cfg.get("test_time_flips", False)))
+    raw_seeds = train_cfg.get("seeds", None)
+    ensemble_seeds = [int(s) for s in raw_seeds] if raw_seeds is not None else [seed]
+    if not ensemble_seeds:
+        raise ValueError("training.seeds must contain at least one seed when provided")
     pos_weight = _resolve_pos_weight(train_cfg.get("pos_weight", "auto"), ytr_img.reshape(-1))
-    threshold = float(cfg.get("evaluation", {}).get("threshold", 0.5))
-    torch.manual_seed(seed)
+    threshold = float(eval_cfg.get("threshold", 0.5))
     torch.set_num_threads(max(1, num_threads))
     device = torch.device("cuda" if bool(train_cfg.get("allow_cuda", False)) and torch.cuda.is_available() else "cpu")
+
+    def seed_everything(run_seed: int) -> None:
+        np.random.seed(run_seed)
+        torch.manual_seed(run_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(run_seed)
+        if bool(train_cfg.get("deterministic", True)):
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
 
     if max_train_samples > 0 and Xtr_img.shape[0] > max_train_samples:
         idx, sampling_metrics = _sample_patch_indices(Xtr_img, ytr_img, max_train_samples, seed, train_cfg)
@@ -477,12 +494,76 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
                 x = nn.functional.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
             return self.out(self.dec(torch.cat([x, skip], dim=1)))
 
-    model = TinyUNet(Xtr_img.shape[1], base).to(device)
+    class ResidualBlock(nn.Module):
+        def __init__(self, cin: int, cout: int):
+            super().__init__()
+            groups = max(g for g in range(1, min(8, cout) + 1) if cout % g == 0)
+            self.proj = nn.Conv2d(cin, cout, 1) if cin != cout else nn.Identity()
+            self.net = nn.Sequential(
+                nn.Conv2d(cin, cout, 3, padding=1, bias=False), nn.GroupNorm(groups, cout), nn.SiLU(inplace=True),
+                nn.Conv2d(cout, cout, 3, padding=1, bias=False), nn.GroupNorm(groups, cout),
+            )
+            self.act = nn.SiLU(inplace=True)
+        def forward(self, x):
+            return self.act(self.net(x) + self.proj(x))
+
+    class Residual25DUNet(nn.Module):
+        def __init__(self, cin: int, channels: int):
+            super().__init__()
+            self.stem = nn.Sequential(nn.Conv2d(cin, channels, 1), nn.SiLU(inplace=True))
+            self.enc1 = ResidualBlock(channels, channels)
+            self.pool1 = nn.MaxPool2d(2)
+            self.enc2 = ResidualBlock(channels, channels * 2)
+            self.pool2 = nn.MaxPool2d(2)
+            self.mid = ResidualBlock(channels * 2, channels * 4)
+            self.up2 = nn.ConvTranspose2d(channels * 4, channels * 2, 2, stride=2)
+            self.dec2 = ResidualBlock(channels * 4, channels * 2)
+            self.up1 = nn.ConvTranspose2d(channels * 2, channels, 2, stride=2)
+            self.dec1 = ResidualBlock(channels * 2, channels)
+            self.out = nn.Conv2d(channels, 1, 1)
+        def forward(self, x):
+            x = self.stem(x)
+            s1 = self.enc1(x)
+            s2 = self.enc2(self.pool1(s1))
+            x = self.up2(self.mid(self.pool2(s2)))
+            if x.shape[-2:] != s2.shape[-2:]:
+                x = F.interpolate(x, size=s2.shape[-2:], mode="bilinear", align_corners=False)
+            x = self.dec2(torch.cat([x, s2], dim=1))
+            x = self.up1(x)
+            if x.shape[-2:] != s1.shape[-2:]:
+                x = F.interpolate(x, size=s1.shape[-2:], mode="bilinear", align_corners=False)
+            return self.out(self.dec1(torch.cat([x, s1], dim=1)))
+
+    def build_model():
+        if model_name == "tiny_torch_unet":
+            return TinyUNet(Xtr_img.shape[1], base).to(device)
+        if model_name in {"residual_25d_torch_unet", "torch_residual_25d_unet"}:
+            return Residual25DUNet(Xtr_img.shape[1], base).to(device)
+        raise ValueError(f"Unknown torch model.name: {model_name}")
+
     ds = TensorDataset(torch.from_numpy(Xtr_img), torch.from_numpy(ytr_img))
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], dtype=torch.float32, device=device))
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    losses = []
+
+    def predict(model):
+        model.eval()
+        batch_probs = []
+        with torch.no_grad():
+            for start in range(0, Xva_img.shape[0], batch_size):
+                x_np = Xva_img[start:start + batch_size]
+                xb = torch.from_numpy(x_np).to(device)
+                pred_sum = torch.sigmoid(model(xb))
+                pred_count = 1
+                if tta_flips:
+                    pred_sum = pred_sum + torch.flip(torch.sigmoid(model(torch.flip(xb, dims=[3]))), dims=[3])
+                    pred_sum = pred_sum + torch.flip(torch.sigmoid(model(torch.flip(xb, dims=[2]))), dims=[2])
+                    pred_sum = pred_sum + torch.flip(torch.sigmoid(model(torch.flip(xb, dims=[2, 3]))), dims=[2, 3])
+                    pred_count = 4
+                batch_probs.append((pred_sum / pred_count).detach().cpu().numpy())
+        return np.concatenate(batch_probs, axis=0)
+
+    all_probs = []
+    model_paths = []
+    losses_by_seed = []
     def dice_loss(logits, target):
         probs = torch.sigmoid(logits)
         dims = (1, 2, 3)
@@ -502,53 +583,69 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
             loss = loss.pow(focal_tversky_gamma)
         return loss.mean()
 
-    for _epoch in range(epochs):
-        model.train()
-        epoch_losses = []
-        for xb, yb in loader:
-            xb = xb.to(device); yb = yb.to(device)
-            opt.zero_grad(set_to_none=True)
-            logits = model(xb)
-            loss = criterion(logits, yb)
-            if dice_loss_weight:
-                loss = loss + dice_loss_weight * dice_loss(logits, yb)
-            if tversky_loss_weight:
-                loss = loss + tversky_loss_weight * tversky_loss(logits, yb)
-            loss.backward()
-            opt.step()
-            epoch_losses.append(float(loss.detach().cpu()))
-        losses.append(float(np.mean(epoch_losses)) if epoch_losses else None)
+    for ensemble_idx, run_seed in enumerate(ensemble_seeds):
+        seed_everything(run_seed)
+        model = build_model()
+        loader_generator = torch.Generator()
+        loader_generator.manual_seed(run_seed)
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=True, generator=loader_generator, num_workers=0)
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        losses = []
+        for _epoch in range(epochs):
+            model.train()
+            epoch_losses = []
+            for xb, yb in loader:
+                xb = xb.to(device); yb = yb.to(device)
+                opt.zero_grad(set_to_none=True)
+                logits = model(xb)
+                loss = criterion(logits, yb)
+                if dice_loss_weight:
+                    loss = loss + dice_loss_weight * dice_loss(logits, yb)
+                if tversky_loss_weight:
+                    loss = loss + tversky_loss_weight * tversky_loss(logits, yb)
+                loss.backward()
+                opt.step()
+                epoch_losses.append(float(loss.detach().cpu()))
+            losses.append(float(np.mean(epoch_losses)) if epoch_losses else None)
+        losses_by_seed.append(losses)
+        all_probs.append(predict(model))
+        suffix = "" if len(ensemble_seeds) == 1 else f"_seed{run_seed}"
+        model_path = artifact_dir / f"model{suffix}.pt"
+        model_paths.append(model_path.name)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(model.state_dict(), model_path)
+        if ensemble_idx == 0 and model_path.name != "model.pt":
+            torch.save(model.state_dict(), artifact_dir / "model.pt")
 
-    model.eval()
-    probs = []
-    with torch.no_grad():
-        for start in range(0, Xva_img.shape[0], batch_size):
-            xb = torch.from_numpy(Xva_img[start:start + batch_size]).to(device)
-            probs.append(torch.sigmoid(model(xb)).detach().cpu().numpy())
-    pv = np.concatenate(probs, axis=0).reshape(-1)
+    pv = np.mean(np.stack(all_probs, axis=0), axis=0).reshape(-1)
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), artifact_dir / "model.pt")
     (artifact_dir / "model_meta.json").write_text(json.dumps({
-        "model_name": "tiny_torch_unet",
+        "model_name": model_name,
         "base_channels": base,
         "device": str(device),
+        "ensemble_seeds": ensemble_seeds,
+        "model_paths": model_paths,
+        "tta_flips": tta_flips,
         "torch_version": torch.__version__,
         "train_samples": int(Xtr_img.shape[0]),
         "batch_size": batch_size,
     }, indent=2, sort_keys=True))
     return _pixel_metrics_from_probs(pv, yva_img.reshape(-1), ytr_img.reshape(-1), threshold, artifact_dir, {
-        "model_name": "tiny_torch_unet",
+        "model_name": model_name,
         "base_channels": base,
         "pos_weight_resolved": pos_weight,
-        "train_loss_last": losses[-1] if losses else None,
+        "train_loss_last": losses_by_seed[-1][-1] if losses_by_seed and losses_by_seed[-1] else None,
         "epochs": epochs,
         "train_samples_used": int(Xtr_img.shape[0]),
+        "ensemble_size": len(ensemble_seeds),
+        "ensemble_seeds": ensemble_seeds,
         "dice_loss_weight": dice_loss_weight,
         "tversky_loss_weight": tversky_loss_weight,
         "tversky_alpha": tversky_alpha,
         "tversky_beta": tversky_beta,
         "focal_tversky_gamma": focal_tversky_gamma,
         "augment_flips": augment_flips,
+        "tta_flips": tta_flips,
         **sampling_metrics,
         "device": str(device),
     })
@@ -584,7 +681,7 @@ def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH)
         metrics = _train_logreg(train_meta["path"], val_meta["path"], cfg, artifact_dir)
     elif model_name == "tiny_numpy_mlp":
         metrics = _train_numpy_mlp(train_meta["path"], val_meta["path"], cfg, artifact_dir)
-    elif model_name == "tiny_torch_unet":
+    elif model_name in {"tiny_torch_unet", "residual_25d_torch_unet", "torch_residual_25d_unet"}:
         metrics = _train_torch_unet(train_meta["path"], val_meta["path"], cfg, artifact_dir)
     else:
         raise ValueError(f"Unknown model.name: {model_name}")

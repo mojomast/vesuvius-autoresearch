@@ -21,13 +21,15 @@ This repo should optimize for reproducible cross-segment ink detection, not isol
 
 ## Near-Term Research Agenda
 
-1. Re-run robust candidates through `scripts/evaluate_leave_one_out.py` on the expanded fold map before promoting any config.
-2. Improve data coverage by preparing additional labeled public segments only after rate limits cool down, then regenerate the fold map.
+1. Re-run robust candidates through `scripts/evaluate_leave_one_out.py` on the expanded fold map with repeated seeds before promoting any config.
+2. Improve data coverage by preparing additional labeled public segments only after rate limits cool down, then regenerate a leakage-safe fold map.
 3. Add threshold-calibrated inference on full validation tiles, because per-pixel F1 on sampled patches can overstate real segment utility.
-4. Add model families that are still small but closer to winning approaches: 2.5D U-Net with more z offsets, residual blocks, and optional pretrained encoders when GPU is available.
-5. Add uncertainty checks: seed ensembles, test-time flip averaging, per-fold probability calibration, and prediction-rate alarms.
+4. Add uncertainty checks: seed ensembles, test-time flip averaging, per-fold probability calibration, and prediction-rate alarms.
+5. Add model families that are still small but closer to winning approaches: 2.5D residual U-Net with more z offsets and optional pretrained encoders when GPU is available.
 6. Add dataset diagnostics: positive coverage maps, train/val region plots, and segment-level metadata summaries.
 7. Compare against public Grand Prize and Kaggle-style baselines before investing in larger sweeps.
+
+See `docs/next_best_moves_may2026.md` for command examples and promotion checks for seed-repeat LOO, safe data expansion, full-tile inference, TTA/seed ensembling, and 2.5D residual U-Net work.
 
 ## Promotion Gate
 
@@ -38,4 +40,6 @@ A config should be considered a robust champion only if it has:
 - No known train/validation segment overlap.
 - Median F1 improvement over the current robust champion or a clear improvement in min-fold behavior.
 - Comparable or improved average precision.
+- Seed-repeat stability when the change affects training or model initialization.
+- Full-tile validation metrics when the change affects data, thresholding, or inference.
 - A short note explaining whether it is a peak-score champion, robust champion, or diagnostic-only run.

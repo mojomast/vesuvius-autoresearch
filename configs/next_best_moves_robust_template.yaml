@@ -1,0 +1,56 @@
+# Planning template for the five next-best moves. Keep runnable experiments on
+# supported model names until residual_25d_torch_unet and ensemble inference land.
+dataset:
+  research_scope: next_best_moves_robust_protocol
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: leave-one-segment-out
+  fold_map: data/real_cross_folds_expanded_combined/fold_map.json
+  z_offsets: [-8, -4, 0, 4, 8]
+  validation_sampling: tiled_full_region
+model:
+  name: tiny_torch_unet
+  planned_name: residual_25d_torch_unet
+  input_mode: z_offsets_as_channels
+  base_channels: 16
+  residual_blocks: true
+training:
+  epochs: 5
+  batch_size: 8
+  learning_rate: 0.002
+  weight_decay: 0.0001
+  pos_weight: auto
+  max_train_samples: 0
+  num_threads: 4
+  seed: 11001
+  seed_repeats: [11001, 11002, 11003]
+  allow_cuda: false
+  dice_loss_weight: 0.35
+  augment_flips: true
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+evaluation_protocol:
+  seed_repeat_leave_one_out:
+    fold_map: data/real_cross_folds_expanded_combined/fold_map.json
+    promote_by: median_over_seeds_then_median_over_folds
+  safe_data_expansion:
+    require_heldout_excluded_from_train_npz: true
+    require_metadata_json: true
+  full_tile_inference:
+    require_val_tiled: true
+    val_stride: 64
+  tta_seed_ensemble:
+    probability_average: true
+    transforms: [identity, hflip, vflip]
+    seeds: [11001, 11002, 11003]
+  residual_25d_unet:
+    status: planned
+    keep_patch_size: 64
+autoresearch:
+  parent_reason: next-best move protocol template after expanded LOO champion
+  scope_policy: seed_repeat_expanded_leave_one_out_full_tile_only
+  promotion_note: diagnostic template until planned model and ensemble inference are implemented
+outputs:
+  runs_dir: experiments/runs

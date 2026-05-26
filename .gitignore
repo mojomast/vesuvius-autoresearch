@@ -2,7 +2,10 @@ __pycache__/
 *.pyc
 .env
 .venv/
-data/
+data/*
+!data/__init__.py
+!data/vesuvius_data.py
+!data/tile_inference.py
 data/prepared/
 archive/synthetic_data/
 archive/synthetic_experiments/

@@ -11,14 +11,12 @@ import argparse
 import json
 import os
 import re
+import time
 import urllib.request
 from io import BytesIO
 from pathlib import Path
 
-import fsspec
 import numpy as np
-from PIL import Image
-import zarr
 
 
 PUBLIC_SEGMENT_BASE = "https://dl.ash2txt.org/other/dev/scrolls/1/segments/54keV_7.91um/"
@@ -76,14 +74,25 @@ def _available_segments(source: str) -> list[dict]:
     return sorted(merged.values(), key=lambda item: item["segment_id"])
 
 
-def _segment_meta(segment_id: str, source: str) -> dict:
-    for item in _available_segments(source):
+def _segment_meta(segment_id: str, source: str, catalog: list[dict] | None = None) -> dict:
+    for item in (catalog if catalog is not None else _available_segments(source)):
         if item["segment_id"] == str(segment_id):
             return item
     raise ValueError(f"Segment {segment_id} not found in Vesuvius {source}")
 
 
+def _load_manifest(path: Path) -> list[dict]:
+    data = json.loads(path.read_text())
+    segments = data.get("segments", data.get("labeled_segments", data)) if isinstance(data, dict) else data
+    if not isinstance(segments, list):
+        raise ValueError("manifest must be a list or contain segments/labeled_segments")
+    return [dict(item) for item in segments]
+
+
 def _read_label(label_url: str) -> np.ndarray:
+    import fsspec
+    from PIL import Image
+
     with fsspec.open(label_url, mode="rb") as fh:
         img = Image.open(BytesIO(fh.read())).convert("L")
         return (np.asarray(img) > 0).astype(np.float32)
@@ -94,6 +103,9 @@ def _parse_offsets(raw: str) -> list[int]:
 
 
 def _open_layers(url: str, level: str, offsets: list[int]) -> tuple[np.ndarray, list[int]]:
+    import fsspec
+    import zarr
+
     root = zarr.open(fsspec.get_mapper(url), mode="r")
     arr = root[level]
     center = arr.shape[0] // 2
@@ -201,8 +213,8 @@ def _write_npz(output: Path, image: np.ndarray, label: np.ndarray, region: tuple
     output.with_suffix(".metadata.json").write_text(json.dumps(out_meta, indent=2, sort_keys=True))
 
 
-def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: int, train_samples: int, val_samples: int, train_positive_fraction: float, val_positive_fraction: float, seed: int, source: str, z_offsets: list[int], val_tiled: bool, val_stride: int, negative_max_positive_rate: float) -> dict:
-    meta = _segment_meta(segment_id, source)
+def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: int, train_samples: int, val_samples: int, train_positive_fraction: float, val_positive_fraction: float, seed: int, source: str, z_offsets: list[int], val_tiled: bool, val_stride: int, negative_max_positive_rate: float, catalog: list[dict] | None = None) -> dict:
+    meta = _segment_meta(segment_id, source, catalog)
     image, z_indices = _open_layers(meta["zarr_url"], level, z_offsets)
     image = _normalize(image)
     label_raw = _read_label(meta["inklabels_url"])
@@ -238,6 +250,12 @@ def main() -> None:
     parser.add_argument("--catalog-source", choices=["public-directory", "installed-catalog", "merged"], default="public-directory")
     parser.add_argument("--all-labeled", action="store_true", help="Prepare every labeled segment exposed by the installed catalog")
     parser.add_argument("--list-labeled", action="store_true", help="Print catalog segment candidates and exit")
+    parser.add_argument("--from-manifest", default=None, help="Read segment catalog from a prior manifest JSON instead of querying catalogs")
+    parser.add_argument("--manifest-out", default=None, help="Write selected segment manifest JSON and exit after normal planning/preparation")
+    parser.add_argument("--max-new-segments", type=int, default=None, help="Maximum number of not-yet-existing segments to prepare")
+    parser.add_argument("--skip-existing", action="store_true", help="Reuse segment output dirs that already contain train.npz and val.npz")
+    parser.add_argument("--request-delay-sec", type=float, default=0.0, help="Sleep before each segment fetch/preparation")
+    parser.add_argument("--segment-delay-sec", type=float, default=0.0, help="Sleep after each prepared segment")
     parser.add_argument("--output-dir", default="data/real/segment_20230827161847")
     parser.add_argument("--output-root", default="data/real", help="Root for multi-segment output directories")
     parser.add_argument("--level", default="1", help="Zarr resolution level; 1 is smaller/faster than full level 0")
@@ -254,7 +272,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=13)
     args = parser.parse_args()
 
-    catalog = _available_segments(args.catalog_source)
+    catalog = _load_manifest(Path(args.from_manifest).expanduser()) if args.from_manifest else _available_segments(args.catalog_source)
     if args.list_labeled:
         print(json.dumps({"labeled_segments": catalog, "count": len(catalog)}, indent=2, sort_keys=True))
         return
@@ -264,14 +282,31 @@ def main() -> None:
     val_positive_fraction = args.positive_fraction if args.val_positive_fraction is None else args.val_positive_fraction
     val_stride = args.patch_size if args.val_stride is None else args.val_stride
     results = []
+    new_segments = 0
     for segment_id in segment_ids:
         out = Path(args.output_dir) if len(segment_ids) == 1 and not args.all_labeled else Path(args.output_root) / f"segment_{segment_id}"
-        results.append(_prepare_segment(str(segment_id), out, args.level, args.patch_size, args.train_samples, args.val_samples, train_positive_fraction, val_positive_fraction, args.seed, args.catalog_source, z_offsets, args.val_tiled, val_stride, args.negative_max_positive_rate))
+        train_npz = out / "train.npz"
+        val_npz = out / "val.npz"
+        if args.skip_existing and train_npz.exists() and val_npz.exists():
+            meta = _segment_meta(str(segment_id), args.catalog_source, catalog)
+            results.append({"train_npz": str(train_npz.resolve()), "val_npz": str(val_npz.resolve()), "segment_id": str(segment_id), "reused": True, **meta})
+            continue
+        if args.max_new_segments is not None and new_segments >= args.max_new_segments:
+            results.append({"segment_id": str(segment_id), "skipped": True, "reason": "max-new-segments reached"})
+            continue
+        if args.request_delay_sec > 0:
+            time.sleep(args.request_delay_sec)
+        results.append(_prepare_segment(str(segment_id), out, args.level, args.patch_size, args.train_samples, args.val_samples, train_positive_fraction, val_positive_fraction, args.seed, args.catalog_source, z_offsets, args.val_tiled, val_stride, args.negative_max_positive_rate, catalog))
+        new_segments += 1
+        if args.segment_delay_sec > 0:
+            time.sleep(args.segment_delay_sec)
     validation_plan = {
-        "mode": "cross-segment" if len({r["segment_id"] for r in results}) > 1 else "spatial-same-segment",
-        "warning": None if len({r["segment_id"] for r in results}) > 1 else "Only one labeled real segment is available; proper cross-segment/cross-scroll validation is blocked.",
+        "mode": "cross-segment" if len({r["segment_id"] for r in results if not r.get("skipped")}) > 1 else "spatial-same-segment",
+        "warning": None if len({r["segment_id"] for r in results if not r.get("skipped")}) > 1 else "Only one labeled real segment is available; proper cross-segment/cross-scroll validation is blocked.",
         "segments": results,
     }
+    if args.manifest_out:
+        Path(args.manifest_out).expanduser().write_text(json.dumps({"segments": [item for item in catalog if item["segment_id"] in {str(s) for s in segment_ids}]}, indent=2, sort_keys=True) + "\n")
     print(json.dumps(validation_plan, indent=2, sort_keys=True))
 
 
