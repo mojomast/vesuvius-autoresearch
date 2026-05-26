@@ -68,6 +68,24 @@ class TileInferenceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match label shape"):
             evaluate_probability_map(prob_map, label[:1])
 
+    def test_tile_metrics_respect_positive_rate_constraints(self) -> None:
+        label = np.zeros((10, 10), dtype=np.float32)
+        label[:2, :5] = 1.0
+        prob_map = np.full((10, 10), 0.7, dtype=np.float32)
+        prob_map[:2, :5] = 0.9
+        prob_map[8:, :] = 0.1
+
+        metrics, _rows = evaluate_probability_map(
+            prob_map,
+            label,
+            fixed_threshold=0.5,
+            eval_cfg={"max_pred_positive_rate_ratio": 2.0, "target_pred_positive_rate": "auto_val"},
+        )
+
+        self.assertEqual(metrics["threshold_selection"], "positive_rate_constrained")
+        self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 2.0)
+        self.assertEqual(metrics["target_pred_positive_rate"], metrics["val_positive_rate"])
+
     def test_write_outputs_overwrite_protection(self) -> None:
         prob_map = np.zeros((2, 2), dtype=np.float32)
         metrics = {"val_f1": 1.0}

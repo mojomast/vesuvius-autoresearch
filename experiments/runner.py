@@ -128,6 +128,24 @@ def _resolve_pos_weight(raw: Any, labels: np.ndarray) -> float:
     return float(raw)
 
 
+def _positive_rate_excess(pred_rate: float, target_rate: float, tolerance: float) -> float:
+    return max(0.0, abs(float(pred_rate) - float(target_rate)) - float(tolerance))
+
+
+def _resolve_positive_rate_target(raw: Any, train_labels: np.ndarray) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        label = raw.lower().strip()
+        if label in {"auto", "auto_train", "train"}:
+            return float(np.clip((train_labels.reshape(-1) > 0.5).mean(), 1e-6, 0.5))
+        raise ValueError("training.positive_rate_loss_target must be numeric, auto, or auto_train")
+    target = float(raw)
+    if not 0.0 <= target <= 1.0:
+        raise ValueError("training.positive_rate_loss_target must be in [0, 1]")
+    return target
+
+
 def _sample_patch_indices(images: np.ndarray, labels: np.ndarray, max_samples: int, seed: int, train_cfg: Dict[str, Any]) -> tuple[np.ndarray, Dict[str, Any]]:
     rng = np.random.default_rng(seed)
     count = images.shape[0]
@@ -184,7 +202,8 @@ def _sample_patch_indices(images: np.ndarray, labels: np.ndarray, max_samples: i
     }
 
 
-def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_labels: np.ndarray, threshold: float, artifact_dir: Path, extra: Dict[str, Any]) -> Dict[str, Any]:
+def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_labels: np.ndarray, threshold: float, artifact_dir: Path, extra: Dict[str, Any], eval_cfg: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    eval_cfg = eval_cfg or {}
     pv = probs.reshape(-1).astype(np.float32)
     yv = labels.reshape(-1).astype(np.float32)
     yt = train_labels.reshape(-1).astype(np.float32)
@@ -198,8 +217,28 @@ def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_label
         np.asarray([threshold], dtype=np.float32),
     ])))
     threshold_rows = [_binary_metrics(pv, yv, t) for t in sweep_thresholds]
-    best_f1_row = max(threshold_rows, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"]))
-    best_f05_row = max(threshold_rows, key=lambda row: (row["f05"], row["precision"], -row["pred_positive_rate"]))
+    val_positive_rate = float((yv > 0.5).mean())
+    max_ratio = eval_cfg.get("max_pred_positive_rate_ratio")
+    min_ratio = eval_cfg.get("min_pred_positive_rate_ratio")
+    constrained_rows = threshold_rows
+    if max_ratio is not None or min_ratio is not None:
+        max_ratio_value = float(max_ratio) if max_ratio is not None else float("inf")
+        min_ratio_value = float(min_ratio) if min_ratio is not None else 0.0
+        constrained_rows = [row for row in threshold_rows if min_ratio_value <= row["pred_positive_rate"] / max(val_positive_rate, 1e-12) <= max_ratio_value] or threshold_rows
+    target_rate_raw = eval_cfg.get("target_pred_positive_rate", eval_cfg.get("positive_rate_loss_target"))
+    if isinstance(target_rate_raw, str) and target_rate_raw.lower().strip() in {"auto", "auto_val", "val"}:
+        target_rate = val_positive_rate
+    elif target_rate_raw is None:
+        target_rate = None
+    else:
+        target_rate = float(target_rate_raw)
+
+    def threshold_key(row: Dict[str, float], metric: str) -> tuple[float, float, float, float]:
+        target_distance = abs(row["pred_positive_rate"] - target_rate) if target_rate is not None else 0.0
+        return (row[metric], -target_distance, row["precision"], -row["pred_positive_rate"])
+
+    best_f1_row = max(constrained_rows, key=lambda row: threshold_key(row, "f1"))
+    best_f05_row = max(threshold_rows, key=lambda row: threshold_key(row, "f05"))
     metrics = {
         "val_loss": val_loss,
         "val_f1": float(best_f1_row["f1"]),
@@ -213,8 +252,12 @@ def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_label
         "fixed_threshold_recall": float(fixed["recall"]),
         "average_precision": _average_precision(pv, yv),
         "train_positive_rate": float((yt > 0.5).mean()),
-        "val_positive_rate": float((yv > 0.5).mean()),
+        "val_positive_rate": val_positive_rate,
         "pred_positive_rate": float(best_f1_row["pred_positive_rate"]),
+        "threshold_selection": "positive_rate_constrained" if constrained_rows is not threshold_rows else "best_f1",
+        "max_pred_positive_rate_ratio": max_ratio,
+        "min_pred_positive_rate_ratio": min_ratio,
+        "target_pred_positive_rate": target_rate,
         "prob_min": float(np.min(pv)),
         "prob_mean": float(np.mean(pv)),
         "prob_p95": float(np.quantile(pv, 0.95)),
@@ -316,7 +359,7 @@ def _train_logreg(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact_di
         "initial_prior": float(prior),
         "train_loss_last": losses[-1] if losses else None,
         "epochs": epochs,
-    })
+    }, cfg.get("evaluation", {}))
 
 
 def _standardize_features(train_x: np.ndarray, val_x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -416,7 +459,7 @@ def _train_numpy_mlp(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact
         "initial_prior": float(prior),
         "train_loss_last": losses[-1] if losses else None,
         "epochs": epochs,
-    })
+    }, cfg.get("evaluation", {}))
 
 
 def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact_dir: Path) -> Dict[str, Any]:
@@ -448,6 +491,13 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     tversky_alpha = float(train_cfg.get("tversky_alpha", 0.3))
     tversky_beta = float(train_cfg.get("tversky_beta", 0.7))
     focal_tversky_gamma = float(train_cfg.get("focal_tversky_gamma", 1.0))
+    positive_rate_loss_weight = float(train_cfg.get("positive_rate_loss_weight", 0.0))
+    positive_rate_loss_tolerance = float(train_cfg.get("positive_rate_loss_tolerance", 0.0))
+    if positive_rate_loss_weight < 0.0:
+        raise ValueError("training.positive_rate_loss_weight must be non-negative")
+    if positive_rate_loss_tolerance < 0.0:
+        raise ValueError("training.positive_rate_loss_tolerance must be non-negative")
+    positive_rate_loss_target = _resolve_positive_rate_target(train_cfg.get("positive_rate_loss_target"), ytr_img)
     augment_flips = bool(train_cfg.get("augment_flips", False))
     tta_flips = bool(eval_cfg.get("tta_flips", eval_cfg.get("test_time_flips", False)))
     raw_seeds = train_cfg.get("seeds", None)
@@ -575,6 +625,8 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     all_probs = []
     model_paths = []
     losses_by_seed = []
+    prior_losses_by_seed = []
+    soft_rates_by_seed = []
     def dice_loss(logits, target):
         probs = torch.sigmoid(logits)
         dims = (1, 2, 3)
@@ -602,14 +654,25 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         loader = DataLoader(ds, batch_size=batch_size, shuffle=True, generator=loader_generator, num_workers=0)
         opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         losses = []
+        prior_losses = []
+        soft_rates = []
         for _epoch in range(epochs):
             model.train()
             epoch_losses = []
+            epoch_prior_losses = []
+            epoch_soft_rates = []
             for xb, yb in loader:
                 xb = xb.to(device); yb = yb.to(device)
                 opt.zero_grad(set_to_none=True)
                 logits = model(xb)
                 loss = criterion(logits, yb)
+                if positive_rate_loss_weight and positive_rate_loss_target is not None:
+                    pred_rate = torch.sigmoid(logits).mean()
+                    excess = torch.relu(torch.abs(pred_rate - positive_rate_loss_target) - positive_rate_loss_tolerance)
+                    prior_loss = positive_rate_loss_weight * excess.pow(2)
+                    loss = loss + prior_loss
+                    epoch_prior_losses.append(float(prior_loss.detach().cpu()))
+                    epoch_soft_rates.append(float(pred_rate.detach().cpu()))
                 if dice_loss_weight:
                     loss = loss + dice_loss_weight * dice_loss(logits, yb)
                 if tversky_loss_weight:
@@ -618,7 +681,11 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
                 opt.step()
                 epoch_losses.append(float(loss.detach().cpu()))
             losses.append(float(np.mean(epoch_losses)) if epoch_losses else None)
+            prior_losses.append(float(np.mean(epoch_prior_losses)) if epoch_prior_losses else 0.0)
+            soft_rates.append(float(np.mean(epoch_soft_rates)) if epoch_soft_rates else None)
         losses_by_seed.append(losses)
+        prior_losses_by_seed.append(prior_losses)
+        soft_rates_by_seed.append(soft_rates)
         all_probs.append(predict(model))
         suffix = "" if len(ensemble_seeds) == 1 else f"_seed{run_seed}"
         model_path = artifact_dir / f"model{suffix}.pt"
@@ -640,7 +707,13 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "torch_version": torch.__version__,
         "train_samples": int(Xtr_img.shape[0]),
         "batch_size": batch_size,
+        "positive_rate_loss_weight": positive_rate_loss_weight,
+        "positive_rate_loss_target": positive_rate_loss_target,
+        "positive_rate_loss_tolerance": positive_rate_loss_tolerance,
     }, indent=2, sort_keys=True))
+    metrics_eval_cfg = {**eval_cfg}
+    if positive_rate_loss_target is not None:
+        metrics_eval_cfg.setdefault("positive_rate_loss_target", positive_rate_loss_target)
     return _pixel_metrics_from_probs(pv, yva_img.reshape(-1), ytr_img.reshape(-1), threshold, artifact_dir, {
         "model_name": model_name,
         "base_channels": base,
@@ -655,11 +728,17 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "tversky_alpha": tversky_alpha,
         "tversky_beta": tversky_beta,
         "focal_tversky_gamma": focal_tversky_gamma,
+        "positive_rate_loss_weight": positive_rate_loss_weight,
+        "positive_rate_loss_target": positive_rate_loss_target,
+        "positive_rate_loss_tolerance": positive_rate_loss_tolerance,
+        "positive_rate_loss_last": prior_losses_by_seed[-1][-1] if prior_losses_by_seed and prior_losses_by_seed[-1] else None,
+        "train_soft_positive_rate_last": soft_rates_by_seed[-1][-1] if soft_rates_by_seed and soft_rates_by_seed[-1] else None,
+        "train_soft_positive_rate_error_last": abs(soft_rates_by_seed[-1][-1] - positive_rate_loss_target) if positive_rate_loss_target is not None and soft_rates_by_seed and soft_rates_by_seed[-1] and soft_rates_by_seed[-1][-1] is not None else None,
         "augment_flips": augment_flips,
         "tta_flips": tta_flips,
         **sampling_metrics,
         "device": str(device),
-    })
+    }, metrics_eval_cfg)
 
 
 def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH) -> Dict[str, Any]:

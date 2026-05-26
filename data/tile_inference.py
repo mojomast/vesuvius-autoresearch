@@ -320,7 +320,8 @@ def _average_precision(probs: np.ndarray, labels: np.ndarray) -> float:
     return float((precision * y).sum() / positives)
 
 
-def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_threshold: float = 0.5) -> tuple[dict[str, Any], list[dict[str, float]]]:
+def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_threshold: float = 0.5, eval_cfg: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, float]]]:
+    eval_cfg = eval_cfg or {}
     if prob_map.ndim != 2:
         raise ValueError(f"Expected probability map [H,W], got shape {prob_map.shape}")
     if label.ndim != 2:
@@ -336,8 +337,28 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
         np.asarray([fixed_threshold], dtype=np.float32),
     ])))
     rows = [_binary_metrics(probs, labels, threshold) for threshold in thresholds]
-    best_f1 = max(rows, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"]))
-    best_f05 = max(rows, key=lambda row: (row["f05"], row["precision"], -row["pred_positive_rate"]))
+    label_positive_rate = float((labels > 0.5).mean())
+    max_ratio = eval_cfg.get("max_pred_positive_rate_ratio")
+    min_ratio = eval_cfg.get("min_pred_positive_rate_ratio")
+    constrained_rows = rows
+    if max_ratio is not None or min_ratio is not None:
+        max_ratio_value = float(max_ratio) if max_ratio is not None else float("inf")
+        min_ratio_value = float(min_ratio) if min_ratio is not None else 0.0
+        constrained_rows = [row for row in rows if min_ratio_value <= row["pred_positive_rate"] / max(label_positive_rate, 1e-12) <= max_ratio_value] or rows
+    target_rate_raw = eval_cfg.get("target_pred_positive_rate", eval_cfg.get("positive_rate_loss_target"))
+    if isinstance(target_rate_raw, str) and target_rate_raw.lower().strip() in {"auto", "auto_val", "val"}:
+        target_rate = label_positive_rate
+    elif target_rate_raw is None:
+        target_rate = None
+    else:
+        target_rate = float(target_rate_raw)
+
+    def threshold_key(row: dict[str, float], metric: str) -> tuple[float, float, float, float]:
+        target_distance = abs(row["pred_positive_rate"] - target_rate) if target_rate is not None else 0.0
+        return (row[metric], -target_distance, row["precision"], -row["pred_positive_rate"])
+
+    best_f1 = max(constrained_rows, key=lambda row: threshold_key(row, "f1"))
+    best_f05 = max(rows, key=lambda row: threshold_key(row, "f05"))
     fixed = _binary_metrics(probs, labels, fixed_threshold)
     eps = 1e-7
     loss = float(-np.mean(labels * np.log(probs + eps) + (1.0 - labels) * np.log(1.0 - probs + eps)))
@@ -356,9 +377,13 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
         "fixed_threshold_precision": float(fixed["precision"]),
         "fixed_threshold_recall": float(fixed["recall"]),
         "average_precision": _average_precision(probs, labels),
-        "label_positive_rate": float((labels > 0.5).mean()),
-        "val_positive_rate": float((labels > 0.5).mean()),
+        "label_positive_rate": label_positive_rate,
+        "val_positive_rate": label_positive_rate,
         "pred_positive_rate": float(best_f1["pred_positive_rate"]),
+        "threshold_selection": "positive_rate_constrained" if constrained_rows is not rows else "best_f1",
+        "max_pred_positive_rate_ratio": max_ratio,
+        "min_pred_positive_rate_ratio": min_ratio,
+        "target_pred_positive_rate": target_rate,
         "prob_min": float(np.min(probs)),
         "prob_mean": float(np.mean(probs)),
         "prob_p95": float(np.quantile(probs, 0.95)),
@@ -423,7 +448,10 @@ def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, l
     fixed_threshold = float(cfg.get("evaluation", {}).get("threshold", 0.5))
     tta_flips = bool(model_meta.get("tta_flips", cfg.get("evaluation", {}).get("tta_flips", False)))
     prob_map, tile_meta = stitch_probabilities(models, image, patch, step, batch_size, device, tta_flips)
-    metrics, threshold_rows = evaluate_probability_map(prob_map, label, fixed_threshold)
+    tile_eval_cfg = {**cfg.get("evaluation", {})}
+    if cfg.get("training", {}).get("positive_rate_loss_target") is not None:
+        tile_eval_cfg.setdefault("positive_rate_loss_target", cfg.get("training", {}).get("positive_rate_loss_target"))
+    metrics, threshold_rows = evaluate_probability_map(prob_map, label, fixed_threshold, tile_eval_cfg)
     metrics.update({
         "model_name": str(model_meta.get("model_name") or cfg.get("model", {}).get("name")),
         "artifact_dir": str(artifact_dir),

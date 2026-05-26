@@ -96,6 +96,16 @@ def _full_tile_ready(run: dict[str, Any]) -> bool:
     checks = metrics.get("promotion_checks") if isinstance(metrics.get("promotion_checks"), dict) else {}
     if metrics.get("full_tile_promotion_ready") or checks.get("full_tile_evidence"):
         return True
+    artifact_dir = run.get("artifact_dir")
+    if artifact_dir:
+        for path in Path(str(artifact_dir)).glob("full_tile*/metrics.json"):
+            try:
+                full_tile_metrics = json.loads(path.read_text())
+            except Exception:
+                continue
+            full_tile_checks = full_tile_metrics.get("promotion_checks") if isinstance(full_tile_metrics, dict) else {}
+            if isinstance(full_tile_checks, dict) and full_tile_checks.get("eligible") is True:
+                return True
     names = {str(item.get("name") or "") for item in run.get("artifacts") or [] if isinstance(item, dict)}
     return any("full_tile" in name or "probability_map" in name for name in names)
 

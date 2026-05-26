@@ -1,0 +1,32 @@
+# Calibrated robust screen: lower Dice weight to reduce positive flooding while preserving recall.
+dataset:
+  research_scope: multi_segment_robust_expanded
+  train_npz: data/real_cross_folds_expanded_combined/all_segments/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: expanded-multi-segment-train_reference-val
+model:
+  name: tiny_torch_unet
+  base_channels: 8
+training:
+  epochs: 5
+  batch_size: 8
+  learning_rate: 0.002
+  weight_decay: 0.0001
+  pos_weight: auto
+  max_train_samples: 0
+  num_threads: 4
+  seed: 11001
+  allow_cuda: false
+  dice_loss_weight: 0.2
+  augment_flips: false
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+  max_pred_positive_rate_ratio: 4.0
+  min_pred_positive_rate_ratio: 0.1
+autoresearch:
+  parent_reason: calibrated robust screen with lower Dice weight
+  scope_policy: expanded_multi_segment_leave_one_out
+outputs:
+  runs_dir: experiments/runs

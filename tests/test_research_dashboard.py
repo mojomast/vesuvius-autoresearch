@@ -227,6 +227,33 @@ class ResearchDashboardTest(unittest.TestCase):
         loo_item = next(item for item in gate["criteria"] if item["id"] == "seed_repeat_loo")
         self.assertEqual(loo_item["state"], "done")
 
+    def test_dashboard_detects_nested_full_tile_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "fulltile"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment"}}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.3, "average_precision": 0.2, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "loo_promotion_ready": True}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("fulltile", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.3, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        codes = {blocker["code"] for blocker in snapshot["experiments"]["recent"][0]["promotion_blockers"]}
+        self.assertNotIn("missing_full_tile_evidence", codes)
+        full_tile_gate = next(item for item in snapshot["research_summary"]["decision"]["promotion_gate"]["criteria"] if item["id"] == "full_tile")
+        self.assertEqual(full_tile_gate["state"], "done")
+
     def test_artifact_preview_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
