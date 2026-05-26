@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Resource-aware launcher for Vesuvius AutoResearch.
 
-Runs only local NumPy experiments; does not perform web/LLM/API calls.  This wrapper
-keeps cron aggressive while protecting the machine with load, memory, disk, and
-process guards, then launches autoresearch at low CPU/IO priority.
+Runs only local experiments; does not perform web/LLM/API calls.  This wrapper keeps
+cron aggressive while protecting the machine with load, memory, disk, and process
+guards, then launches autoresearch at low CPU/IO priority.
 """
 from __future__ import annotations
 

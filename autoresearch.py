@@ -242,7 +242,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
     return candidates
 
 
-def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True) -> List[Tuple[str, Dict[str, Any], str]]:
+def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True, name_index_offset: int = 0) -> List[Tuple[str, Dict[str, Any], str]]:
     """Change only 1 hyperparameter per proposal for interpretable search."""
     baseline_dataset = load_config(BASELINE).get("dataset", {})
     tested = _tested_signatures(runs)
@@ -268,11 +268,87 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         cfg.setdefault("autoresearch", {})["parent_reason"] = reason
         cfg.setdefault("autoresearch", {})["scope_policy"] = scope_policy
         cfg.setdefault("autoresearch", {})["search_signature"] = list(signature)
-        name = f"auto_{stamp}_{len(proposals) + 1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
+        name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
         proposals.append((name, cfg, reason))
         if len(proposals) >= count:
             break
     return proposals
+
+
+def _run_metric_value(run: Dict[str, Any]) -> float | None:
+    cfg = run.get("config", {})
+    metric_name = cfg.get("evaluation", {}).get("main_metric", "val_loss")
+    metrics = run.get("metrics", {})
+    value = metrics.get(metric_name, run.get("main_metric"))
+    if value is None:
+        return None
+    return float(value)
+
+
+def _scope_priority(scope: str, scope_policy: str) -> int:
+    label = f"{scope} {scope_policy}"
+    if "multi_segment_robust_expanded_tta_ensemble" in label:
+        return 0
+    if "multi_segment_robust_expanded" in label:
+        return 1
+    if "expanded_multi_segment" in label or "expanded_leave_one_out" in label:
+        return 2
+    if "multi_segment" in label:
+        return 3
+    if "focused_pair_residual_25d_cpu" in label:
+        return 4
+    return 5
+
+
+def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:
+    robust_scopes = (
+        "multi_segment_robust",
+        "expanded_multi_segment",
+        "expanded_leave_one_out",
+        "focused_pair_residual_25d_cpu",
+    )
+    ranked: list[tuple[int, float, str, Dict[str, Any], str]] = []
+    seen: set[Tuple[Any, ...]] = set()
+    for run in runs:
+        cfg = run.get("config", {})
+        model_name = str(_get_nested(cfg, ("model", "name"), ""))
+        if "torch" not in model_name:
+            continue
+        dataset = cfg.get("dataset", {})
+        scope = str(dataset.get("research_scope") or "")
+        scope_policy = str(cfg.get("autoresearch", {}).get("scope_policy") or scope)
+        if not any(token in scope or token in scope_policy for token in robust_scopes):
+            continue
+        if not (dataset.get("train_npz") and dataset.get("val_npz")):
+            continue
+        value = _run_metric_value(run)
+        if value is None:
+            continue
+        prepared = _prepare_autoresearch_base(cfg)
+        signature = _search_signature(prepared)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        direction = _metric_direction(prepared)
+        ranked.append((_scope_priority(scope, scope_policy), direction * value, str(run.get("run_id") or "unknown"), prepared, scope_policy or "recent_robust_torch_winner"))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    limit = int(os.environ.get("AUTORESEARCH_RECENT_WINNER_BASES", "6"))
+    return [(cfg, f"recent winner {run_id} scope={scope_policy}") for _priority, _score, run_id, cfg, scope_policy in ranked[:limit]]
+
+
+def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0) -> List[Tuple[str, Dict[str, Any], str]]:
+    out: list[Tuple[str, Dict[str, Any], str]] = []
+    for base, label in _ranked_recent_torch_bases(runs):
+        remaining = count - len(out)
+        if remaining <= 0:
+            break
+        scope_policy = str(base.get("autoresearch", {}).get("scope_policy") or base.get("dataset", {}).get("research_scope") or "recent_robust_torch_winner")
+        print(f"Trying AutoResearch recent robust winner base {label}", flush=True)
+        proposals = _propose_configs(base, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=name_index_offset + len(out))
+        for name, cfg, reason in proposals:
+            cfg.setdefault("autoresearch", {})["parent_recent_winner"] = label
+            out.append((name, cfg, f"follow up {label}: {reason}"))
+    return out
 
 
 def _pivot_bases() -> list[tuple[str, Dict[str, Any], str]]:
@@ -297,12 +373,16 @@ def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: 
         if remaining <= 0:
             break
         print(f"Trying AutoResearch best-path base {name} scope={scope_policy}", flush=True)
-        out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False))
+        out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=len(out)))
+    if out:
+        return out
+    print("Curated robust/torch bases are exhausted; trying best recent robust/torch winners", flush=True)
+    out = _propose_from_recent_winners(runs, count=count)
     if out:
         return out
     if os.environ.get("AUTORESEARCH_ALLOW_FOCUSED_FALLBACK", "1") != "1":
         return []
-    print("Curated robust/torch bases are exhausted; falling back to focused NumPy search", flush=True)
+    print("Recent robust/torch winner follow-ups are exhausted; falling back to focused NumPy search", flush=True)
     return _propose_configs(base, runs, count=count)
 
 
