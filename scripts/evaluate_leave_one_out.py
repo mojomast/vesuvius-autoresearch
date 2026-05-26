@@ -51,7 +51,7 @@ def _as_float(row: dict[str, Any], key: str) -> float | None:
         return None
 
 
-def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> dict[str, Any]:
     if rows and all(row.get("dry_run") for row in rows):
         return {
             "folds_requested": len(rows),
@@ -60,6 +60,8 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "dry_run": True,
             "folds_with_zero_precision_or_recall": [],
             "folds_with_positive_rate_alarm": [],
+            "min_seeds_for_promotion": min_seeds_for_promotion,
+            "distinct_successful_seeds": 0,
             "promotion_ready": False,
             "promotion_warnings": ["dry_run_no_promotion_metrics"],
         }
@@ -77,7 +79,11 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "folds_requested": len(rows),
         "folds_successful": len(successful),
         "folds_failed": len(rows) - len(successful),
+        "run_ids": [row["run_id"] for row in successful if row.get("run_id")],
     }
+    distinct_successful_seeds = {row.get("seed") for row in successful if row.get("seed") is not None}
+    summary["min_seeds_for_promotion"] = min_seeds_for_promotion
+    summary["distinct_successful_seeds"] = len(distinct_successful_seeds)
     if successful:
         by_fold: dict[str, list[float]] = {}
         ap_by_fold: dict[str, list[float]] = {}
@@ -145,6 +151,8 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             promotion_warnings.append(f"zero_precision_or_recall:{row_id}")
         for row_id in positive_rate_alarm:
             promotion_warnings.append(f"positive_rate_alarm:{row_id}")
+        if len(distinct_successful_seeds) < min_seeds_for_promotion:
+            promotion_warnings.append(f"insufficient_seed_repeats:{len(distinct_successful_seeds)}/{min_seeds_for_promotion}")
     else:
         summary["folds_with_zero_precision_or_recall"] = []
         summary["folds_with_positive_rate_alarm"] = []
@@ -173,6 +181,7 @@ def main() -> int:
     parser.add_argument("--summary-json", default=None, help="Optional summary JSON path")
     parser.add_argument("--label", default=None, help="Label stored in outputs; defaults to base config stem")
     parser.add_argument("--seeds", default=None, help="Comma-separated training.seed values to repeat for each held-out segment")
+    parser.add_argument("--min-seeds-for-promotion", type=int, default=3, help="Distinct successful seeds required before setting promotion_ready")
     parser.add_argument("--dry-run", action="store_true", help="Write planned fold configs without running experiments")
     args = parser.parse_args()
 
@@ -238,7 +247,7 @@ def main() -> int:
                     fh.write(json.dumps(row, sort_keys=True) + "\n")
                 print(json.dumps(row, sort_keys=True), flush=True)
 
-    summary = _summarize(rows)
+    summary = _summarize(rows, min_seeds_for_promotion=args.min_seeds_for_promotion)
     summary.update({"label": label, "base_config": str(base_path), "fold_map": str(fold_map_path), "seeds": seeds})
     summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     print("SUMMARY_JSON " + json.dumps(summary, sort_keys=True), flush=True)

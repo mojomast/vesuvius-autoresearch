@@ -86,6 +86,21 @@ class TileInferenceTest(unittest.TestCase):
         self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 2.0)
         self.assertEqual(metrics["target_pred_positive_rate"], metrics["val_positive_rate"])
 
+    def test_tile_metrics_resolve_auto_train_positive_rate_target(self) -> None:
+        label = np.zeros((10, 10), dtype=np.float32)
+        label[:2, :5] = 1.0
+        prob_map = np.full((10, 10), 0.4, dtype=np.float32)
+        prob_map[:2, :5] = 0.8
+
+        metrics, _rows = evaluate_probability_map(
+            prob_map,
+            label,
+            fixed_threshold=0.5,
+            eval_cfg={"positive_rate_loss_target": "auto_train", "train_positive_rate": 0.12},
+        )
+
+        self.assertEqual(metrics["target_pred_positive_rate"], 0.12)
+
     def test_write_outputs_overwrite_protection(self) -> None:
         prob_map = np.zeros((2, 2), dtype=np.float32)
         metrics = {"val_f1": 1.0}

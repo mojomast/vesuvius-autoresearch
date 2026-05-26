@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .artifacts import list_artifact_files
 
 
@@ -91,6 +93,66 @@ def _loo_ready(metrics: dict[str, Any]) -> bool:
     return bool(metrics.get("loo_promotion_ready") or summary.get("promotion_ready"))
 
 
+def _path_tail(value: Any) -> str:
+    return str(value or "").replace("\\", "/").lstrip("./")
+
+
+def _same_path_tail(left: Any, right: Any) -> bool:
+    left_tail = _path_tail(left)
+    right_tail = _path_tail(right)
+    return bool(left_tail and right_tail and (left_tail.endswith(right_tail) or right_tail.endswith(left_tail)))
+
+
+def _normalize_loo_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    normalized = json.loads(json.dumps(cfg, sort_keys=True, default=str))
+    normalized.pop("resolved_data", None)
+    normalized.pop("validation_setup", None)
+    dataset = normalized.get("dataset") if isinstance(normalized.get("dataset"), dict) else {}
+    for key in ("train_npz", "val_npz", "validation_mode"):
+        dataset.pop(key, None)
+    training = normalized.get("training") if isinstance(normalized.get("training"), dict) else {}
+    training.pop("seed", None)
+    autoresearch = normalized.get("autoresearch") if isinstance(normalized.get("autoresearch"), dict) else {}
+    for key in ("heldout_segment", "seed_repeat", "fold_map"):
+        autoresearch.pop(key, None)
+    return normalized
+
+
+def _summary_matches_run(summary: dict[str, Any], run: dict[str, Any], project_root: Path | None = None) -> bool:
+    if not summary.get("promotion_ready"):
+        return False
+    run_id = str(run.get("run_id") or "")
+    run_ids = {str(item) for item in summary.get("run_ids") or []}
+    if run_id and run_id in run_ids:
+        return True
+
+    cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+    autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+    if summary.get("fold_map") and autoresearch.get("fold_map") and not _same_path_tail(summary.get("fold_map"), autoresearch.get("fold_map")):
+        return False
+
+    base_config = summary.get("base_config")
+    if not base_config or project_root is None:
+        return False
+    base_path = Path(str(base_config)).expanduser()
+    if not base_path.is_absolute():
+        base_path = project_root / base_path
+    try:
+        base_cfg = yaml.safe_load(base_path.read_text()) or {}
+    except Exception:
+        return False
+    if not isinstance(base_cfg, dict):
+        return False
+    return _normalize_loo_config(base_cfg) == _normalize_loo_config(cfg)
+
+
+def _linked_loo_ready(run: dict[str, Any], loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> bool:
+    metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+    if _loo_ready(metrics):
+        return True
+    return any(_summary_matches_run(summary, run, project_root) for summary in loo_summaries)
+
+
 def _full_tile_ready(run: dict[str, Any]) -> bool:
     metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
     checks = metrics.get("promotion_checks") if isinstance(metrics.get("promotion_checks"), dict) else {}
@@ -110,7 +172,7 @@ def _full_tile_ready(run: dict[str, Any]) -> bool:
     return any("full_tile" in name or "probability_map" in name for name in names)
 
 
-def _promotion_blockers(run: dict[str, Any]) -> list[dict[str, str]]:
+def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]] | None = None, project_root: Path | None = None) -> list[dict[str, str]]:
     cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
     metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
     blockers: list[dict[str, str]] = []
@@ -142,7 +204,7 @@ def _promotion_blockers(run: dict[str, Any]) -> list[dict[str, str]]:
     if mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
         add("validation_not_held_out", "validation")
     if _is_robust_candidate(run):
-        if not _loo_ready(metrics):
+        if not _linked_loo_ready(run, loo_summaries or [], project_root):
             add("missing_seed_repeat_loo", "validation")
         if not _full_tile_ready(run):
             add("missing_full_tile_evidence", "inference")
@@ -172,23 +234,26 @@ def _compact_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _promotion_gate(runs: list[dict[str, Any]], loo_summaries: list[dict[str, Any]]) -> dict[str, Any]:
+def _promotion_gate(runs: list[dict[str, Any]], loo_summaries: list[dict[str, Any]], candidate_run: dict[str, Any] | None = None, project_root: Path | None = None) -> dict[str, Any]:
     robust_runs = [run for run in runs if _is_robust_candidate(run)]
-    has_loo = any(bool(summary.get("promotion_ready")) for summary in loo_summaries) or any(_loo_ready(run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}) for run in runs)
-    has_full_tile = any(_full_tile_ready(run) for run in robust_runs)
-    has_heldout = any((run.get("validation_setup", {}) or {}).get("mode") in {"cross-segment", "cross-scroll", "leave-one-segment-out"} for run in robust_runs)
-    no_blocked_promotable = any(run.get("promotion_status") == "eligible" for run in robust_runs)
+    target = candidate_run if candidate_run and _is_robust_candidate(candidate_run) else (robust_runs[0] if robust_runs else None)
+    target_id = target.get("run_id") if isinstance(target, dict) else None
+    has_loo = bool(target and _linked_loo_ready(target, loo_summaries, project_root))
+    has_full_tile = bool(target and _full_tile_ready(target))
+    has_heldout = bool(target and (target.get("validation_setup", {}) or {}).get("mode") in {"cross-segment", "cross-scroll", "leave-one-segment-out"})
+    no_blocked_promotable = bool(target and target.get("promotion_status") == "eligible")
+    target_detail = f" for candidate {target_id}" if target_id else ""
     criteria = [
         {"id": "robust_candidate", "label": "Robust candidate", "state": "done" if robust_runs else "pending", "detail": f"{len(robust_runs)} robust-scope runs"},
         {"id": "heldout_validation", "label": "Held-out validation", "state": "done" if has_heldout else "warning", "detail": "cross-segment/scroll or LOO" if has_heldout else "missing robust held-out run"},
-        {"id": "seed_repeat_loo", "label": "Seed-repeat LOO", "state": "done" if has_loo else "warning", "detail": "promotion-ready summary found" if has_loo else "run evaluate_leave_one_out.py --seeds"},
-        {"id": "full_tile", "label": "Full-tile evidence", "state": "done" if has_full_tile else "warning", "detail": "full-tile artifact/check present" if has_full_tile else "run infer_full_tile.py before promotion"},
-        {"id": "promotion_clear", "label": "No promotion blockers", "state": "done" if no_blocked_promotable else "warning", "detail": "eligible robust run exists" if no_blocked_promotable else "blockers remain"},
+        {"id": "seed_repeat_loo", "label": "Seed-repeat LOO", "state": "done" if has_loo else "warning", "detail": f"promotion-ready summary linked{target_detail}" if has_loo else f"run evaluate_leave_one_out.py --seeds for candidate {target_id or '?'}"},
+        {"id": "full_tile", "label": "Full-tile evidence", "state": "done" if has_full_tile else "warning", "detail": f"full-tile artifact/check linked{target_detail}" if has_full_tile else f"run infer_full_tile.py for candidate {target_id or '?'} before promotion"},
+        {"id": "promotion_clear", "label": "No promotion blockers", "state": "done" if no_blocked_promotable else "warning", "detail": f"candidate {target_id} is eligible" if no_blocked_promotable else "blockers remain"},
     ]
     return {"criteria": criteria, "ready": all(item["state"] == "done" for item in criteria)}
 
 
-def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, robust: dict[str, Any] | None, promotable: dict[str, Any] | None, loo_summaries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, robust: dict[str, Any] | None, promotable: dict[str, Any] | None, loo_summaries: list[dict[str, Any]] | None = None, project_root: Path | None = None) -> dict[str, Any]:
     blocker_counts: dict[str, int] = {}
     for run in runs:
         for blocker in run.get("promotion_blockers") or []:
@@ -206,7 +271,7 @@ def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, 
     plateau_epsilon = 0.002
     plateau_detected = plateau_delta is not None and plateau_window >= 5 and plateau_delta <= plateau_epsilon
 
-    gate = _promotion_gate(runs, loo_summaries or [])
+    gate = _promotion_gate(runs, loo_summaries or [], promotable or robust, project_root)
 
     if promotable:
         next_action = f"Promote or seed-repeat verify {promotable.get('run_id')} before release."
@@ -264,7 +329,7 @@ def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, An
             continue
         if not isinstance(data, dict) or "promotion_ready" not in data:
             continue
-        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision")})
+        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids")})
         if len(summaries) >= limit:
             break
     return summaries
@@ -294,7 +359,7 @@ def _config_diff(before: dict[str, Any] | None, after: dict[str, Any] | None, li
 def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
     db_path = project_root / "experiments" / "experiments.db"
     loo_summaries = _load_loo_summaries(project_root)
-    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries), "loo_summaries": loo_summaries, "metric_trends": [], "validation_matrix": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
+    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries, project_root), "loo_summaries": loo_summaries, "metric_trends": [], "validation_matrix": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
     if not db_path.exists():
         return empty
     try:
@@ -314,7 +379,7 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         run = {"run_id": row["run_id"], "timestamp": row["timestamp"], "main_metric": float(row["main_metric"]), "metrics": json.loads(row["secondary_metrics_json"] or "{}"), "config": json.loads(row["config_json"] or "{}"), "artifact_dir": row["artifact_dir"]}
         run["validation_setup"] = _validation_setup(run)
         run["artifacts"] = list_artifact_files(row["artifact_dir"])
-        run["promotion_blockers"] = _promotion_blockers(run)
+        run["promotion_blockers"] = _promotion_blockers(run, loo_summaries, project_root)
         run["promotion_status"] = "eligible" if not run["promotion_blockers"] else "blocked"
         run["champion_class"] = None
         run["champion_classes"] = []
@@ -359,7 +424,7 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         "latest": latest,
         "recent": runs,
         "champions": {"peak_score": _compact_run(best), "robust_candidate": _compact_run(robust), "promotion_eligible": _compact_run(promotable)},
-        "decision": _decision_snapshot(runs, best, robust, promotable, loo_summaries),
+        "decision": _decision_snapshot(runs, best, robust, promotable, loo_summaries, project_root),
         "loo_summaries": loo_summaries,
         "metric_trends": [{"run_id": r["run_id"], "timestamp": r["timestamp"], "main_metric": r["main_metric"], "val_f1": r.get("metrics", {}).get("val_f1"), "average_precision": r.get("metrics", {}).get("average_precision")} for r in chronological],
         "validation_matrix": sorted(matrix.values(), key=lambda item: (item["train_segment_id"], item["val_segment_id"])),

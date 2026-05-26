@@ -15,7 +15,7 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
             {"returncode": 0, "heldout_segment": "b", "seed": 2, "val_f1": 0.8, "average_precision": 0.9, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
         ]
 
-        summary = _summarize(rows)
+        summary = _summarize(rows, min_seeds_for_promotion=2)
 
         self.assertAlmostEqual(summary["per_fold_val_f1"]["a"], 0.3)
         self.assertAlmostEqual(summary["per_fold_val_f1"]["b"], 0.7)
@@ -33,6 +33,19 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertEqual(summary["folds_with_positive_rate_alarm"], [])
         self.assertEqual(summary["promotion_warnings"], [])
         self.assertTrue(summary["promotion_ready"])
+
+    def test_single_seed_is_not_promotion_ready(self) -> None:
+        rows = [
+            {"returncode": 0, "heldout_segment": "a", "seed": 1, "val_f1": 0.2, "average_precision": 0.3, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+            {"returncode": 0, "heldout_segment": "b", "seed": 1, "val_f1": 0.6, "average_precision": 0.5, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+        ]
+
+        summary = _summarize(rows)
+
+        self.assertEqual(summary["min_seeds_for_promotion"], 3)
+        self.assertEqual(summary["distinct_successful_seeds"], 1)
+        self.assertIn("insufficient_seed_repeats:1/3", summary["promotion_warnings"])
+        self.assertFalse(summary["promotion_ready"])
 
     def test_warnings_include_failed_rows_and_metric_alarms(self) -> None:
         jsonl = "\n".join([

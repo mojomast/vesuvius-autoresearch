@@ -225,7 +225,64 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(len(snapshot["experiments"]["loo_summaries"]), 1)
         gate = snapshot["research_summary"]["decision"]["promotion_gate"]
         loo_item = next(item for item in gate["criteria"] if item["id"] == "seed_repeat_loo")
-        self.assertEqual(loo_item["state"], "done")
+        self.assertEqual(loo_item["state"], "warning")
+
+    def test_dashboard_does_not_use_unrelated_loo_summary_for_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "other.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["other_run"], "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "candidate"
+            run_dir.mkdir(parents=True)
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps({"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        self.assertIn("missing_seed_repeat_loo", {blocker["code"] for blocker in run["promotion_blockers"]})
+        loo_item = next(item for item in snapshot["research_summary"]["decision"]["promotion_gate"]["criteria"] if item["id"] == "seed_repeat_loo")
+        self.assertEqual(loo_item["state"], "warning")
+
+    def test_dashboard_links_loo_summary_by_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "candidate.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["candidate"], "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "candidate"
+            full_tile_dir = run_dir / "full_tile_b"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps({"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        codes = {blocker["code"] for blocker in run["promotion_blockers"]}
+        self.assertNotIn("missing_seed_repeat_loo", codes)
+        self.assertNotIn("missing_full_tile_evidence", codes)
+        self.assertEqual(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"], True)
 
     def test_dashboard_detects_nested_full_tile_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

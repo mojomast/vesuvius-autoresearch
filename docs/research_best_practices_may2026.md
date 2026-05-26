@@ -40,6 +40,7 @@ A config should be considered a robust champion only if it has:
 - No known train/validation segment overlap.
 - Median F1 improvement over the current robust champion or a clear improvement in min-fold behavior.
 - Comparable or improved average precision.
-- Seed-repeat stability when the change affects training or model initialization.
+- Seed-repeat stability when the change affects training or model initialization; promotion summaries require at least three distinct successful seeds.
 - Full-tile validation metrics when the change affects data, thresholding, or inference.
+- Candidate-linked evidence: seed-repeat LOO and full-tile metrics must match the same config/run lineage as the robust candidate being promoted.
 - A short note explaining whether it is a peak-score champion, robust champion, or diagnostic-only run.

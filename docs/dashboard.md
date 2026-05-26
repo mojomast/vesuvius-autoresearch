@@ -63,6 +63,8 @@ capabilities
 
 `research_summary.decision.promotion_gate.criteria` is the compact promotion checklist the UI renders as the Promotion Gate. It is intentionally stricter than peak validation score and expects robust held-out validation, seed-repeat leave-one-out evidence, full-tile evidence, and no promotion blockers.
 
+Seed-repeat LOO and full-tile evidence are candidate-linked: unrelated global summaries or full-tile artifacts may still be listed for context, but they do not clear the gate for a different robust candidate. LOO summaries should include at least three distinct successful seeds before `promotion_ready` is true.
+
 Keep Vesuvius-specific data parsing and command inventory in `research_dashboard/*`. Hermes or any other host dashboard should render or proxy this contract instead of copying the domain logic.
 
 ## Parallel Development Workflow

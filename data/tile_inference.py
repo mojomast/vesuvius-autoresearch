@@ -348,6 +348,9 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
     target_rate_raw = eval_cfg.get("target_pred_positive_rate", eval_cfg.get("positive_rate_loss_target"))
     if isinstance(target_rate_raw, str) and target_rate_raw.lower().strip() in {"auto", "auto_val", "val"}:
         target_rate = label_positive_rate
+    elif isinstance(target_rate_raw, str) and target_rate_raw.lower().strip() in {"auto_train", "train"}:
+        train_rate = eval_cfg.get("train_positive_rate")
+        target_rate = float(train_rate) if train_rate is not None else None
     elif target_rate_raw is None:
         target_rate = None
     else:
@@ -451,6 +454,9 @@ def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, l
     tile_eval_cfg = {**cfg.get("evaluation", {})}
     if cfg.get("training", {}).get("positive_rate_loss_target") is not None:
         tile_eval_cfg.setdefault("positive_rate_loss_target", cfg.get("training", {}).get("positive_rate_loss_target"))
+    train_meta = cfg.get("resolved_data", {}).get("train", {}) if isinstance(cfg.get("resolved_data"), dict) else {}
+    if isinstance(train_meta, dict) and train_meta.get("positive_rate") is not None:
+        tile_eval_cfg.setdefault("train_positive_rate", train_meta.get("positive_rate"))
     metrics, threshold_rows = evaluate_probability_map(prob_map, label, fixed_threshold, tile_eval_cfg)
     metrics.update({
         "model_name": str(model_meta.get("model_name") or cfg.get("model", {}).get("name")),

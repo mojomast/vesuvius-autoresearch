@@ -29,9 +29,10 @@ Each experiment writes:
 
 The current next moves are documented in `docs/next_best_moves_may2026.md` and sketched in `configs/next_best_moves_robust_template.yaml`. Treat them as promotion protocols, not one-off sweep ideas:
 
-- Seed-repeat leave-one-out: run each LOO fold across several seeds and promote by median-over-seeds, then median-over-folds.
+- Seed-repeat leave-one-out: run each LOO fold across at least three seeds and promote by median-over-seeds, then median-over-folds.
 - Safe data expansion: add labeled public segments only through explicit fold maps; never mix a held-out segment into its training NPZ.
 - Full-tile inference: validate thresholded predictions on uniformly tiled validation regions, not only positive-biased sampled patches.
+- Promotion evidence linkage: LOO summaries and full-tile metrics must match the same robust candidate/config lineage; unrelated global evidence is diagnostic only.
 - TTA/seed ensembling: average flip TTA and independent seed probabilities only after single-seed LOO behavior is understood.
 - 2.5D residual U-Net: prepare multi-z-channel NPZs first, then test a residual U-Net family behind the same LOO gate.
 
