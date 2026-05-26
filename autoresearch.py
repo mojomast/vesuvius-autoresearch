@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+import contextlib
 import copy
 try:
     import fcntl
@@ -576,6 +578,38 @@ def _propose_with_pivots(base: Dict[str, Any], runs: List[Dict[str, Any]], count
     return _propose_best_path(base, runs, count)
 
 
+def _proposal_plan(proposals: List[Tuple[str, Dict[str, Any], str]]) -> list[Dict[str, Any]]:
+    plan = []
+    for name, cfg, reason in proposals:
+        autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+        plan.append({
+            "name": name,
+            "reason": reason,
+            "changed_path": autoresearch.get("changed_path"),
+            "mutation_family": autoresearch.get("mutation_family"),
+            "strategy_phase": autoresearch.get("strategy_phase"),
+            "scope_policy": autoresearch.get("scope_policy"),
+            "promotable": bool(autoresearch.get("promotable")),
+            "promotion_required": autoresearch.get("promotion_required", []),
+            "search_signature": autoresearch.get("search_signature"),
+        })
+    return plan
+
+
+def _promotion_ready_message() -> str | None:
+    if os.environ.get("AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY", "1") != "1":
+        return None
+    try:
+        from research_dashboard.snapshot import build_snapshot
+        decision = build_snapshot(ROOT).get("research_summary", {}).get("decision", {})
+        gate = decision.get("promotion_gate", {}) if isinstance(decision, dict) else {}
+        if gate.get("ready") is True:
+            return str(decision.get("next_action") or "Promotion gate is ready; review the promotion candidate before more exploration.")
+    except Exception as exc:
+        print(f"Promotion readiness check skipped: {exc}", flush=True)
+    return None
+
+
 def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> None:
     body = yaml.safe_dump(cfg, sort_keys=False)
     header = (
@@ -587,6 +621,43 @@ def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> N
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Run or plan the local AutoResearch cycle")
+    parser.add_argument("--plan", action="store_true", help="Print planned proposals without writing configs or launching experiments")
+    parser.add_argument("--json", action="store_true", help="Emit planning output as JSON; only valid with --plan")
+    args = parser.parse_args()
+    if args.json and not args.plan:
+        parser.error("--json requires --plan")
+
+    if args.plan:
+        runs = _recent_runs()
+        if not runs:
+            print(json.dumps({"status": "needs_baseline", "proposals": []}, indent=2 if args.json else None))
+            return 0
+        message = _promotion_ready_message()
+        if message:
+            payload = {"status": "promotion_ready", "next_action": message, "proposals": []}
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"Promotion gate is ready; pausing exploration. Next action: {message}")
+            return 0
+        base = _best_base_config(runs)
+        proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
+        if args.json:
+            with contextlib.redirect_stdout(sys.stderr):
+                proposals = _propose_best_path(base, runs, count=proposal_count)
+        else:
+            proposals = _propose_best_path(base, runs, count=proposal_count)
+        payload = {"status": "planned", "proposal_count": len(proposals), "proposals": _proposal_plan(proposals)}
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            for item in payload["proposals"]:
+                print(f"{item['name']}: {item['reason']} [{item.get('strategy_phase')}/{item.get('mutation_family')}]")
+            if not proposals:
+                print("No novel one-change proposals remain.")
+        return 0
+
     LOGS.mkdir(parents=True, exist_ok=True)
     CONFIGS.mkdir(parents=True, exist_ok=True)
     with open(LOCK_PATH, "w") as lock:
@@ -613,6 +684,10 @@ def main() -> int:
         base = _best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
+        message = _promotion_ready_message()
+        if message:
+            print(f"Promotion gate is ready; pausing exploration. Next action: {message}", flush=True)
+            return 0
         proposals = _propose_best_path(base, runs, count=proposal_count)
         if not proposals:
             print("No novel one-change proposals remain across the robust best path and focused fallback; pause instead of repeating runs")

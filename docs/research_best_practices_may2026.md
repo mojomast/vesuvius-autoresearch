@@ -40,6 +40,8 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - Avoid emitting multiple configs from the same mutation family in one plateau batch.
 - Prefer promotion-aware next actions before more exploration: seed-repeat leave-one-out, then full-tile validation, then promotion review.
 - Keep generated configs diagnostic-only until seed-repeat LOO and full-tile checks pass.
+- Use `python3 autoresearch.py --plan --json` to inspect the next cycle without writing generated configs or launching experiments.
+- When the promotion gate is ready, pause exploration by default and spend compute on promotion review, weak-fold full-tile checks, or data diagnostics.
 
 ## Promotion Gate
 

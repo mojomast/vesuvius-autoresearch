@@ -36,6 +36,15 @@ The current next moves are documented in `docs/next_best_moves_may2026.md` and s
 - TTA/seed ensembling: average flip TTA and independent seed probabilities only after single-seed LOO behavior is understood.
 - 2.5D residual U-Net: prepare multi-z-channel NPZs first, then test a residual U-Net family behind the same LOO gate.
 
+Before launching unattended exploration, inspect the next AutoResearch cycle without writing generated configs or run artifacts:
+
+```bash
+python3 autoresearch.py --plan
+python3 autoresearch.py --plan --json
+```
+
+If the dashboard promotion gate is ready, AutoResearch pauses exploration by default and prints the promotion/verification action instead of generating more local F1 micro-sweeps. Override only for deliberate diagnostics with `AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0`.
+
 ## Standalone Dashboard
 
 Launch the read-only Vesuvius dashboard without Hermes:

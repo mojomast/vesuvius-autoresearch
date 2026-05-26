@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import copy
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import autoresearch
-from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _promotion_gate, _promotion_next_action, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
+from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
 from experiments.runner import load_config
 
 
@@ -135,6 +137,46 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(_promotion_next_action(run), "run_seed_repeat_leave_one_out")
         run["metrics"]["loo_promotion_ready"] = True
         self.assertEqual(_promotion_next_action(run), "run_full_tile_validation")
+
+    def test_proposal_plan_exposes_safe_metadata(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            proposals = _propose_configs(cfg, [], count=1, lock_to_baseline_scope=False, strategy_phase="exploit")
+
+        plan = _proposal_plan(proposals)
+
+        self.assertEqual(len(plan), 1)
+        self.assertFalse(plan[0]["promotable"])
+        self.assertIn("seed_repeat_leave_one_out", plan[0]["promotion_required"])
+        self.assertIn("mutation_family", plan[0])
+
+    def test_plan_json_mode_does_not_write_configs_or_run_experiments(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "run1", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2, "average_precision": 0.1, "precision": 0.2, "recall": 0.4, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            try:
+                with patch("sys.argv", ["autoresearch.py", "--plan", "--json"]), patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_message", return_value=None), patch("autoresearch.subprocess.run") as run_mock:
+                    self.assertEqual(autoresearch.main(), 0)
+            finally:
+                autoresearch.CONFIGS = old_configs
+
+        run_mock.assert_not_called()
+        self.assertEqual(list(Path(tmpdir).glob("auto_*.yaml")), [])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "planned")
+
+    def test_main_pauses_when_promotion_gate_is_ready(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "run1", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
+        with patch("sys.argv", ["autoresearch.py"]), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_message", return_value="Promote candidate"), patch("autoresearch.subprocess.run") as run_mock:
+            self.assertEqual(autoresearch.main(), 0)
+
+        run_mock.assert_not_called()
 
     def test_recent_winner_followups_prefer_expanded_robust_over_focused_residual_score(self) -> None:
         robust = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
