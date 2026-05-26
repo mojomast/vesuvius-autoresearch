@@ -59,7 +59,7 @@ HTML = """<!doctype html>
         <section class="card"><h2>Recent Runs</h2><table><thead><tr><th>Run</th><th>Model</th><th>F1</th><th>AP</th><th>Pred+</th><th>Mode</th><th>Train → Val</th></tr></thead><tbody>${(data.experiments.recent||[]).slice(0,25).map(runRow).join('') || '<tr><td colspan="7">No runs</td></tr>'}</tbody></table></section>
         <section><h2>Feature Inventory</h2><div class="grid">${features.map(commandCard).join('')}</div></section>
         <section class="grid"><div class="card"><h2>Champion Configs</h2>${(data.inventory.champion_configs||[]).map(c=>`<span class="pill">${esc(c.name)} ${c.available?'':'missing'}</span>`).join('')}</div><div class="card"><h2>Configs</h2><p>${configs.length} config files</p>${configs.slice(0,10).map(c=>`<span class="pill">${esc(c.name)}</span>`).join('')}</div><div class="card"><h2>Prepared Data</h2><p>${prepared.length} metadata records</p>${prepared.slice(0,8).map(d=>`<span class="pill">${esc(d.metadata?.segment_id || d.path)}</span>`).join('')}</div><div class="card"><h2>Fold Maps</h2>${foldMaps.map(f=>`<p><code>${esc(f.path)}</code> · ${esc(f.folds)} folds</p>`).join('') || '<p>No fold maps discovered.</p>'}</div></section>
-        <section class="card"><h2>AutoResearch Log Tail</h2><pre>${esc((data.operations.logs.lines||[]).join('\n') || 'No log lines.')}</pre></section>
+        <section class="card"><h2>AutoResearch Log Tail</h2><pre>${esc((data.operations.logs.lines||[]).join('\\n') || 'No log lines.')}</pre></section>
       `;
     }
     loadDashboard().catch(err => { document.getElementById('app').innerHTML = `<div class="card bad">${esc(err)}</div>`; });
