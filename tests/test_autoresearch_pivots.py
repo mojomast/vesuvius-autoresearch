@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autoresearch
-from autoresearch import _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _promotion_gate, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested
+from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _promotion_gate, _promotion_next_action, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
 from experiments.runner import load_config
 
 
@@ -21,6 +21,14 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIn(("evaluation", "tta_flips"), paths)
         self.assertIn(("model", "base_channels"), paths)
         self.assertIn(("training", "max_train_samples"), paths)
+
+    def test_mutation_family_classifies_existing_candidate_paths(self) -> None:
+        self.assertEqual(_mutation_family(("training", "learning_rate")), "optimizer")
+        self.assertEqual(_mutation_family(("training", "dice_loss_weight")), "loss_calibration")
+        self.assertEqual(_mutation_family(("training", "sampling_strategy")), "data_sampling")
+        self.assertEqual(_mutation_family(("model", "base_channels")), "model_family")
+        self.assertEqual(_mutation_family(("evaluation", "tta_flips")), "inference_calibration")
+        self.assertEqual(_mutation_family(("training", "seed")), "replication")
 
     def test_exhausted_focused_pair_pivots_to_curated_torch_base(self) -> None:
         base = load_config("configs/baseline.yaml")
@@ -78,6 +86,55 @@ class AutoResearchPivotTest(unittest.TestCase):
             self.assertEqual(cfg["dataset"].get("research_scope"), "multi_segment_robust_expanded")
             self.assertNotIn(_search_signature(cfg), {_search_signature(winner)})
             self.assertIn("recent base", reason)
+
+    def test_strategy_phase_detects_plateau_and_forces_diversity(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        runs = []
+        for idx in range(16):
+            run_cfg = copy.deepcopy(cfg)
+            _set_nested(run_cfg, ("training", "seed"), 11000 + idx)
+            runs.append({
+                "run_id": f"run{idx}",
+                "config": run_cfg,
+                "main_metric": 0.30,
+                "metrics": {"val_f1": 0.30, "average_precision": 0.10, "precision": 0.3, "recall": 0.4, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+            })
+
+        with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "8"}):
+            strategy = _strategy_phase(runs)
+
+        self.assertTrue(strategy["plateau"])
+        self.assertIn(strategy["phase"], {"diversify", "promote"})
+        self.assertTrue(strategy["required_families"])
+
+    def test_plateau_proposals_use_distinct_mutation_families(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            proposals = _propose_configs(
+                cfg,
+                [],
+                count=4,
+                lock_to_baseline_scope=False,
+                required_families={"loss_calibration", "data_sampling", "model_family", "inference_calibration"},
+                strategy_phase="diversify",
+            )
+
+        families = [proposal[1]["autoresearch"]["mutation_family"] for proposal in proposals]
+        self.assertGreaterEqual(len(families), 3)
+        self.assertEqual(len(families), len(set(families)))
+        self.assertTrue(all(proposal[1]["autoresearch"]["strategy_phase"] == "diversify" for proposal in proposals))
+
+    def test_promotion_next_action_prefers_loo_then_full_tile(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        run = {
+            "config": cfg,
+            "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.3, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+        }
+
+        self.assertEqual(_promotion_next_action(run), "run_seed_repeat_leave_one_out")
+        run["metrics"]["loo_promotion_ready"] = True
+        self.assertEqual(_promotion_next_action(run), "run_full_tile_validation")
 
     def test_recent_winner_followups_prefer_expanded_robust_over_focused_residual_score(self) -> None:
         robust = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))

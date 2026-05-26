@@ -31,6 +31,16 @@ This repo should optimize for reproducible cross-segment ink detection, not isol
 
 See `docs/next_best_moves_may2026.md` for command examples and promotion checks for seed-repeat LOO, safe data expansion, full-tile inference, TTA/seed ensembling, and 2.5D residual U-Net work.
 
+## Plateau Policy
+
+When recent robust/torch runs stop improving, AutoResearch should switch out of local exploit mode instead of emitting more near-duplicate micro-sweeps:
+
+- Detect plateaus over the recent robust/torch window, not focused same-segment runs.
+- Force proposal diversity by mutation family: optimizer, loss calibration, data sampling, model family, inference calibration, and replication.
+- Avoid emitting multiple configs from the same mutation family in one plateau batch.
+- Prefer promotion-aware next actions before more exploration: seed-repeat leave-one-out, then full-tile validation, then promotion review.
+- Keep generated configs diagnostic-only until seed-repeat LOO and full-tile checks pass.
+
 ## Promotion Gate
 
 A config should be considered a robust champion only if it has:

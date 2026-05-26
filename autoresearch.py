@@ -284,7 +284,23 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
     return candidates
 
 
-def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True, name_index_offset: int = 0) -> List[Tuple[str, Dict[str, Any], str]]:
+def _mutation_family(path: Tuple[str, ...]) -> str:
+    if path in {("training", "learning_rate"), ("training", "weight_decay"), ("training", "epochs"), ("training", "batch_size")}:
+        return "optimizer"
+    if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
+        return "loss_calibration"
+    if path in {("training", "sampling_strategy"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips")}:
+        return "data_sampling"
+    if path in {("model", "name"), ("model", "input_mode"), ("model", "base_channels"), ("model", "depth"), ("model", "hidden_units")}:
+        return "model_family"
+    if path in {("evaluation", "threshold"), ("evaluation", "tta_flips")}:
+        return "inference_calibration"
+    if path in {("training", "seed"), ("training", "seeds"), ("training", "deterministic")}:
+        return "replication"
+    return "other"
+
+
+def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
     """Change only 1 hyperparameter per proposal for interpretable search."""
     baseline_dataset = load_config(BASELINE).get("dataset", {})
     tested = _reserved_signatures(runs)
@@ -293,8 +309,15 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
     slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
     candidates = candidates[slot:] + candidates[:slot]
     proposals = []
+    used_families: set[str] = set()
+    seen_batch_signatures: set[Tuple[Any, ...]] = set()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     for path, value, reason in candidates:
+        family = _mutation_family(path)
+        if required_families and family not in required_families:
+            continue
+        if required_families and family in used_families:
+            continue
         cfg = copy.deepcopy(base)
         cfg.pop("resolved_data", None)
         cfg.pop("validation_setup", None)
@@ -312,9 +335,10 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
             cfg.setdefault("training", {}).setdefault("tversky_loss_weight", 0.15)
             cfg.setdefault("training", {})["tversky_alpha"] = round(1.0 - float(value), 4)
         signature = _search_signature(cfg)
-        if signature in tested:
+        if signature in tested or signature in seen_batch_signatures:
             print(f"Skipping already-tested search signature {signature}")
             continue
+        seen_batch_signatures.add(signature)
         autoresearch = cfg.setdefault("autoresearch", {})
         autoresearch["parent_reason"] = reason
         autoresearch["scope_policy"] = scope_policy
@@ -323,9 +347,13 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         autoresearch["promotable"] = False
         autoresearch["proposal_status"] = "generated"
         autoresearch["changed_path"] = ".".join(path)
+        autoresearch["mutation_family"] = family
+        if strategy_phase:
+            autoresearch["strategy_phase"] = strategy_phase
         autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
         name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
         proposals.append((name, cfg, reason))
+        used_families.add(family)
         if len(proposals) >= count:
             break
     return proposals
@@ -404,6 +432,51 @@ def _run_quality_score(run: Dict[str, Any]) -> float:
     return score
 
 
+def _promotion_next_action(run: Dict[str, Any]) -> str:
+    eligible, warnings = _promotion_gate(run)
+    metrics = run.get("metrics", {})
+    if eligible and not metrics.get("loo_promotion_ready"):
+        return "run_seed_repeat_leave_one_out"
+    if eligible and not metrics.get("full_tile_promotion_ready"):
+        return "run_full_tile_validation"
+    if "pred_positive_rate_ratio_suspicious" in warnings:
+        return "calibrate_prediction_rate"
+    if "zero_precision_or_recall" in warnings:
+        return "repair_precision_recall"
+    if eligible:
+        return "promotion_review"
+    return "continue_exploration"
+
+
+def _strategy_phase(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    window = int(os.environ.get("AUTORESEARCH_PLATEAU_WINDOW", "12"))
+    min_delta = float(os.environ.get("AUTORESEARCH_PLATEAU_MIN_DELTA", "0.005"))
+    ranked = [
+        run for run in runs
+        if "torch" in str(_get_nested(run.get("config", {}), ("model", "name"), ""))
+        and _run_metric_value(run) is not None
+    ]
+    if len(ranked) < window:
+        return {"plateau": False, "phase": "exploit", "required_families": set(), "next_action": "continue_exploration"}
+    recent = ranked[:window]
+    previous = ranked[window:]
+    recent_best = max(_run_quality_score(run) for run in recent)
+    previous_best = max((_run_quality_score(run) for run in previous), default=recent_best)
+    plateau = recent_best <= previous_best + min_delta
+    best_recent = max(recent, key=_run_quality_score)
+    next_action = _promotion_next_action(best_recent)
+    if plateau and next_action != "continue_exploration":
+        phase = "promote"
+        families = {"replication", "inference_calibration"}
+    elif plateau:
+        phase = "diversify"
+        families = {"loss_calibration", "data_sampling", "model_family", "inference_calibration"}
+    else:
+        phase = "exploit"
+        families = set()
+    return {"plateau": plateau, "phase": phase, "required_families": families, "next_action": next_action}
+
+
 def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:
     robust_scopes = (
         "multi_segment_robust",
@@ -445,7 +518,7 @@ def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[st
     return out
 
 
-def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0) -> List[Tuple[str, Dict[str, Any], str]]:
+def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
     out: list[Tuple[str, Dict[str, Any], str]] = []
     for base, label in _ranked_recent_torch_bases(runs):
         remaining = count - len(out)
@@ -453,7 +526,7 @@ def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name
             break
         scope_policy = str(base.get("autoresearch", {}).get("scope_policy") or base.get("dataset", {}).get("research_scope") or "recent_robust_torch_winner")
         print(f"Trying AutoResearch recent robust winner base {label}", flush=True)
-        proposals = _propose_configs(base, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=name_index_offset + len(out))
+        proposals = _propose_configs(base, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=name_index_offset + len(out), required_families=required_families, strategy_phase=strategy_phase)
         for name, cfg, reason in proposals:
             cfg.setdefault("autoresearch", {})["parent_recent_winner"] = label
             out.append((name, cfg, f"follow up {label}: {reason}"))
@@ -476,23 +549,27 @@ def _pivot_bases() -> list[tuple[str, Dict[str, Any], str]]:
 
 def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:
     print("AutoResearch strategy: robust/torch best path first; focused NumPy is fallback only", flush=True)
+    strategy = _strategy_phase(runs)
+    required_families = strategy["required_families"] or None
+    phase = str(strategy["phase"])
+    print(f"AutoResearch strategy phase={phase} plateau={strategy['plateau']} next_action={strategy['next_action']}", flush=True)
     out: list[Tuple[str, Dict[str, Any], str]] = []
     for name, pivot, scope_policy in _pivot_bases():
         remaining = count - len(out)
         if remaining <= 0:
             break
         print(f"Trying AutoResearch best-path base {name} scope={scope_policy}", flush=True)
-        out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=len(out)))
+        out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=len(out), required_families=required_families, strategy_phase=phase))
     if out:
         return out
     print("Curated robust/torch bases are exhausted; trying best recent robust/torch winners", flush=True)
-    out = _propose_from_recent_winners(runs, count=count)
+    out = _propose_from_recent_winners(runs, count=count, required_families=required_families, strategy_phase=phase)
     if out:
         return out
     if os.environ.get("AUTORESEARCH_ALLOW_FOCUSED_FALLBACK", "1") != "1":
         return []
     print("Recent robust/torch winner follow-ups are exhausted; falling back to focused NumPy search", flush=True)
-    return _propose_configs(base, runs, count=count)
+    return _propose_configs(base, runs, count=count, required_families=required_families, strategy_phase=phase)
 
 
 def _propose_with_pivots(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:

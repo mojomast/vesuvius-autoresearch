@@ -14,3 +14,6 @@ experiments/runs/
 logs/
 logs/*.log
 logs/*.lock
+configs/auto_*.yaml
+configs/auto_*.yml
+configs/auto_*.json
