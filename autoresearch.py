@@ -68,9 +68,9 @@ SIGNATURE_DEFAULTS = {
     ("evaluation", "tta_flips"): None,
 }
 PIVOT_CONFIGS = (
-    "residual_25d_torch_unet_cpu.yaml",
     "robust_multisegment_dice035_expanded.yaml",
     "robust_tta_seed_ensemble.yaml",
+    "residual_25d_torch_unet_cpu.yaml",
 )
 
 
@@ -147,6 +147,27 @@ def _canonicalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     depth = _get_nested(cfg, ("model", "depth"), None)
     if isinstance(depth, int) and depth > 3:
         _set_nested(cfg, ("model", "depth"), 3)
+    return cfg
+
+
+def _prepare_autoresearch_base(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Make curated bases safe for unattended cron while preserving their research scope."""
+    cfg = _canonicalize_config(cfg)
+    model_name = str(_get_nested(cfg, ("model", "name"), ""))
+    if "torch" not in model_name:
+        return cfg
+    training = cfg.setdefault("training", {})
+    max_train_samples = int(training.get("max_train_samples") or 0)
+    sample_cap = int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024"))
+    if max_train_samples <= 0 or max_train_samples > sample_cap:
+        training["max_train_samples"] = sample_cap
+        cfg.setdefault("autoresearch", {})["cron_safety"] = {
+            "max_train_samples_bound": sample_cap,
+            "reason": "automatic runs use bounded torch samples; promotion runs should use explicit seed-repeat LOO configs",
+        }
+    if "seeds" in training and os.environ.get("AUTORESEARCH_ALLOW_SEED_ENSEMBLE", "0") != "1":
+        training.pop("seeds", None)
+        cfg.setdefault("autoresearch", {}).setdefault("cron_safety", {})["seed_ensemble_disabled"] = True
     return cfg
 
 
@@ -263,23 +284,30 @@ def _pivot_bases() -> list[tuple[str, Dict[str, Any], str]]:
         cfg = load_config(path)
         if not (cfg.get("dataset", {}).get("train_npz") and cfg.get("dataset", {}).get("val_npz")):
             continue
-        bases.append((name, _canonicalize_config(cfg), str(cfg.get("autoresearch", {}).get("scope_policy") or cfg.get("dataset", {}).get("research_scope") or "strategy_pivot")))
+        prepared = _prepare_autoresearch_base(cfg)
+        bases.append((name, prepared, str(prepared.get("autoresearch", {}).get("scope_policy") or prepared.get("dataset", {}).get("research_scope") or "strategy_pivot")))
     return bases
 
 
-def _propose_with_pivots(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:
-    proposals = _propose_configs(base, runs, count=count)
-    if proposals:
-        return proposals
-    print("Focused-pair NumPy search is exhausted; trying curated robust/torch pivot bases", flush=True)
+def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:
+    print("AutoResearch strategy: robust/torch best path first; focused NumPy is fallback only", flush=True)
     out: list[Tuple[str, Dict[str, Any], str]] = []
     for name, pivot, scope_policy in _pivot_bases():
         remaining = count - len(out)
         if remaining <= 0:
             break
-        print(f"Trying AutoResearch pivot base {name} scope={scope_policy}", flush=True)
+        print(f"Trying AutoResearch best-path base {name} scope={scope_policy}", flush=True)
         out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False))
-    return out
+    if out:
+        return out
+    if os.environ.get("AUTORESEARCH_ALLOW_FOCUSED_FALLBACK", "1") != "1":
+        return []
+    print("Curated robust/torch bases are exhausted; falling back to focused NumPy search", flush=True)
+    return _propose_configs(base, runs, count=count)
+
+
+def _propose_with_pivots(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:
+    return _propose_best_path(base, runs, count)
 
 
 def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> None:
@@ -319,9 +347,9 @@ def main() -> int:
         base = _best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
-        proposals = _propose_with_pivots(base, runs, count=proposal_count)
+        proposals = _propose_best_path(base, runs, count=proposal_count)
         if not proposals:
-            print("No novel one-change proposals remain across focused and curated pivot bases; pause instead of repeating runs")
+            print("No novel one-change proposals remain across the robust best path and focused fallback; pause instead of repeating runs")
             return 0
         for name, cfg, reason in proposals:
             cfg_path = CONFIGS / name

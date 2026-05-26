@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from autoresearch import _proposal_candidates, _propose_with_pivots, _search_signature, _set_nested
+from autoresearch import _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _propose_best_path, _propose_with_pivots, _search_signature, _set_nested
 from experiments.runner import load_config
 
 
@@ -33,6 +33,31 @@ class AutoResearchPivotTest(unittest.TestCase):
             self.assertIn("torch", cfg["model"]["name"])
             self.assertNotEqual(cfg["dataset"].get("research_scope"), base["dataset"].get("research_scope"))
             self.assertNotIn(_search_signature(cfg), {_search_signature(run["config"]) for run in runs})
+
+    def test_best_path_prioritizes_robust_expanded_before_residual_smoke(self) -> None:
+        bases = _pivot_bases()
+
+        self.assertGreaterEqual(len(bases), 2)
+        self.assertEqual(bases[0][0], "robust_multisegment_dice035_expanded.yaml")
+        self.assertIn("multi_segment_robust", bases[0][1]["dataset"].get("research_scope", ""))
+
+    def test_unattended_torch_bases_are_cpu_bounded(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+
+        prepared = _prepare_autoresearch_base(cfg)
+
+        self.assertEqual(prepared["training"]["max_train_samples"], 1024)
+        self.assertIn("cron_safety", prepared["autoresearch"])
+
+    def test_best_path_does_not_start_with_focused_numpy_when_robust_available(self) -> None:
+        base = load_config("configs/baseline.yaml")
+
+        proposals = _propose_best_path(base, [], count=2)
+
+        self.assertTrue(proposals)
+        for _name, cfg, _reason in proposals:
+            self.assertIn("torch", cfg["model"]["name"])
+            self.assertNotEqual(cfg["dataset"].get("research_scope"), base["dataset"].get("research_scope"))
 
 
 if __name__ == "__main__":
