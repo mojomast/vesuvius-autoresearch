@@ -324,6 +324,8 @@ class ResearchDashboardTest(unittest.TestCase):
         action = evidence["promotion_actions"][0]
         self.assertEqual(action["id"], "weak_fold_full_tile")
         self.assertIn("--segment-id weakseg", action["command_text"])
+        self.assertIn("--public-retry-count 5", action["command_text"])
+        self.assertIn("--public-retry-delay-sec 180", action["command_text"])
         self.assertFalse(action["safe_to_execute_from_dashboard"])
 
     def test_dashboard_marks_weak_fold_full_tile_done_when_metrics_match(self) -> None:

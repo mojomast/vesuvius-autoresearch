@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -43,14 +44,35 @@ def _validate_tiling_args(patch_size: int, stride: int, batch_size: int | None =
         raise ValueError("batch_size must be positive")
 
 
-def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catalog_source: str = "public-directory") -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if getattr(current, "status", None) == 429 or getattr(current, "code", None) == 429:
+            return True
+        if "429" in str(current) and "Too Many Requests" in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catalog_source: str = "public-directory", retry_count: int = 0, retry_delay_sec: float = 0.0) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Open a public labeled segment and return normalized image [C,H,W] plus label [H,W]."""
     from scripts.prepare_vesuvius_segment_npz import _align_label, _normalize, _open_layers, _read_label, _segment_meta
 
+    attempts = max(1, int(retry_count) + 1)
+    delay = max(0.0, float(retry_delay_sec))
     meta = _segment_meta(segment_id, catalog_source)
-    image, z_indices = _open_layers(meta["zarr_url"], str(level), z_offsets)
-    image = _normalize(image)
-    raw_label = _read_label(meta["inklabels_url"])
+    for attempt in range(attempts):
+        try:
+            image, z_indices = _open_layers(meta["zarr_url"], str(level), z_offsets)
+            image = _normalize(image)
+            raw_label = _read_label(meta["inklabels_url"])
+            break
+        except Exception as exc:
+            if attempt >= attempts - 1 or not _is_rate_limit_error(exc):
+                raise
+            if delay > 0:
+                time.sleep(delay)
     label = _align_label(raw_label, image.shape[-2:])
     h, w = label.shape[:2]
     image = image[:, :h, :w]
@@ -441,9 +463,9 @@ def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
     }
 
 
-def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False) -> dict[str, Any]:
+def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False, public_retry_count: int = 0, public_retry_delay_sec: float = 0.0) -> dict[str, Any]:
     offsets = z_offsets if z_offsets is not None else [0]
-    image, label, segment_meta = load_public_segment(segment_id, level, offsets, catalog_source)
+    image, label, segment_meta = load_public_segment(segment_id, level, offsets, catalog_source, public_retry_count, public_retry_delay_sec)
     models, cfg, artifact_dir, model_meta = load_torch_unet_artifact(artifact, image.shape[0], device)
     patch = int(cfg.get("dataset", {}).get("patch_size", 64) if patch_size is None else patch_size)
     step = int(max(1, patch // 2) if stride is None else stride)

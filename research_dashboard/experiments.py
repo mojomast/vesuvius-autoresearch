@@ -253,6 +253,8 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
             "--stride", "32",
             "--batch-size", "8",
             "--device", "cpu",
+            "--public-retry-count", "5",
+            "--public-retry-delay-sec", "180",
         ]
         command_text = " ".join(command)
 

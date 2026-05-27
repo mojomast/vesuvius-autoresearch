@@ -3,12 +3,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 from data.tile_inference import (
     evaluate_probability_map,
     _promotion_checks,
+    load_public_segment,
     self_test,
     stitch_probabilities_from_predictor,
     tile_origins,
@@ -116,6 +118,27 @@ class TileInferenceTest(unittest.TestCase):
         self.assertIn("probability_map", outputs)
         self.assertIn("metrics_json", outputs)
         self.assertIn("threshold_csv", outputs)
+
+    def test_public_segment_retry_handles_rate_limit(self) -> None:
+        class RateLimitError(Exception):
+            status = 429
+
+        image = np.ones((1, 4, 4), dtype=np.float32)
+        label = np.zeros((4, 4), dtype=np.float32)
+
+        with mock.patch("scripts.prepare_vesuvius_segment_npz._segment_meta", return_value={"zarr_url": "zarr", "inklabels_url": "labels"}), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._open_layers", side_effect=[RateLimitError("Too Many Requests"), (image, [2])]) as open_layers, \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._normalize", side_effect=lambda arr: arr), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._read_label", return_value=label), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._align_label", side_effect=lambda raw, shape: raw), \
+             mock.patch("data.tile_inference.time.sleep") as sleep:
+            loaded_image, loaded_label, meta = load_public_segment("seg", "1", [0], retry_count=1, retry_delay_sec=0.5)
+
+        self.assertEqual(open_layers.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+        self.assertTrue(np.array_equal(loaded_image, image))
+        self.assertTrue(np.array_equal(loaded_label, label))
+        self.assertEqual(meta["z_indices"], [2])
 
     def test_self_test(self) -> None:
         result = self_test()
