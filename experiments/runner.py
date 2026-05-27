@@ -193,6 +193,56 @@ def _positive_rate_excess(pred_rate: float, target_rate: float, tolerance: float
     return max(0.0, abs(float(pred_rate) - float(target_rate)) - float(tolerance))
 
 
+def _threshold_row_summary(row: Dict[str, float] | None, val_positive_rate: float) -> Dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "threshold": float(row["threshold"]),
+        "precision": float(row["precision"]),
+        "recall": float(row["recall"]),
+        "f05": float(row["f05"]),
+        "f1": float(row["f1"]),
+        "pred_positive_rate": float(row["pred_positive_rate"]),
+        "pred_to_val_ratio": float(row["pred_positive_rate"] / max(val_positive_rate, 1e-12)),
+    }
+
+
+def _threshold_risk_summary(threshold_rows: list[Dict[str, float]], fixed_row: Dict[str, float], selected_row: Dict[str, float], val_positive_rate: float) -> Dict[str, Any]:
+    unconstrained = max(threshold_rows, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if threshold_rows else None
+    caps: Dict[str, Any] = {}
+    for cap in (2.0, 3.0, 3.5):
+        eligible = [row for row in threshold_rows if row["pred_positive_rate"] / max(val_positive_rate, 1e-12) <= cap]
+        best = max(eligible, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if eligible else None
+        caps[f"best_under_prratio{str(cap).replace('.', 'p')}"] = _threshold_row_summary(best, val_positive_rate)
+    selected_ratio = selected_row["pred_positive_rate"] / max(val_positive_rate, 1e-12)
+    return {
+        "selected": _threshold_row_summary(selected_row, val_positive_rate),
+        "fixed_0p5": _threshold_row_summary(fixed_row, val_positive_rate),
+        "best_unconstrained": _threshold_row_summary(unconstrained, val_positive_rate),
+        **caps,
+        "cap_binding": bool(abs(selected_ratio - 3.0) <= 0.15 or abs(selected_ratio - 3.5) <= 0.15 or abs(selected_ratio - 2.0) <= 0.15),
+        "selected_pred_to_val_ratio": float(selected_ratio),
+    }
+
+
+def _threshold_risk_markdown(summary: Dict[str, Any] | None) -> str:
+    if not isinstance(summary, dict):
+        return ""
+    lines = ["\n## Threshold Risk\n"]
+    selected = summary.get("selected") or {}
+    fixed = summary.get("fixed_0p5") or {}
+    unconstrained = summary.get("best_unconstrained") or {}
+    lines.append(f"- Selected threshold: {float(selected.get('threshold') or 0.0):.3f}; pred/val ratio {float(selected.get('pred_to_val_ratio') or 0.0):.3f}x; F1 {float(selected.get('f1') or 0.0):.6f}\n")
+    lines.append(f"- Fixed 0.5 threshold F1: {float(fixed.get('f1') or 0.0):.6f}\n")
+    lines.append(f"- Best unconstrained F1: {float(unconstrained.get('f1') or 0.0):.6f}\n")
+    for key, label in (("best_under_prratio2p0", "<=2.0x"), ("best_under_prratio3p0", "<=3.0x"), ("best_under_prratio3p5", "<=3.5x")):
+        row = summary.get(key) or {}
+        if row:
+            lines.append(f"- Best under {label}: threshold {float(row.get('threshold') or 0.0):.3f}; ratio {float(row.get('pred_to_val_ratio') or 0.0):.3f}x; F1 {float(row.get('f1') or 0.0):.6f}\n")
+    lines.append(f"- Cap binding: {bool(summary.get('cap_binding'))}\n")
+    return "".join(lines)
+
+
 def _resolve_positive_rate_target(raw: Any, train_labels: np.ndarray) -> float | None:
     if raw is None:
         return None
@@ -332,6 +382,7 @@ def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_label
         "max_pred_positive_rate_ratio": max_ratio,
         "min_pred_positive_rate_ratio": min_ratio,
         "target_pred_positive_rate": target_rate,
+        "threshold_risk_summary": _threshold_risk_summary(threshold_rows, fixed, best_f1_row, val_positive_rate),
         "prob_min": float(np.min(pv)),
         "prob_mean": float(np.mean(pv)),
         "prob_p95": float(np.quantile(pv, 0.95)),
@@ -350,6 +401,7 @@ def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_label
         f"- Average precision: {metrics['average_precision']:.6f}\n"
         f"- Label positive rate train/val: {metrics['train_positive_rate']:.6f} / {metrics['val_positive_rate']:.6f}\n"
         f"- Probability max/p95/mean: {metrics['prob_max']:.6f} / {metrics['prob_p95']:.6f} / {metrics['prob_mean']:.6f}\n"
+        f"{_threshold_risk_markdown(metrics.get('threshold_risk_summary'))}"
     )
     (artifact_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True))
     return metrics

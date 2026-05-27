@@ -229,12 +229,14 @@ def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) ->
             "fixed_threshold_status": data.get("fixed_threshold_status"),
             "threshold_selection": data.get("threshold_selection"),
             "selected_threshold_reason": data.get("selected_threshold_reason"),
+            "threshold_risk_summary": data.get("threshold_risk_summary"),
             "quality_verdict": quality,
             "quality_score": quality.get("score"),
             "quality_reasons": quality.get("reasons", []),
             "quality_next_actions": actions,
             "quality_next_action": actions[0].get("label") if actions else None,
         })
+    out.sort(key=lambda item: (str(item.get("segment_id") or ""), 0 if item.get("threshold_risk_summary") else 1, str(item.get("relative_path") or item.get("path") or "")))
     return out
 
 

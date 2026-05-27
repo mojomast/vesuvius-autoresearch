@@ -926,11 +926,31 @@ HTML = """<!doctype html>
       const commands = plan.mine_commands || [];
       const eligible = plan.eligible_extra_train_npzs || [];
       const rejected = plan.rejected_extra_train_npzs || [];
+      const decisions = plan.calibration_mining_decisions || [];
+      const topDecision = decisions[0] || {};
+      const foldMap = plan.fold_safe_extra_train_npzs_by_heldout || {};
+      const foldEntries = Object.entries(foldMap);
+      const foldEligible = foldEntries.reduce((sum, [, value]) => sum + ((value.eligible_extra_train_npzs || []).length), 0);
+      const foldRejected = foldEntries.reduce((sum, [, value]) => sum + ((value.rejected_extra_train_npzs || []).length), 0);
+      const minedItems = (plan.mined_inventory || {}).mined_npzs || [];
+      const statusCounts = minedItems.reduce((counts, item) => {
+        const status = item.eligibility_status || 'unknown';
+        counts[status] = (counts[status] || 0) + 1;
+        return counts;
+      }, {});
+      const warningCount = minedItems.reduce((sum, item) => sum + ((item.eligibility_warnings || []).length), 0);
+      const configPreview = plan.config_preview || {};
+      const previewWarnings = configPreview.warnings || [];
       const first = commands[0] || {};
       container.innerHTML = `
         <div class="milestone-item"><span class="milestone-label">Candidate</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(plan.candidate_run_id || 'unknown')}</span></div>
         <div class="milestone-item"><span class="milestone-label">Mine commands</span><span class="indicator-badge ${commands.length ? 'badge-warning' : 'badge-success'}">${esc(commands.length)}</span></div>
+        <div class="milestone-item"><span class="milestone-label">Top calibration action</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(topDecision.action || 'none')} · ${esc(topDecision.reason || 'no decision')}</span></div>
         <div class="milestone-item"><span class="milestone-label">Mined NPZs</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((plan.mined_inventory || {}).count || 0)} found · ${esc(eligible.length)} eligible · ${esc(rejected.length)} rejected</span></div>
+        <div class="milestone-item"><span class="milestone-label">Inventory status counts</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">eligible ${esc(statusCounts.eligible || 0)} · review ${esc(statusCounts.review || 0)} · reject ${esc(statusCounts.reject || 0)} · warnings ${esc(warningCount)}</span></div>
+        <div class="milestone-item"><span class="milestone-label">Fold-safe summary</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(foldEntries.length)} heldout · ${esc(foldEligible)} eligible · ${esc(foldRejected)} rejected</span></div>
+        <div class="milestone-item"><span class="milestone-label">Config preview valid</span><span class="indicator-badge ${configPreview.valid === false ? 'badge-error' : 'badge-success'}">${esc(configPreview.valid === false ? 'false' : (configPreview.valid === true ? 'true' : 'n/a'))}</span></div>
+        ${previewWarnings.length ? `<div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);">Config preview warnings: ${esc(previewWarnings.join(', '))}</div>` : ''}
         <div class="milestone-item"><span class="milestone-label">Ratio trigger</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${fmt(plan.ratio_threshold, 2)}x</span></div>
         <div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);margin-top:0.35rem;">${esc(plan.next_step || 'Run mining, retrain fold-safe, validate full-tile quality.')}</div>
         ${first.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(first.command_text).replace(/'/g, '&#39;')}')">Copy top mine command</button>` : ''}

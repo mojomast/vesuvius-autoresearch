@@ -357,6 +357,38 @@ def _expected_calibration_error(probs: np.ndarray, labels: np.ndarray, bins: int
     return float(ece)
 
 
+def _threshold_row_summary(row: dict[str, float] | None, val_positive_rate: float) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "threshold": float(row["threshold"]),
+        "precision": float(row["precision"]),
+        "recall": float(row["recall"]),
+        "f05": float(row["f05"]),
+        "f1": float(row["f1"]),
+        "pred_positive_rate": float(row["pred_positive_rate"]),
+        "pred_to_val_ratio": float(row["pred_positive_rate"] / max(val_positive_rate, 1e-12)),
+    }
+
+
+def _threshold_risk_summary(rows: list[dict[str, float]], fixed_row: dict[str, float], selected_row: dict[str, float], val_positive_rate: float) -> dict[str, Any]:
+    unconstrained = max(rows, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if rows else None
+    caps: dict[str, Any] = {}
+    for cap in (2.0, 3.0, 3.5):
+        eligible = [row for row in rows if row["pred_positive_rate"] / max(val_positive_rate, 1e-12) <= cap]
+        best = max(eligible, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if eligible else None
+        caps[f"best_under_prratio{str(cap).replace('.', 'p')}"] = _threshold_row_summary(best, val_positive_rate)
+    selected_ratio = selected_row["pred_positive_rate"] / max(val_positive_rate, 1e-12)
+    return {
+        "selected": _threshold_row_summary(selected_row, val_positive_rate),
+        "fixed_0p5": _threshold_row_summary(fixed_row, val_positive_rate),
+        "best_unconstrained": _threshold_row_summary(unconstrained, val_positive_rate),
+        **caps,
+        "cap_binding": bool(abs(selected_ratio - 3.0) <= 0.15 or abs(selected_ratio - 3.5) <= 0.15 or abs(selected_ratio - 2.0) <= 0.15),
+        "selected_pred_to_val_ratio": float(selected_ratio),
+    }
+
+
 def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_threshold: float = 0.5, eval_cfg: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, float]]]:
     eval_cfg = eval_cfg or {}
     if prob_map.ndim != 2:
@@ -437,6 +469,7 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
         "max_pred_positive_rate_ratio": max_ratio,
         "min_pred_positive_rate_ratio": min_ratio,
         "target_pred_positive_rate": target_rate,
+        "threshold_risk_summary": _threshold_risk_summary(rows, fixed, best_f1, label_positive_rate),
         "prob_min": float(np.min(probs)),
         "prob_mean": float(np.mean(probs)),
         "prob_p95": float(np.quantile(probs, 0.95)),

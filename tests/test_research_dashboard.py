@@ -34,6 +34,10 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("Leaderboard next action", HTML)
         self.assertIn("Mining & Calibration Plan", HTML)
         self.assertIn("mining-calibration-panel", HTML)
+        self.assertIn("Top calibration action", HTML)
+        self.assertIn("Fold-safe summary", HTML)
+        self.assertIn("Inventory status counts", HTML)
+        self.assertIn("Config preview valid", HTML)
 
     def test_decoded_output_quality_passes_coherent_structure(self) -> None:
         probs = np.full((16, 16), 0.05, dtype=np.float32)
@@ -106,6 +110,34 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("inventory", snapshot)
         self.assertIn("progress", snapshot)
         self.assertFalse(snapshot["capabilities"]["enable_runs"])
+
+    def test_snapshot_mining_plan_uses_dataset_fold_maps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs").mkdir()
+            mined_dir = root / "data" / "mined"
+            mined_dir.mkdir(parents=True)
+            np.savez_compressed(mined_dir / "seg-a.npz", images=np.zeros((1, 1, 4, 4), dtype=np.float32), labels=np.zeros((1, 1, 4, 4), dtype=np.float32))
+            (mined_dir / "seg-a.metadata.json").write_text(json.dumps({"mined_segment_id": "seg-a", "samples": 1, "forbidden_heldout_segments": ["seg-a"]}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "run1"
+            run_dir.mkdir(parents=True)
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("run1", "2026-05-26T00:00:00Z", json.dumps({"model": {"name": "tiny_torch_unet"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "val_segment_id": "seg-b"}}), 0.4, json.dumps({"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}), mock.patch("research_dashboard.snapshot.fold_maps", return_value=[{"heldout_segments": ["seg-a", "seg-b"]}]):
+                snapshot = build_snapshot(root)
+
+        by_fold = snapshot["mining"]["fold_safe_extra_train_npzs_by_heldout"]
+        self.assertIn("seg-a", by_fold)
+        self.assertIn("seg-b", by_fold)
+        self.assertEqual(by_fold["seg-b"]["eligible_extra_train_npzs"], ["data/mined/seg-a.npz"])
 
     def test_snapshot_separates_peak_robust_and_promotable_champions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

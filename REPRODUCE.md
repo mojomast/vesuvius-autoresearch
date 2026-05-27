@@ -62,7 +62,20 @@ Before writing any mining artifacts, generate a dry-run plan from the current da
 .venv/bin/python scripts/plan_hard_negative_retrain.py --pretty
 ```
 
-The planner emits copyable `scripts/infer_full_tile.py --mine-output ...` commands, currently eligible mined NPZs, rejected held-out leaks, and preview-only config patches for `dataset.extra_train_npzs`.
+The planner emits copyable `scripts/infer_full_tile.py --mine-output ...` commands, currently eligible mined NPZs, rejected held-out leaks, and preview-only config patches for `dataset.extra_train_npzs`. Planner mining commands write under `data/mined/` and a fresh `experiments/runs/<run_id>/mining_refresh_<segment_id>` output directory; they do not include `--overwrite` and must not reuse an existing full-tile metrics directory.
+
+Preview a fold-specific config without writing files:
+
+```bash
+.venv/bin/python scripts/plan_hard_negative_retrain.py \
+  --heldout-segment 20230522181603 \
+  --base-config configs/robust_hard_negative_prratio2p0_followup.yaml \
+  --pretty
+```
+
+Read `fold_safe_extra_train_npzs_by_heldout` before running LOO: mined files from a segment are rejected for that same held-out segment but may be eligible for other folds.
+
+`--base-config` is intentionally path-guarded: it must resolve to a `.yaml` or `.yml` file inside the repository root, and the preview is printed in JSON only. If `--heldout-segment` changes `autoresearch.heldout_segment` but the config train/val NPZ paths still point to another fold, `config_preview.valid` is false and no YAML preview is emitted.
 
 ```bash
 .venv/bin/python scripts/infer_full_tile.py \
@@ -77,8 +90,7 @@ The planner emits copyable `scripts/infer_full_tile.py --mine-output ...` comman
   --batch-size 8 \
   --device cpu \
   --mine-output data/mined/<name>.npz \
-  --mine-max-patches 512 \
-  --overwrite
+  --mine-max-patches 512
 ```
 
 Only add `data/mined/<name>.npz` to `dataset.extra_train_npzs` for folds whose held-out segment is different from the mined segment.

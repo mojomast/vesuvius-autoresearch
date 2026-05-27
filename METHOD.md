@@ -44,7 +44,9 @@ Use the dry-run planner before retraining:
 .venv/bin/python scripts/plan_hard_negative_retrain.py --pretty
 ```
 
-The planner does not write mined data. It reads dashboard evidence, recommends bounded mining commands for overpredicting full-tile outputs, inventories existing `data/mined/**/*.npz` files, rejects held-out segment leakage, and previews fold-safe `dataset.extra_train_npzs` updates.
+The planner does not write mined data. It reads dashboard evidence, recommends bounded mining commands for overpredicting full-tile outputs, inventories existing `data/mined/**/*.npz` files, rejects held-out segment leakage, and previews fold-safe `dataset.extra_train_npzs` updates. Mining commands use a fresh `experiments/runs/<run_id>/mining_refresh_<segment_id>` output directory and do not include `--overwrite`, so existing full-tile evidence remains intact.
+
+Planner output is fold-scoped. `fold_safe_extra_train_npzs_by_heldout` shows which mined NPZs are eligible or rejected for each held-out segment, while top-level `eligible_extra_train_npzs` remains the active weak-fold shortcut. Use `--base-config` and `--heldout-segment` to render a preview-only YAML config in JSON output; if the held-out override does not match the train/val NPZ paths, `config_preview.valid` is false and the YAML preview is omitted.
 
 ## Hallucination Controls
 

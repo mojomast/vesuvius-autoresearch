@@ -72,7 +72,11 @@ When candidate evidence has an unfinished diagnostic or quality action, `researc
 
 Full-tile evidence and leaderboard rows include `quality_next_actions` and `quality_next_action`. `pass` has no action, `review` asks for full-tile quality review, and `fail` asks for quality remediation before promotion.
 
-`mining` exposes a dry-run hard-negative retrain plan. It inventories `data/mined/**/*.npz`, rejects mined files whose provenance matches the held-out segment, and emits copyable `scripts/infer_full_tile.py --mine-output ...` commands for overpredicting full-tile outputs. The UI renders this as the Mining & Calibration Plan panel. The dashboard never executes these artifact-writing commands.
+`mining` exposes a dry-run hard-negative retrain plan. It inventories `data/mined/**/*.npz`, rejects mined files whose provenance matches the held-out segment, and emits copyable `scripts/infer_full_tile.py --mine-output ...` commands for overpredicting full-tile outputs. Those commands keep `--mine-output` under `data/mined/`, use a fresh `mining_refresh_<segment_id>` output directory, and omit `--overwrite` so prior full-tile evidence is not replaced. `fold_safe_extra_train_npzs_by_heldout` is the fold-scoped safety map; top-level `eligible_extra_train_npzs` is only the active weak-fold shortcut. The UI renders this as the Mining & Calibration Plan panel with calibration decision, fold-safe, inventory, and config-preview safety summaries. The dashboard never executes these artifact-writing commands.
+
+`mining.calibration_mining_decisions` connects threshold-risk evidence to the next action: tighten the positive-rate cap when lower ratio caps preserve selected F1, mine hard negatives when lower caps collapse F1, or review threshold risk when evidence is incomplete.
+
+When `config_preview` is present, `valid: false` is blocking. The dashboard may show warnings, but unsafe held-out overrides omit the YAML preview so the JSON output does not look runnable.
 
 `research_summary.candidate_evidence.loo_full_tile` summarizes candidate-linked full-tile diagnostics across the seed-repeat LOO panel. It is separate from `full_tile`, which only describes full-tile outputs under the selected candidate artifact directory.
 

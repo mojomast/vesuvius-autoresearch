@@ -44,7 +44,7 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[s
         "decision": decision,
         "champions": experiments.get("champions", {}),
     }
-    partial_snapshot = {"research_summary": research_summary, "experiments": experiments}
+    partial_snapshot = {"research_summary": research_summary, "experiments": experiments, "datasets": datasets}
     mining = build_hard_negative_plan(root, partial_snapshot)
     return {
         "schema_version": SCHEMA_VERSION,

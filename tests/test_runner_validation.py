@@ -92,6 +92,9 @@ class RunnerValidationTest(unittest.TestCase):
 
         self.assertEqual(metrics["threshold_selection"], "positive_rate_constrained")
         self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 4.0)
+        self.assertIn("threshold_risk_summary", metrics)
+        self.assertIn("best_under_prratio2p0", metrics["threshold_risk_summary"])
+        self.assertIn("best_under_prratio3p5", metrics["threshold_risk_summary"])
         self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
         self.assertIn(metrics["fixed_threshold_status"], {"ok", "weak"})
         self.assertGreaterEqual(metrics["brier_score"], 0.0)
@@ -131,12 +134,16 @@ class RunnerValidationTest(unittest.TestCase):
         probs = np.asarray([0.75, 0.25, 0.75, 0.25], dtype=np.float32)
 
         with tempfile.TemporaryDirectory() as tmp:
-            metrics = _pixel_metrics_from_probs(probs, labels, labels, 0.5, Path(tmp), {})
+            tmp_path = Path(tmp)
+            metrics = _pixel_metrics_from_probs(probs, labels, labels, 0.5, tmp_path, {})
+            summary = (tmp_path / "run_summary.md").read_text()
 
         self.assertAlmostEqual(metrics["brier_score"], 0.0625)
         self.assertAlmostEqual(metrics["ap_prevalence_lift"], 2.0)
         self.assertEqual(metrics["fixed_threshold_status"], "ok")
         self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
+        self.assertIn("Threshold Risk", summary)
+        self.assertIn("Best under <=2.0x", summary)
 
 
 if __name__ == "__main__":
