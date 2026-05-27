@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autoresearch
-from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
+from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _promotion_ready_payload, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
 from experiments.runner import load_config
 
 
@@ -162,7 +162,7 @@ class AutoResearchPivotTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             try:
-                with patch("sys.argv", ["autoresearch.py", "--plan", "--json"]), patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_message", return_value=None), patch("autoresearch.subprocess.run") as run_mock:
+                with patch("sys.argv", ["autoresearch.py", "--plan", "--json"]), patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_payload", return_value=None), patch("autoresearch.subprocess.run") as run_mock:
                     self.assertEqual(autoresearch.main(), 0)
             finally:
                 autoresearch.CONFIGS = old_configs
@@ -175,10 +175,41 @@ class AutoResearchPivotTest(unittest.TestCase):
     def test_main_pauses_when_promotion_gate_is_ready(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
         run = {"run_id": "run1", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
-        with patch("sys.argv", ["autoresearch.py"]), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_message", return_value="Promote candidate"), patch("autoresearch.subprocess.run") as run_mock:
+        with patch("sys.argv", ["autoresearch.py"]), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_payload", return_value={"status": "promotion_ready", "next_action": "Promote candidate", "proposals": []}), patch("autoresearch.subprocess.run") as run_mock:
             self.assertEqual(autoresearch.main(), 0)
 
         run_mock.assert_not_called()
+
+    def test_promotion_ready_payload_prefers_candidate_evidence_action(self) -> None:
+        snapshot = {
+            "research_summary": {
+                "decision": {
+                    "next_action": "Promote candidate",
+                    "promotion_gate": {"ready": True},
+                    "candidate_evidence": {
+                        "candidate_run_id": "candidate",
+                        "weak_fold_full_tile": {"command_text": "fallback command"},
+                    },
+                    "promotion_actions": [{
+                        "id": "weak_fold_full_tile",
+                        "label": "Run full-tile on weak fold weakseg",
+                        "command_text": ".venv/bin/python scripts/infer_full_tile.py --public-chunk-delay-sec 0.5",
+                        "safe_to_execute_from_dashboard": False,
+                        "writes_artifacts": True,
+                    }],
+                }
+            }
+        }
+
+        with patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+            payload = _promotion_ready_payload()
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["next_action"], "Run full-tile on weak fold weakseg")
+        self.assertEqual(payload["candidate_run_id"], "candidate")
+        self.assertIn("--public-chunk-delay-sec 0.5", payload["command"])
+        self.assertIn("use_public_directory_backoff_and_chunk_pacing", payload["reasoning"])
 
     def test_recent_winner_followups_prefer_expanded_robust_over_focused_residual_score(self) -> None:
         robust = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))

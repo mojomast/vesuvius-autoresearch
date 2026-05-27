@@ -43,7 +43,7 @@ python3 autoresearch.py --plan
 python3 autoresearch.py --plan --json
 ```
 
-If the dashboard promotion gate is ready, AutoResearch pauses exploration by default and prints the promotion/verification action instead of generating more local F1 micro-sweeps. Override only for deliberate diagnostics with `AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0`.
+If the dashboard promotion gate is ready, AutoResearch pauses exploration by default and prints the candidate-linked promotion/verification action instead of generating more local F1 micro-sweeps. Planning JSON includes the selected action, candidate run, reasoning trace, and copyable command; weak-fold public full-tile commands include whole-fetch retry and chunk-level pacing flags. Override only for deliberate diagnostics with `AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0`.
 
 Seed-repeat LOO can be accelerated with independent process workers while preserving deterministic JSONL order:
 
