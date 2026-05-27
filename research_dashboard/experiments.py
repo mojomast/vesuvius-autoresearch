@@ -219,6 +219,22 @@ def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) ->
     return out
 
 
+def _weak_fold_loo_run(summary: dict[str, Any] | None, weak_fold_id: str) -> dict[str, Any] | None:
+    if not summary or not weak_fold_id:
+        return None
+    rows = [row for row in summary.get("rows", []) if isinstance(row, dict) and str(row.get("heldout_segment")) == weak_fold_id and row.get("artifact_dir")]
+    if not rows:
+        return None
+    target = summary.get("worst_fold_val_f1")
+    try:
+        target_f1 = float(target)
+    except (TypeError, ValueError):
+        target_f1 = None
+    if target_f1 is None:
+        return rows[0]
+    return min(rows, key=lambda row: abs(float(row.get("val_f1") or 0.0) - target_f1))
+
+
 def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {"candidate_run_id": None, "promotion_actions": []}
@@ -226,7 +242,11 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
     full_tiles = _full_tile_metrics(run, project_root)
     artifact_dir = Path(str(run.get("artifact_dir") or ""))
     weak_fold_id = str((summary or {}).get("worst_fold_id") or "")
-    weak_tile = next((item for item in full_tiles if item.get("segment_id") == weak_fold_id), None) if weak_fold_id else None
+    weak_loo_run = _weak_fold_loo_run(summary, weak_fold_id)
+    weak_artifact_dir = Path(str((weak_loo_run or {}).get("artifact_dir") or artifact_dir))
+    weak_run = {"artifact_dir": str(weak_artifact_dir)} if weak_artifact_dir else run
+    weak_tiles = _full_tile_metrics(weak_run, project_root) if weak_fold_id else []
+    weak_tile = next((item for item in weak_tiles if item.get("segment_id") == weak_fold_id), None) if weak_fold_id else None
     weak_status = "not_applicable"
     if weak_fold_id:
         if not weak_tile:
@@ -238,8 +258,8 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
 
     command: list[str] | None = None
     command_text = None
-    if weak_fold_id and artifact_dir:
-        artifact_rel = _rel_path(artifact_dir, project_root)
+    if weak_fold_id and weak_artifact_dir:
+        artifact_rel = _rel_path(weak_artifact_dir, project_root)
         output_rel = f"{artifact_rel}/full_tile_weak_fold_{weak_fold_id}"
         command = [
             ".venv/bin/python", "scripts/infer_full_tile.py",
@@ -293,6 +313,8 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
             "weak_fold_id": weak_fold_id or None,
             "status": weak_status,
             "metrics": weak_tile,
+            "loo_run": weak_loo_run,
+            "artifact_dir": str(weak_artifact_dir) if weak_artifact_dir else None,
             "command": command,
             "command_text": command_text,
             "safe_to_execute_from_dashboard": False,
@@ -427,7 +449,7 @@ def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, 
 
     actions = evidence.get("promotion_actions", []) if isinstance(evidence.get("promotion_actions"), list) else []
     top_action = actions[0] if actions and isinstance(actions[0], dict) else {}
-    if top_action and top_action.get("id") != "promotion_review":
+    if top_action:
         next_action = str(top_action.get("label") or next_action)
         if top_action.get("id") == "weak_fold_full_tile" and "before promotion review" not in next_action:
             next_action = f"{next_action} before promotion review."
@@ -470,7 +492,17 @@ def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, An
             continue
         if not isinstance(data, dict) or "promotion_ready" not in data:
             continue
-        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids")})
+        rows = []
+        jsonl_path = Path(str(path)[:-len(".summary.json")] + ".jsonl") if path.name.endswith(".summary.json") else path.with_suffix(".jsonl")
+        if jsonl_path.exists():
+            try:
+                for line in jsonl_path.read_text().splitlines():
+                    row = json.loads(line)
+                    if isinstance(row, dict):
+                        rows.append({key: row.get(key) for key in ("run_id", "artifact_dir", "heldout_segment", "seed", "val_f1", "average_precision", "returncode")})
+            except Exception:
+                rows = []
+        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids"), "rows": rows})
         if len(summaries) >= limit:
             break
     return summaries

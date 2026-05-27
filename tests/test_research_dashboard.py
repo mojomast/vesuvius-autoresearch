@@ -363,6 +363,39 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(evidence["weak_fold_full_tile"]["status"], "done")
         self.assertNotEqual(evidence["promotion_actions"][0]["id"], "weak_fold_full_tile")
 
+    def test_dashboard_uses_loo_heldout_artifact_for_weak_fold_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            summary = logs / "candidate.summary.json"
+            summary.write_text(json.dumps({"promotion_ready": True, "run_ids": ["candidate"], "worst_fold_id": "weakseg", "worst_fold_val_f1": 0.047, "promotion_warnings": []}))
+            (logs / "candidate.jsonl").write_text(json.dumps({"run_id": "loo_weak", "artifact_dir": str(root / "experiments" / "runs" / "loo_weak"), "heldout_segment": "weakseg", "seed": 15050, "val_f1": 0.047, "average_precision": 0.03, "returncode": 0}) + "\n")
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            candidate_dir = root / "experiments" / "runs" / "candidate"
+            candidate_tile_dir = candidate_dir / "full_tile_goodseg"
+            candidate_tile_dir.mkdir(parents=True)
+            (candidate_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "goodseg"}, "promotion_checks": {"eligible": True}}))
+            (root / "experiments" / "runs" / "loo_weak").mkdir(parents=True)
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "goodseg"}}
+            metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(candidate_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        weak = snapshot["research_summary"]["candidate_evidence"]["weak_fold_full_tile"]
+        self.assertEqual(weak["loo_run"]["run_id"], "loo_weak")
+        self.assertIn("experiments/runs/loo_weak", weak["command_text"])
+        self.assertNotIn("--artifact experiments/runs/candidate", weak["command_text"])
+
     def test_dashboard_detects_nested_full_tile_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
