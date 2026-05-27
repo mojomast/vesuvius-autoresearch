@@ -58,6 +58,7 @@ experiments
 progress
 research_summary
 operations
+mining
 capabilities
 ```
 
@@ -70,6 +71,8 @@ Seed-repeat LOO and full-tile evidence are candidate-linked: unrelated global su
 When candidate evidence has an unfinished diagnostic or quality action, `research_summary.decision.next_action` should prefer that action over generic promotion text. A ready gate starts review; it does not hide missing weak-fold full-tile diagnostics or quality-review findings. Full-tile `quality_verdict: fail` blocks promotion when quality metrics are present; `review` stays promotable but inserts a quality review before `promotion_review`.
 
 Full-tile evidence and leaderboard rows include `quality_next_actions` and `quality_next_action`. `pass` has no action, `review` asks for full-tile quality review, and `fail` asks for quality remediation before promotion.
+
+`mining` exposes a dry-run hard-negative retrain plan. It inventories `data/mined/**/*.npz`, rejects mined files whose provenance matches the held-out segment, and emits copyable `scripts/infer_full_tile.py --mine-output ...` commands for overpredicting full-tile outputs. The UI renders this as the Mining & Calibration Plan panel. The dashboard never executes these artifact-writing commands.
 
 `research_summary.candidate_evidence.loo_full_tile` summarizes candidate-linked full-tile diagnostics across the seed-repeat LOO panel. It is separate from `full_tile`, which only describes full-tile outputs under the selected candidate artifact directory.
 

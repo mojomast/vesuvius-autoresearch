@@ -32,6 +32,8 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("quality-leaderboard-container", HTML)
         self.assertIn("Quality next action", HTML)
         self.assertIn("Leaderboard next action", HTML)
+        self.assertIn("Mining & Calibration Plan", HTML)
+        self.assertIn("mining-calibration-panel", HTML)
 
     def test_decoded_output_quality_passes_coherent_structure(self) -> None:
         probs = np.full((16, 16), 0.05, dtype=np.float32)
@@ -98,6 +100,8 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(snapshot["experiments"]["count"], 1)
         self.assertEqual(snapshot["experiments"]["latest"]["run_id"], "run1")
         self.assertIn("next_action", snapshot["research_summary"])
+        self.assertIn("mining", snapshot)
+        self.assertIn("mine_commands", snapshot["mining"])
         self.assertIn("blocker_counts", snapshot["research_summary"])
         self.assertIn("inventory", snapshot)
         self.assertIn("progress", snapshot)

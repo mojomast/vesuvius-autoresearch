@@ -210,6 +210,8 @@ class TileInferenceTest(unittest.TestCase):
                 self.assertEqual(data["labels"].shape, (1, 1, 4, 4))
             self.assertIn("mined_npz", result["outputs"])
             self.assertEqual(result["metrics"]["mined_hard_negatives"]["samples"], 1)
+            self.assertEqual(result["metrics"]["mined_hard_negatives"]["mined_segment_id"], "seg")
+            self.assertEqual(result["metrics"]["mined_hard_negatives"]["forbidden_heldout_segments"], ["seg"])
 
     def test_public_segment_retry_handles_rate_limit(self) -> None:
         class RateLimitError(Exception):

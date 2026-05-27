@@ -56,6 +56,7 @@ vesuvius-dashboard-snapshot = "research_dashboard.snapshot:main"
 vesuvius-audit-state = "scripts.audit_research_state:main"
 vesuvius-infer-full-tile = "scripts.infer_full_tile:main"
 vesuvius-evaluate-loo = "scripts.evaluate_leave_one_out:main"
+vesuvius-plan-hard-negatives = "scripts.plan_hard_negative_retrain:main"
 
 [tool.setuptools]
 py-modules = ["autoresearch", "run_dashboard", "run_experiment"]

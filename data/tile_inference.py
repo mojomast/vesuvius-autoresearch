@@ -615,10 +615,16 @@ def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, l
         mined_meta.update({
             "source": "full_tile_failure_mining",
             "segment_id": str(segment_id),
+            "mined_segment_id": str(segment_id),
+            "source_segment_id": str(segment_id),
+            "forbidden_heldout_segments": [str(segment_id)],
             "artifact_dir": str(artifact_dir),
+            "parent_artifact_dir": str(artifact_dir),
             "parent_full_tile_output_dir": str(output_dir),
+            "parent_full_tile": {"segment_id": str(segment_id), "output_dir": str(output_dir)},
             "level": str(level),
             "z_offsets": [int(x) for x in offsets],
+            "mining_threshold": mining_threshold,
             "threshold_source": "best_threshold" if mine_threshold is None else "explicit",
         })
         metrics["mined_hard_negatives"] = mined_meta

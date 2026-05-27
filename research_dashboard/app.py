@@ -713,6 +713,13 @@ HTML = """<!doctype html>
           </div>
         </div>
 
+        <div class="panel">
+          <h2>Mining & Calibration Plan</h2>
+          <div id="mining-calibration-panel">
+            <div style="color:var(--muted);font-size:0.75rem;padding:0.25rem 0;">Planning fold-safe hard-negative mining and ratio calibration...</div>
+          </div>
+        </div>
+
         <!-- Selected Run Config Diff Panel -->
         <div class="panel">
           <h2>Hyperparameter Config Diffs <span style="font-family:var(--font-mono);font-size:0.65rem;color:var(--accent);text-transform:none;" id="diff-comparison-badge">Best vs Latest</span></h2>
@@ -851,6 +858,7 @@ HTML = """<!doctype html>
       // 3. Render Custom Components
       renderMilestones(rawData.progress.milestones, summary.foundation_readiness);
       renderCandidateEvidence(decision.candidate_evidence || rawData.research_summary?.candidate_evidence || {});
+      renderMiningCalibrationPanel(rawData.mining);
       renderTrendChart(rawData.experiments.metric_trends);
       renderQualityLeaderboard(rawData.experiments.leaderboard);
       renderFoldMatrix(rawData.experiments.validation_matrix);
@@ -906,6 +914,27 @@ HTML = """<!doctype html>
 
     function verdictText(verdict) {
       return String(verdict || 'unknown').toUpperCase();
+    }
+
+    function renderMiningCalibrationPanel(plan) {
+      const container = document.getElementById('mining-calibration-panel');
+      if (!container) return;
+      if (!plan) {
+        container.innerHTML = '<div style="color:var(--muted);font-size:0.75rem;">No mining/calibration plan available.</div>';
+        return;
+      }
+      const commands = plan.mine_commands || [];
+      const eligible = plan.eligible_extra_train_npzs || [];
+      const rejected = plan.rejected_extra_train_npzs || [];
+      const first = commands[0] || {};
+      container.innerHTML = `
+        <div class="milestone-item"><span class="milestone-label">Candidate</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(plan.candidate_run_id || 'unknown')}</span></div>
+        <div class="milestone-item"><span class="milestone-label">Mine commands</span><span class="indicator-badge ${commands.length ? 'badge-warning' : 'badge-success'}">${esc(commands.length)}</span></div>
+        <div class="milestone-item"><span class="milestone-label">Mined NPZs</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((plan.mined_inventory || {}).count || 0)} found · ${esc(eligible.length)} eligible · ${esc(rejected.length)} rejected</span></div>
+        <div class="milestone-item"><span class="milestone-label">Ratio trigger</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${fmt(plan.ratio_threshold, 2)}x</span></div>
+        <div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);margin-top:0.35rem;">${esc(plan.next_step || 'Run mining, retrain fold-safe, validate full-tile quality.')}</div>
+        ${first.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(first.command_text).replace(/'/g, '&#39;')}')">Copy top mine command</button>` : ''}
+      `;
     }
 
     function renderQualityLeaderboard(rows) {

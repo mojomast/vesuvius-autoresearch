@@ -38,6 +38,14 @@ Full-tile inference can mine high-confidence false-positive patches into NPZ fil
 
 Fold safety is enforced through metadata: mined negatives from a segment cannot be used when that segment is held out. Add eligible mined files to `dataset.extra_train_npzs` only after checking the segment provenance.
 
+Use the dry-run planner before retraining:
+
+```bash
+.venv/bin/python scripts/plan_hard_negative_retrain.py --pretty
+```
+
+The planner does not write mined data. It reads dashboard evidence, recommends bounded mining commands for overpredicting full-tile outputs, inventories existing `data/mined/**/*.npz` files, rejects held-out segment leakage, and previews fold-safe `dataset.extra_train_npzs` updates.
+
 ## Hallucination Controls
 
 - Use small, local patch windows by default, usually `64 x 64` at 8 micron scale.

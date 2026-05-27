@@ -49,14 +49,17 @@ def _resolve_repo_path(raw: str | os.PathLike[str]) -> Path:
 def _metadata_segment_ids(meta: Dict[str, Any]) -> set[str]:
     data = meta.get("metadata", {}) if isinstance(meta.get("metadata"), dict) else {}
     ids: set[str] = set()
-    for key in ("segment_id", "heldout_segment"):
+    for key in ("segment_id", "heldout_segment", "mined_segment_id", "source_segment_id"):
         value = data.get(key) or meta.get(key)
         if value is not None:
             ids.add(str(value))
-    for key in ("train_segments", "segments"):
+    for key in ("train_segments", "segments", "source_segments", "forbidden_heldout_segments"):
         value = data.get(key) or meta.get(key)
         if isinstance(value, list):
             ids.update(str(item) for item in value if item is not None)
+    parent = data.get("parent_full_tile") or meta.get("parent_full_tile")
+    if isinstance(parent, dict) and parent.get("segment_id") is not None:
+        ids.add(str(parent["segment_id"]))
     return {item for item in ids if item and item != "?"}
 
 
@@ -88,6 +91,7 @@ def _load_training_arrays(train_npz: str, cfg: Dict[str, Any]) -> tuple[np.ndarr
     return images, labels, {
         "extra_train_npz_count": len(extra_metas),
         "extra_train_samples": int(sum(int(meta.get("samples", 0)) for meta in extra_metas)),
+        "extra_train_segments": sorted({segment for meta in extra_metas for segment in _metadata_segment_ids(meta)}),
     }
 
 
@@ -836,10 +840,12 @@ def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH)
     else:
         train_meta = prepare_training_subset(train_scroll, "train", str(data_root / f"scroll_{train_scroll}_train_ps{patch_size}_n{max_samples}"), patch_size, max_samples)
         val_meta = prepare_training_subset(val_scroll, "val", str(data_root / f"scroll_{val_scroll}_val_ps{patch_size}_n{max_samples}"), patch_size, max_samples)
-    extra_train_metas = [validate_prepared_npz(_resolve_repo_path(path), split="train_extra", patch_size=patch_size) for path in extra_train_npzs]
-    _check_extra_train_fold_safety(extra_train_metas, cfg.get("autoresearch", {}).get("heldout_segment"))
-    cfg["resolved_data"] = {"train": train_meta, "val": val_meta, "train_extra": extra_train_metas}
+    cfg["resolved_data"] = {"train": train_meta, "val": val_meta, "train_extra": []}
     cfg["validation_setup"] = _validation_setup(train_meta, val_meta)
+    extra_train_metas = [validate_prepared_npz(_resolve_repo_path(path), split="train_extra", patch_size=patch_size) for path in extra_train_npzs]
+    heldout_segment = cfg.get("autoresearch", {}).get("heldout_segment") or cfg["validation_setup"].get("heldout_segment") or cfg["validation_setup"].get("val_segment_id")
+    _check_extra_train_fold_safety(extra_train_metas, heldout_segment)
+    cfg["resolved_data"]["train_extra"] = extra_train_metas
     raw = json.dumps(_jsonable(cfg), sort_keys=True)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + hashlib.sha1(raw.encode()).hexdigest()[:8]
     artifact_dir = RUNS_DIR / run_id

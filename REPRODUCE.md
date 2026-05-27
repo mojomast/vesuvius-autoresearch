@@ -56,6 +56,14 @@ Outputs are written to `experiments/runs/<run_id>/` and should not be committed.
 
 ## Full-Tile Inference And Fold-Safe Mining
 
+Before writing any mining artifacts, generate a dry-run plan from the current dashboard snapshot:
+
+```bash
+.venv/bin/python scripts/plan_hard_negative_retrain.py --pretty
+```
+
+The planner emits copyable `scripts/infer_full_tile.py --mine-output ...` commands, currently eligible mined NPZs, rejected held-out leaks, and preview-only config patches for `dataset.extra_train_npzs`.
+
 ```bash
 .venv/bin/python scripts/infer_full_tile.py \
   --artifact experiments/runs/<run_id> \

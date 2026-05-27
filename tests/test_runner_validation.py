@@ -34,6 +34,12 @@ class RunnerValidationTest(unittest.TestCase):
 
         _check_extra_train_fold_safety([meta], "seg-b")
 
+    def test_extra_train_fold_safety_uses_mined_provenance_keys(self) -> None:
+        meta = {"path": "mined.npz", "metadata": {"mined_segment_id": "seg-a", "forbidden_heldout_segments": ["seg-a"], "parent_full_tile": {"segment_id": "seg-a"}}}
+
+        with self.assertRaisesRegex(ValueError, "held-out segment seg-a"):
+            _check_extra_train_fold_safety([meta], "seg-a")
+
     def test_sampling_strategy_alias_enables_hard_mining(self) -> None:
         images = np.zeros((8, 3, 4, 4), dtype=np.float32)
         images[:, 1] = np.arange(8, dtype=np.float32).reshape(8, 1, 1)

@@ -12,6 +12,7 @@ from .configs import load_configs
 from .datasets import dataset_summary, fold_maps, prepared_datasets
 from .experiments import load_experiments
 from .inventory import build_inventory
+from .mining import build_hard_negative_plan
 from .operations import operations_snapshot
 from .progress import build_progress
 
@@ -43,6 +44,8 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[s
         "decision": decision,
         "champions": experiments.get("champions", {}),
     }
+    partial_snapshot = {"research_summary": research_summary, "experiments": experiments}
+    mining = build_hard_negative_plan(root, partial_snapshot)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -53,6 +56,7 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[s
         "experiments": experiments,
         "progress": progress,
         "research_summary": research_summary,
+        "mining": mining,
         "operations": operations,
         "capabilities": {"enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1", "artifact_preview": True, "standalone": True},
     }
