@@ -71,6 +71,8 @@ When candidate evidence has an unfinished diagnostic action, `research_summary.d
 
 `research_summary.candidate_evidence.loo_full_tile` summarizes candidate-linked full-tile diagnostics across the seed-repeat LOO panel. It is separate from `full_tile`, which only describes full-tile outputs under the selected candidate artifact directory.
 
+Calibration fields in `metrics.json` are advisory but important for review. `average_precision` should be compared against positive-label prevalence; AP near prevalence is random-like, while AP several times prevalence indicates useful ranking but not a calibrated threshold. `pred_positive_rate / val_positive_rate` near or above `3.5x` is warning-level overprediction risk; `4x` is an exploratory ceiling, not a promotion target. `fixed_threshold_f1_low` and `fixed_threshold_status: weak` mean probability scale is not calibrated for a fixed `0.5` threshold and should trigger calibration work rather than blind F1 sweeps.
+
 Keep Vesuvius-specific data parsing and command inventory in `research_dashboard/*`. Hermes or any other host dashboard should render or proxy this contract instead of copying the domain logic.
 
 ## Parallel Development Workflow

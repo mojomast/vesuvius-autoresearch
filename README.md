@@ -10,6 +10,8 @@ The active workflow uses real Vesuvius data only. If real prepared NPZs or offic
 - Use cross-segment/cross-scroll validation when labeled real data exists. The installed `vesuvius` package catalog is stale, but the public Scroll 1 segment directory exposes 33 exact Zarr-plus-inklabel pairs, so `configs/baseline.yaml` now uses cross-segment validation.
 - Promote runs by threshold-swept `val_f1`; a lower loss that predicts no positive ink is not useful.
 - Log threshold diagnostics for every run in `metrics_by_threshold.csv` and inspect `best_threshold`, `average_precision`, `pred_positive_rate`, and probability quantiles before trusting a result.
+- Treat `evaluation.threshold: 0.50` as a diagnostic baseline, not a deployable operating point, until calibration evidence says otherwise. Recent full-tile runs have `fixed_threshold_f1=0.0` and selected thresholds around `0.28-0.34`.
+- Compare `average_precision` against positive-label prevalence: a random ranker has expected AP near `val_positive_rate`. AP above prevalence shows ranking signal, but deployment still needs threshold calibration and full-tile checks.
 - Keep AutoResearch proposals interpretable: one change per generated config.
 - Keep each research cycle focused on one data scope. The active baseline uses one train segment and one held-out validation segment; AutoResearch preserves those exact NPZ paths and only changes model/training/evaluation knobs. Add additional segments only by creating an explicit fold config, then compare folds separately.
 - AutoResearch follows the robust/torch best path first: it starts from `robust_multisegment_dice035_expanded.yaml`, then the TTA/seed-ensemble and residual 2.5D configs, with CPU-safe sample bounds for unattended cron. It reserves generated configs to avoid pending reruns, labels cron output as non-promotable exploration, gates recent bases with AP/precision/recall/positive-rate checks, and tries strategic Tversky, hard-mining, and threshold-calibration moves before using the old focused NumPy fallback.
@@ -32,6 +34,7 @@ The current next moves are documented in `docs/next_best_moves_may2026.md` and s
 - Seed-repeat leave-one-out: run each LOO fold across at least three seeds and promote by median-over-seeds, then median-over-folds.
 - Safe data expansion: add labeled public segments only through explicit fold maps; never mix a held-out segment into its training NPZ.
 - Full-tile inference: validate thresholded predictions on uniformly tiled validation regions, not only positive-biased sampled patches.
+- Calibration review: report Brier score, expected calibration error, AP/prevalence lift, fixed-threshold status, and whether threshold selection was positive-rate-constrained.
 - Promotion evidence linkage: LOO summaries and full-tile metrics must match the same robust candidate/config lineage; unrelated global evidence is diagnostic only.
 - TTA/seed ensembling: average flip TTA and independent seed probabilities only after single-seed LOO behavior is understood.
 - 2.5D residual U-Net: prepare multi-z-channel NPZs first, then test a residual U-Net family behind the same LOO gate.

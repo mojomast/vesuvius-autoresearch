@@ -191,6 +191,21 @@ def _run_fold_job(fold_config: str, row: dict[str, Any]) -> dict[str, Any]:
             "val_positive_rate": float(metrics["val_positive_rate"]),
             "pred_positive_rate": float(metrics["pred_positive_rate"]),
         })
+        for key in (
+            "brier_score",
+            "expected_calibration_error",
+            "ap_prevalence_lift",
+            "prob_mean",
+            "prob_p95",
+            "prob_max",
+            "fixed_threshold",
+            "fixed_threshold_f1",
+            "fixed_threshold_status",
+            "threshold_selection",
+            "selected_threshold_reason",
+        ):
+            if key in metrics:
+                row[key] = metrics[key]
     except Exception as exc:
         row.update({"returncode": 1, "error": repr(exc)})
     return row

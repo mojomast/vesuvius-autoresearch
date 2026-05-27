@@ -345,6 +345,18 @@ def _average_precision(probs: np.ndarray, labels: np.ndarray) -> float:
     return float((precision * y).sum() / positives)
 
 
+def _expected_calibration_error(probs: np.ndarray, labels: np.ndarray, bins: int = 15) -> float:
+    edges = np.linspace(0.0, 1.0, bins + 1, dtype=np.float32)
+    truth = labels > 0.5
+    ece = 0.0
+    for idx, (lo, hi) in enumerate(zip(edges[:-1], edges[1:])):
+        mask = (probs >= lo) & (probs <= hi if idx == bins - 1 else probs < hi)
+        if not bool(mask.any()):
+            continue
+        ece += float(mask.mean()) * abs(float(probs[mask].mean()) - float(truth[mask].mean()))
+    return float(ece)
+
+
 def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_threshold: float = 0.5, eval_cfg: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, float]]]:
     eval_cfg = eval_cfg or {}
     if prob_map.ndim != 2:
@@ -390,6 +402,13 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
     fixed = _binary_metrics(probs, labels, fixed_threshold)
     eps = 1e-7
     loss = float(-np.mean(labels * np.log(probs + eps) + (1.0 - labels) * np.log(1.0 - probs + eps)))
+    average_precision = _average_precision(probs, labels)
+    threshold_selection = "positive_rate_constrained" if constrained_rows is not rows else "best_f1"
+    brier_score = float(np.mean((probs - (labels > 0.5).astype(np.float32)) ** 2))
+    calibration_bins = int(eval_cfg.get("calibration_bins", 15))
+    expected_calibration_error = _expected_calibration_error(probs, labels, calibration_bins)
+    ap_prevalence_lift = float(average_precision / max(label_positive_rate, 1e-12))
+    fixed_threshold_status = "ok" if fixed["f1"] >= 0.5 * float(best_f1["f1"]) else "weak"
     metrics = {
         "tile_loss": loss,
         "tile_f1": float(best_f1["f1"]),
@@ -404,11 +423,17 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
         "fixed_threshold_f1": float(fixed["f1"]),
         "fixed_threshold_precision": float(fixed["precision"]),
         "fixed_threshold_recall": float(fixed["recall"]),
-        "average_precision": _average_precision(probs, labels),
+        "average_precision": average_precision,
+        "brier_score": brier_score,
+        "expected_calibration_error": expected_calibration_error,
+        "calibration_bins": calibration_bins,
+        "ap_prevalence_lift": ap_prevalence_lift,
         "label_positive_rate": label_positive_rate,
         "val_positive_rate": label_positive_rate,
         "pred_positive_rate": float(best_f1["pred_positive_rate"]),
-        "threshold_selection": "positive_rate_constrained" if constrained_rows is not rows else "best_f1",
+        "threshold_selection": threshold_selection,
+        "selected_threshold_reason": threshold_selection,
+        "fixed_threshold_status": fixed_threshold_status,
         "max_pred_positive_rate_ratio": max_ratio,
         "min_pred_positive_rate_ratio": min_ratio,
         "target_pred_positive_rate": target_rate,

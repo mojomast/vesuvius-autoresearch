@@ -126,11 +126,14 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
                 main()
 
     def test_run_fold_job_returns_metrics_or_error(self) -> None:
-        with patch("scripts.evaluate_leave_one_out.run_experiment", return_value={"run_id": "run1", "artifact_dir": "artifact", "metrics": {"val_f1": 0.2, "val_f05": 0.1, "average_precision": 0.3, "precision": 0.4, "recall": 0.5, "best_threshold": 0.6, "val_positive_rate": 0.07, "pred_positive_rate": 0.08}}):
+        with patch("scripts.evaluate_leave_one_out.run_experiment", return_value={"run_id": "run1", "artifact_dir": "artifact", "metrics": {"val_f1": 0.2, "val_f05": 0.1, "average_precision": 0.3, "precision": 0.4, "recall": 0.5, "best_threshold": 0.6, "val_positive_rate": 0.07, "pred_positive_rate": 0.08, "brier_score": 0.12, "expected_calibration_error": 0.03, "ap_prevalence_lift": 4.2, "fixed_threshold_f1": 0.0, "fixed_threshold_status": "weak", "threshold_selection": "positive_rate_constrained"}}):
             row = _run_fold_job("cfg.yaml", {"heldout_segment": "a", "seed": 1})
 
         self.assertEqual(row["returncode"], 0)
         self.assertEqual(row["run_id"], "run1")
+        self.assertEqual(row["brier_score"], 0.12)
+        self.assertEqual(row["fixed_threshold_status"], "weak")
+        self.assertEqual(row["threshold_selection"], "positive_rate_constrained")
 
         with patch("scripts.evaluate_leave_one_out.run_experiment", side_effect=RuntimeError("boom")):
             failed = _run_fold_job("cfg.yaml", {"heldout_segment": "b", "seed": 2})

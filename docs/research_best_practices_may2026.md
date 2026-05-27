@@ -23,8 +23,8 @@ This repo should optimize for reproducible cross-segment ink detection, not isol
 
 1. Re-run robust candidates through `scripts/evaluate_leave_one_out.py` on the expanded fold map with repeated seeds before promoting any config.
 2. Improve data coverage by preparing additional labeled public segments only after rate limits cool down, then regenerate a leakage-safe fold map.
-3. Add threshold-calibrated inference on full validation tiles, because per-pixel F1 on sampled patches can overstate real segment utility.
-4. Add uncertainty checks: seed ensembles, test-time flip averaging, per-fold probability calibration, and prediction-rate alarms.
+3. Continue threshold-calibrated inference on full validation tiles, because per-pixel F1 on sampled patches can overstate real segment utility. Seed-repeat LOO now exists for `robust_calibrated_prloss_w0p03_lr0012_prratio3` and `prratio3p5`; next work should improve calibration rather than emit more local F1 micro-sweeps.
+4. Add uncertainty checks: seed ensembles, test-time flip averaging, per-fold probability calibration, prediction-rate alarms, Brier score, expected calibration error, and AP/prevalence lift.
 5. Add model families that are still small but closer to winning approaches: 2.5D residual U-Net with more z offsets and optional pretrained encoders when GPU is available.
 6. Add dataset diagnostics: positive coverage maps, train/val region plots, and segment-level metadata summaries.
 7. Compare against public Grand Prize and Kaggle-style baselines before investing in larger sweeps.
@@ -62,3 +62,4 @@ A config should be considered a robust champion only if it has:
 - Full-tile validation metrics when the change affects data, thresholding, or inference.
 - Candidate-linked evidence: seed-repeat LOO and full-tile metrics must match the same config/run lineage as the robust candidate being promoted.
 - A short note explaining whether it is a peak-score champion, robust champion, or diagnostic-only run.
+- A calibration note reporting AP relative to prevalence, best threshold, fixed-threshold F1/status, pred/val positive-rate ratio, Brier score, expected calibration error, and whether threshold selection was unconstrained or positive-rate-constrained.

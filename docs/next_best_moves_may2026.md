@@ -64,6 +64,8 @@ Record these fields from `metrics.json` for full-tile runs:
 - `val_positive_rate`
 - `pred_positive_rate`
 - `prob_p95`, `prob_mean`, and `prob_max`
+- `brier_score`, `expected_calibration_error`, and `ap_prevalence_lift`
+- `fixed_threshold_f1`, `fixed_threshold_status`, and `threshold_selection`
 - `promotion_checks.validation_setup` and `promotion_checks.resolved_data`
 - `promotion_checks.eligible` and `promotion_checks.warnings`
 
@@ -78,6 +80,12 @@ Public-directory full-tile reads may be rate limited. Prefer dashboard-generated
 
 If a model only wins on positive-biased validation but fails on tiled validation, keep it diagnostic-only.
 
+Metric interpretation:
+
+- `average_precision` measures ranking quality across thresholds. Its random baseline is approximately the positive-label prevalence. AP around `0.09` on a segment with `0.05` prevalence is useful signal; AP around `0.10` on `0.087` prevalence is only a small lift.
+- `fixed_threshold_f1` at `0.5` is currently diagnostic only. Recent calibrated full-tile panels often have `fixed_threshold_f1=0.0` because probability maxima are below `0.5`; best operating thresholds are selected by sweep and positive-rate constraints near `0.28-0.34`.
+- `prratio3` is the stricter overprediction-control setting. `prratio3p5` is the current balanced setting. The original `4x` cap remains a recall/F1 reference, not a default promotion target when full-tile runs ride the cap.
+
 ## 4. TTA And Seed Ensembling
 
 Add ensembling only after the single-seed LOO gate is stable. The initial ensemble should be simple probability averaging:
@@ -87,6 +95,8 @@ Add ensembling only after the single-seed LOO gate is stable. The initial ensemb
 - Per-fold threshold selection from the validation sweep, not a threshold copied from another fold.
 
 Report ensemble lift against the best individual seed on the same tiled folds. If lift comes mainly from increased prediction rate, inspect precision and probability quantiles before promotion.
+
+Seed ensembling and TTA can change probability scale. Re-run threshold calibration and full-tile checks after any ensemble/TTA change; do not assume an ensemble makes threshold `0.5` valid.
 
 ## 5. 2.5D Residual U-Net
 

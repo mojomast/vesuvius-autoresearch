@@ -216,6 +216,16 @@ def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) ->
             "best_threshold": data.get("best_threshold"),
             "pred_positive_rate": data.get("pred_positive_rate"),
             "val_positive_rate": data.get("val_positive_rate"),
+            "brier_score": data.get("brier_score"),
+            "expected_calibration_error": data.get("expected_calibration_error"),
+            "ap_prevalence_lift": data.get("ap_prevalence_lift"),
+            "prob_mean": data.get("prob_mean"),
+            "prob_p95": data.get("prob_p95"),
+            "prob_max": data.get("prob_max"),
+            "fixed_threshold_f1": data.get("fixed_threshold_f1"),
+            "fixed_threshold_status": data.get("fixed_threshold_status"),
+            "threshold_selection": data.get("threshold_selection"),
+            "selected_threshold_reason": data.get("selected_threshold_reason"),
         })
     return out
 
@@ -263,6 +273,12 @@ def _loo_full_tile_diagnostics(summary: dict[str, Any] | None, project_root: Pat
                 "loo_best_threshold": row.get("best_threshold"),
                 "loo_pred_positive_rate": row.get("pred_positive_rate"),
                 "loo_val_positive_rate": row.get("val_positive_rate"),
+                "loo_brier_score": row.get("brier_score"),
+                "loo_expected_calibration_error": row.get("expected_calibration_error"),
+                "loo_ap_prevalence_lift": row.get("ap_prevalence_lift"),
+                "loo_fixed_threshold_f1": row.get("fixed_threshold_f1"),
+                "loo_fixed_threshold_status": row.get("fixed_threshold_status"),
+                "loo_threshold_selection": row.get("threshold_selection"),
             })
     evidence.sort(key=lambda item: str(item.get("segment_id") or ""))
     return {
@@ -615,7 +631,7 @@ def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, An
                 for line in jsonl_path.read_text().splitlines():
                     row = json.loads(line)
                     if isinstance(row, dict):
-                        rows.append({key: row.get(key) for key in ("run_id", "artifact_dir", "heldout_segment", "seed", "val_f1", "average_precision", "best_threshold", "pred_positive_rate", "val_positive_rate", "returncode")})
+                        rows.append({key: row.get(key) for key in ("run_id", "artifact_dir", "heldout_segment", "seed", "val_f1", "average_precision", "best_threshold", "pred_positive_rate", "val_positive_rate", "brier_score", "expected_calibration_error", "ap_prevalence_lift", "prob_mean", "prob_p95", "prob_max", "fixed_threshold", "fixed_threshold_f1", "fixed_threshold_status", "threshold_selection", "selected_threshold_reason", "returncode")})
             except Exception:
                 rows = []
         summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids"), "rows": rows})

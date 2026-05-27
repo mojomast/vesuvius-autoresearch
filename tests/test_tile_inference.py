@@ -70,6 +70,10 @@ class TileInferenceTest(unittest.TestCase):
         self.assertEqual(metrics["val_f05"], metrics["tile_f05"])
         self.assertEqual(metrics["val_loss"], metrics["tile_loss"])
         self.assertEqual(metrics["val_positive_rate"], metrics["label_positive_rate"])
+        self.assertIn("brier_score", metrics)
+        self.assertIn("expected_calibration_error", metrics)
+        self.assertIn("ap_prevalence_lift", metrics)
+        self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
         with self.assertRaisesRegex(ValueError, "does not match label shape"):
             evaluate_probability_map(prob_map, label[:1])
 
@@ -90,6 +94,18 @@ class TileInferenceTest(unittest.TestCase):
         self.assertEqual(metrics["threshold_selection"], "positive_rate_constrained")
         self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 2.0)
         self.assertEqual(metrics["target_pred_positive_rate"], metrics["val_positive_rate"])
+
+    def test_tile_calibration_diagnostics_have_expected_values(self) -> None:
+        prob_map = np.asarray([[0.75, 0.25], [0.75, 0.25]], dtype=np.float32)
+        label = np.asarray([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+
+        metrics, _rows = evaluate_probability_map(prob_map, label)
+
+        self.assertAlmostEqual(metrics["brier_score"], 0.0625)
+        self.assertAlmostEqual(metrics["ap_prevalence_lift"], 2.0)
+        self.assertGreaterEqual(metrics["expected_calibration_error"], 0.0)
+        self.assertLessEqual(metrics["expected_calibration_error"], 1.0)
+        self.assertEqual(metrics["fixed_threshold_status"], "ok")
 
     def test_tile_metrics_resolve_auto_train_positive_rate_target(self) -> None:
         label = np.zeros((10, 10), dtype=np.float32)

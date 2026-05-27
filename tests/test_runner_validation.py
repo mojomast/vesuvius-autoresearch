@@ -62,6 +62,11 @@ class RunnerValidationTest(unittest.TestCase):
 
         self.assertEqual(metrics["threshold_selection"], "positive_rate_constrained")
         self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 4.0)
+        self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
+        self.assertIn(metrics["fixed_threshold_status"], {"ok", "weak"})
+        self.assertGreaterEqual(metrics["brier_score"], 0.0)
+        self.assertLessEqual(metrics["expected_calibration_error"], 1.0)
+        self.assertGreater(metrics["ap_prevalence_lift"], 0.0)
 
     def test_positive_rate_loss_helpers_resolve_auto_train_target(self) -> None:
         labels = np.zeros((2, 1, 4, 4), dtype=np.float32)
@@ -90,6 +95,18 @@ class RunnerValidationTest(unittest.TestCase):
 
         self.assertEqual(metrics["target_pred_positive_rate"], metrics["val_positive_rate"])
         self.assertIn("threshold_selection", metrics)
+
+    def test_calibration_diagnostics_have_expected_values(self) -> None:
+        labels = np.asarray([1, 0, 1, 0], dtype=np.float32)
+        probs = np.asarray([0.75, 0.25, 0.75, 0.25], dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metrics = _pixel_metrics_from_probs(probs, labels, labels, 0.5, Path(tmp), {})
+
+        self.assertAlmostEqual(metrics["brier_score"], 0.0625)
+        self.assertAlmostEqual(metrics["ap_prevalence_lift"], 2.0)
+        self.assertEqual(metrics["fixed_threshold_status"], "ok")
+        self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
 
 
 if __name__ == "__main__":
