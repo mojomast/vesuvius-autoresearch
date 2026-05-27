@@ -67,6 +67,8 @@ Seed-repeat LOO and full-tile evidence are candidate-linked: unrelated global su
 
 `research_summary.candidate_evidence` and `research_summary.promotion_actions` expose the candidate-linked evidence used to accelerate review: linked LOO summary, weakest fold, full-tile segments covered, weak-fold full-tile status, and copyable next commands. Public-directory full-tile commands include conservative whole-fetch and chunk-level `429` retry/backoff flags. These commands are read-only from the dashboard perspective; they are not executed by the UI and artifact-writing commands remain marked `safe_to_execute_from_dashboard: false`.
 
+When candidate evidence has an unfinished diagnostic action, `research_summary.decision.next_action` should prefer that action over generic promotion text. A ready gate starts review; it does not hide missing weak-fold full-tile diagnostics.
+
 Keep Vesuvius-specific data parsing and command inventory in `research_dashboard/*`. Hermes or any other host dashboard should render or proxy this contract instead of copying the domain logic.
 
 ## Parallel Development Workflow

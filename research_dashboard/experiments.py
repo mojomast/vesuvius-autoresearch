@@ -425,13 +425,20 @@ def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, 
         next_action = "Run a held-out validation experiment before promotion review."
         status = "no_runs"
 
+    actions = evidence.get("promotion_actions", []) if isinstance(evidence.get("promotion_actions"), list) else []
+    top_action = actions[0] if actions and isinstance(actions[0], dict) else {}
+    if top_action and top_action.get("id") != "promotion_review":
+        next_action = str(top_action.get("label") or next_action)
+        if top_action.get("id") == "weak_fold_full_tile" and "before promotion review" not in next_action:
+            next_action = f"{next_action} before promotion review."
+
     return {
         "status": status,
         "next_action": next_action,
         "blocker_counts": dict(sorted(blocker_counts.items())),
         "promotion_gate": gate,
         "candidate_evidence": evidence,
-        "promotion_actions": evidence.get("promotion_actions", []),
+        "promotion_actions": actions,
         "plateau": {"detected": plateau_detected, "window_runs": plateau_window, "metric_delta": plateau_delta, "epsilon": plateau_epsilon},
         "staleness": {"stale_runs_since_peak": stale_runs_since_peak, "peak_run_id": peak.get("run_id") if peak else None},
     }

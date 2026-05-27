@@ -81,6 +81,7 @@ class AuditResearchStateTest(unittest.TestCase):
             "logs": {"summary_json_count": 1},
             "dashboard": {
                 "snapshot_contract_available": True,
+                "next_action": "Run full-tile on weak fold weakseg before promotion review.",
                 "candidate_evidence": {
                     "candidate_run_id": "candidate",
                     "loo": {"worst_fold_id": "weakseg", "worst_fold_val_f1": 0.04},
@@ -95,6 +96,7 @@ class AuditResearchStateTest(unittest.TestCase):
         markdown = render_markdown(report)
 
         self.assertIn("## Candidate Evidence", markdown)
+        self.assertIn("Next action: Run full-tile on weak fold weakseg before promotion review.", markdown)
         self.assertIn("`weakseg`", markdown)
         self.assertIn("Run full-tile on weak fold weakseg", markdown)
         self.assertIn("scripts/infer_full_tile.py", markdown)

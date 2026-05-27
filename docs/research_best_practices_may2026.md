@@ -43,6 +43,7 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - Use `python3 autoresearch.py --plan --json` to inspect the next cycle without writing generated configs or launching experiments.
 - When the promotion gate is ready, pause exploration by default and spend compute on promotion review, weak-fold full-tile checks, or data diagnostics.
 - AutoResearch planning must consume dashboard candidate evidence, not just peak-score summaries: if a weak-fold full-tile action is available, surface that action and its paced public-directory command before proposing more experiments.
+- Dashboard and audit top-level next actions should also prefer unfinished candidate evidence actions, so a plateau does not look like idle promotion readiness while weak-fold diagnostics remain missing.
 - Treat a ready gate as the start of review, not the end: run full-tile diagnostics on the linked LOO weakest fold before claiming Scroll Prize robustness.
 - Use `scripts/evaluate_leave_one_out.py --jobs N` for seed-repeat LOO throughput only when resources allow; jobs are independent process workers and parent-only JSONL output preserves reproducibility.
 - Let stale generated `configs/auto_*` reservations expire so killed exploratory configs do not permanently suppress useful ideas; completed DB runs remain reserved evidence.
