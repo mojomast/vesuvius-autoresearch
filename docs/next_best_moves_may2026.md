@@ -74,7 +74,7 @@ Promotion criteria for full-tile results:
 - Keep `val_positive_rate` consistent with the held-out segment metadata.
 - Inspect probability quantiles before promotion when a threshold sweep is the main source of lift.
 
-Public-directory full-tile reads may be rate limited. Prefer dashboard-generated weak-fold commands with `--public-retry-count` and `--public-retry-delay-sec` so zarr fetches cool down between `429 Too Many Requests` responses instead of immediately failing and being rerun manually.
+Public-directory full-tile reads may be rate limited. Prefer dashboard-generated weak-fold commands with `--public-retry-count`, `--public-retry-delay-sec`, `--public-chunk-delay-sec`, `--public-chunk-retry-count`, and `--public-chunk-retry-delay-sec` so Zarr fetches cool down between `429 Too Many Requests` responses instead of immediately failing and being rerun manually. The chunk flags are opt-in; without them, layer reads keep the faster direct path.
 
 If a model only wins on positive-biased validation but fails on tiled validation, keep it diagnostic-only.
 

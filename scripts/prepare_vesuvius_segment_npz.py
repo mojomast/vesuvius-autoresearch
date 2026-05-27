@@ -102,7 +102,62 @@ def _parse_offsets(raw: str) -> list[int]:
     return [int(part.strip()) for part in raw.split(",") if part.strip()]
 
 
-def _open_layers(url: str, level: str, offsets: list[int]) -> tuple[np.ndarray, list[int]]:
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if getattr(current, "status", None) == 429 or getattr(current, "code", None) == 429:
+            return True
+        if "429" in str(current) and "Too Many Requests" in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _read_chunk_with_retries(arr, key: tuple, retry_count: int, retry_delay_sec: float) -> np.ndarray:
+    attempts = max(1, int(retry_count) + 1)
+    delay = max(0.0, float(retry_delay_sec))
+    for attempt in range(attempts):
+        try:
+            return np.asarray(arr[key], dtype=np.float32)
+        except Exception as exc:
+            if attempt >= attempts - 1 or not _is_rate_limit_error(exc):
+                raise
+            if delay > 0:
+                time.sleep(delay)
+    raise RuntimeError("unreachable chunk retry state")
+
+
+def _chunk_spans(length: int, chunk: int):
+    step = max(1, int(chunk))
+    for start in range(0, int(length), step):
+        yield start, min(start + step, int(length))
+
+
+def _chunk_aligned_layers(arr, z_indices: list[int], chunk_delay_sec: float, retry_count: int, retry_delay_sec: float) -> list[np.ndarray]:
+    if len(arr.shape) < 3:
+        return [_read_chunk_with_retries(arr, (z,), retry_count, retry_delay_sec) for z in z_indices]
+    chunks = getattr(arr, "chunks", None) or arr.shape
+    z_chunk = int(chunks[-3]) if len(chunks) >= 3 else int(arr.shape[-3])
+    y_chunk = int(chunks[-2]) if len(chunks) >= 2 else int(arr.shape[-2])
+    x_chunk = int(chunks[-1]) if len(chunks) >= 1 else int(arr.shape[-1])
+    z_len, h, w = int(arr.shape[-3]), int(arr.shape[-2]), int(arr.shape[-1])
+    out = np.empty((len(z_indices), h, w), dtype=np.float32)
+    delay = max(0.0, float(chunk_delay_sec))
+    for z0, z1 in _chunk_spans(z_len, z_chunk):
+        members = [(out_idx, z) for out_idx, z in enumerate(z_indices) if z0 <= z < z1]
+        if not members:
+            continue
+        for y0, y1 in _chunk_spans(h, y_chunk):
+            for x0, x1 in _chunk_spans(w, x_chunk):
+                block = _read_chunk_with_retries(arr, (slice(z0, z1), slice(y0, y1), slice(x0, x1)), retry_count, retry_delay_sec)
+                for out_idx, z in members:
+                    out[out_idx, y0:y1, x0:x1] = block[z - z0]
+                if delay > 0:
+                    time.sleep(delay)
+    return [out[idx] for idx in range(out.shape[0])]
+
+
+def _open_layers(url: str, level: str, offsets: list[int], public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0) -> tuple[np.ndarray, list[int]]:
     import fsspec
     import zarr
 
@@ -110,7 +165,10 @@ def _open_layers(url: str, level: str, offsets: list[int]) -> tuple[np.ndarray, 
     arr = root[level]
     center = arr.shape[0] // 2
     z_indices = [int(np.clip(center + offset, 0, arr.shape[0] - 1)) for offset in offsets]
-    layers = [np.asarray(arr[z], dtype=np.float32) for z in z_indices]
+    if public_chunk_delay_sec <= 0 and public_chunk_retry_count <= 0 and public_chunk_retry_delay_sec <= 0:
+        layers = [np.asarray(arr[z], dtype=np.float32) for z in z_indices]
+    else:
+        layers = _chunk_aligned_layers(arr, z_indices, public_chunk_delay_sec, public_chunk_retry_count, public_chunk_retry_delay_sec)
     return np.stack(layers, axis=0), z_indices
 
 
@@ -213,9 +271,9 @@ def _write_npz(output: Path, image: np.ndarray, label: np.ndarray, region: tuple
     output.with_suffix(".metadata.json").write_text(json.dumps(out_meta, indent=2, sort_keys=True))
 
 
-def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: int, train_samples: int, val_samples: int, train_positive_fraction: float, val_positive_fraction: float, seed: int, source: str, z_offsets: list[int], val_tiled: bool, val_stride: int, negative_max_positive_rate: float, catalog: list[dict] | None = None) -> dict:
+def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: int, train_samples: int, val_samples: int, train_positive_fraction: float, val_positive_fraction: float, seed: int, source: str, z_offsets: list[int], val_tiled: bool, val_stride: int, negative_max_positive_rate: float, catalog: list[dict] | None = None, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0) -> dict:
     meta = _segment_meta(segment_id, source, catalog)
-    image, z_indices = _open_layers(meta["zarr_url"], level, z_offsets)
+    image, z_indices = _open_layers(meta["zarr_url"], level, z_offsets, public_chunk_delay_sec, public_chunk_retry_count, public_chunk_retry_delay_sec)
     image = _normalize(image)
     label_raw = _read_label(meta["inklabels_url"])
     label = _align_label(label_raw, image.shape[-2:])
@@ -238,6 +296,9 @@ def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: 
         "raw_label_shape": [int(label_raw.shape[0]), int(label_raw.shape[1])],
         "label_positive_rate": float(label.mean()),
         "validation_mode": "spatial-same-segment",
+        "public_chunk_delay_sec": public_chunk_delay_sec,
+        "public_chunk_retry_count": public_chunk_retry_count,
+        "public_chunk_retry_delay_sec": public_chunk_retry_delay_sec,
     }
     _write_npz(output_dir / "train.npz", image, label, train_region, "train", patch_size, train_samples, train_positive_fraction, seed, out_meta, False, patch_size, negative_max_positive_rate)
     _write_npz(output_dir / "val.npz", image, label, val_region, "val", patch_size, val_samples, val_positive_fraction, seed + 1, out_meta, val_tiled, val_stride, negative_max_positive_rate)
@@ -269,6 +330,9 @@ def main() -> None:
     parser.add_argument("--val-tiled", action="store_true", help="Use uniform tiled validation sampling instead of positive oversampling")
     parser.add_argument("--val-stride", type=int, default=None)
     parser.add_argument("--negative-max-positive-rate", type=float, default=0.001, help="Prefer negative training patches with at most this ink fraction")
+    parser.add_argument("--public-chunk-delay-sec", type=float, default=0.0, help="Opt-in sleep after each public Zarr chunk read; 0 keeps the fast direct layer read")
+    parser.add_argument("--public-chunk-retry-count", type=int, default=0, help="Retry individual public Zarr chunk reads after HTTP 429 responses")
+    parser.add_argument("--public-chunk-retry-delay-sec", type=float, default=0.0, help="Sleep this many seconds between public Zarr chunk 429 retries")
     parser.add_argument("--seed", type=int, default=13)
     args = parser.parse_args()
 
@@ -296,7 +360,7 @@ def main() -> None:
             continue
         if args.request_delay_sec > 0:
             time.sleep(args.request_delay_sec)
-        results.append(_prepare_segment(str(segment_id), out, args.level, args.patch_size, args.train_samples, args.val_samples, train_positive_fraction, val_positive_fraction, args.seed, args.catalog_source, z_offsets, args.val_tiled, val_stride, args.negative_max_positive_rate, catalog))
+        results.append(_prepare_segment(str(segment_id), out, args.level, args.patch_size, args.train_samples, args.val_samples, train_positive_fraction, val_positive_fraction, args.seed, args.catalog_source, z_offsets, args.val_tiled, val_stride, args.negative_max_positive_rate, catalog, args.public_chunk_delay_sec, args.public_chunk_retry_count, args.public_chunk_retry_delay_sec))
         new_segments += 1
         if args.segment_delay_sec > 0:
             time.sleep(args.segment_delay_sec)

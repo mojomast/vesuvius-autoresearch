@@ -173,6 +173,8 @@ To prepare every labeled segment exposed by the public Scroll 1 segment director
 .venv/bin/python scripts/prepare_vesuvius_segment_npz.py --all-labeled --catalog-source public-directory --output-root data/real
 ```
 
+Public Zarr reads use the fast direct layer path by default. If the public mirror returns `429 Too Many Requests`, opt into chunk-aligned pacing and retries with `--public-chunk-delay-sec`, `--public-chunk-retry-count`, and `--public-chunk-retry-delay-sec`; full-tile inference exposes the same flags alongside `--public-retry-count` and `--public-retry-delay-sec`.
+
 The installed `vesuvius==0.2.4` catalog exposes only one segment, but the public directory lists 33 exact labeled segment pairs. The active cross-segment baseline uses:
 
 - Train segment: `20230827161847`

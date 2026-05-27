@@ -55,7 +55,7 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     return False
 
 
-def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catalog_source: str = "public-directory", retry_count: int = 0, retry_delay_sec: float = 0.0) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catalog_source: str = "public-directory", retry_count: int = 0, retry_delay_sec: float = 0.0, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Open a public labeled segment and return normalized image [C,H,W] plus label [H,W]."""
     from scripts.prepare_vesuvius_segment_npz import _align_label, _normalize, _open_layers, _read_label, _segment_meta
 
@@ -64,7 +64,7 @@ def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catal
     meta = _segment_meta(segment_id, catalog_source)
     for attempt in range(attempts):
         try:
-            image, z_indices = _open_layers(meta["zarr_url"], str(level), z_offsets)
+            image, z_indices = _open_layers(meta["zarr_url"], str(level), z_offsets, public_chunk_delay_sec, public_chunk_retry_count, public_chunk_retry_delay_sec)
             image = _normalize(image)
             raw_label = _read_label(meta["inklabels_url"])
             break
@@ -85,6 +85,9 @@ def load_public_segment(segment_id: str, level: str, z_offsets: list[int], catal
         "image_channels": int(image.shape[0]),
         "raw_label_shape": [int(raw_label.shape[0]), int(raw_label.shape[1])],
         "label_positive_rate": float(label.mean()),
+        "public_chunk_delay_sec": public_chunk_delay_sec,
+        "public_chunk_retry_count": public_chunk_retry_count,
+        "public_chunk_retry_delay_sec": public_chunk_retry_delay_sec,
     }
     return image.astype(np.float32), label.astype(np.float32), out_meta
 
@@ -463,9 +466,9 @@ def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
     }
 
 
-def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False, public_retry_count: int = 0, public_retry_delay_sec: float = 0.0) -> dict[str, Any]:
+def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False, public_retry_count: int = 0, public_retry_delay_sec: float = 0.0, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0) -> dict[str, Any]:
     offsets = z_offsets if z_offsets is not None else [0]
-    image, label, segment_meta = load_public_segment(segment_id, level, offsets, catalog_source, public_retry_count, public_retry_delay_sec)
+    image, label, segment_meta = load_public_segment(segment_id, level, offsets, catalog_source, public_retry_count, public_retry_delay_sec, public_chunk_delay_sec, public_chunk_retry_count, public_chunk_retry_delay_sec)
     models, cfg, artifact_dir, model_meta = load_torch_unet_artifact(artifact, image.shape[0], device)
     patch = int(cfg.get("dataset", {}).get("patch_size", 64) if patch_size is None else patch_size)
     step = int(max(1, patch // 2) if stride is None else stride)
@@ -498,6 +501,11 @@ def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, l
             "device": str(device),
             "level": str(level),
             "z_offsets": [int(x) for x in offsets],
+            "public_retry_count": int(public_retry_count),
+            "public_retry_delay_sec": float(public_retry_delay_sec),
+            "public_chunk_delay_sec": float(public_chunk_delay_sec),
+            "public_chunk_retry_count": int(public_chunk_retry_count),
+            "public_chunk_retry_delay_sec": float(public_chunk_retry_delay_sec),
             "overwrite": bool(overwrite),
         },
         "promotion_checks": _promotion_checks(cfg, segment_id),

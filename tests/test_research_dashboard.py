@@ -326,6 +326,9 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("--segment-id weakseg", action["command_text"])
         self.assertIn("--public-retry-count 5", action["command_text"])
         self.assertIn("--public-retry-delay-sec 180", action["command_text"])
+        self.assertIn("--public-chunk-delay-sec 0.5", action["command_text"])
+        self.assertIn("--public-chunk-retry-count 5", action["command_text"])
+        self.assertIn("--public-chunk-retry-delay-sec 180", action["command_text"])
         self.assertFalse(action["safe_to_execute_from_dashboard"])
 
     def test_dashboard_marks_weak_fold_full_tile_done_when_metrics_match(self) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,6 +18,7 @@ from data.tile_inference import (
     tile_origins,
     write_outputs,
 )
+from scripts.prepare_vesuvius_segment_npz import _open_layers
 
 
 class TileInferenceTest(unittest.TestCase):
@@ -139,6 +142,86 @@ class TileInferenceTest(unittest.TestCase):
         self.assertTrue(np.array_equal(loaded_image, image))
         self.assertTrue(np.array_equal(loaded_label, label))
         self.assertEqual(meta["z_indices"], [2])
+
+    def test_public_segment_plumbs_chunk_pacing(self) -> None:
+        image = np.ones((1, 4, 4), dtype=np.float32)
+        label = np.zeros((4, 4), dtype=np.float32)
+
+        with mock.patch("scripts.prepare_vesuvius_segment_npz._segment_meta", return_value={"zarr_url": "zarr", "inklabels_url": "labels"}), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._open_layers", return_value=(image, [2])) as open_layers, \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._normalize", side_effect=lambda arr: arr), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._read_label", return_value=label), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz._align_label", side_effect=lambda raw, shape: raw):
+            _loaded_image, _loaded_label, meta = load_public_segment(
+                "seg", "1", [0], public_chunk_delay_sec=0.25, public_chunk_retry_count=3, public_chunk_retry_delay_sec=4.0
+            )
+
+        open_layers.assert_called_once_with("zarr", "1", [0], 0.25, 3, 4.0)
+        self.assertEqual(meta["public_chunk_delay_sec"], 0.25)
+        self.assertEqual(meta["public_chunk_retry_count"], 3)
+        self.assertEqual(meta["public_chunk_retry_delay_sec"], 4.0)
+
+    def test_open_layers_reads_chunk_aligned_with_retry_without_network(self) -> None:
+        class RateLimitError(Exception):
+            status = 429
+
+        class FakeArray:
+            shape = (3, 4, 5)
+            chunks = (1, 2, 3)
+
+            def __init__(self) -> None:
+                self.data = np.arange(60, dtype=np.float32).reshape(self.shape)
+                self.keys = []
+                self.failed = False
+
+            def __getitem__(self, key):
+                self.keys.append(key)
+                if not self.failed:
+                    self.failed = True
+                    raise RateLimitError("Too Many Requests")
+                return self.data[key]
+
+        arr = FakeArray()
+        fake_fsspec = types.SimpleNamespace(get_mapper=lambda url: f"mapper:{url}")
+        fake_zarr = types.SimpleNamespace(open=lambda mapper, mode="r": {"1": arr})
+
+        with mock.patch.dict(sys.modules, {"fsspec": fake_fsspec, "zarr": fake_zarr}), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz.time.sleep") as sleep:
+            layers, z_indices = _open_layers("url", "1", [0], public_chunk_delay_sec=0.1, public_chunk_retry_count=1, public_chunk_retry_delay_sec=0.5)
+
+        self.assertEqual(z_indices, [1])
+        self.assertTrue(np.array_equal(layers[0], arr.data[1]))
+        self.assertEqual(arr.keys[0], (slice(1, 2), slice(0, 2), slice(0, 3)))
+        self.assertEqual(arr.keys[1], (slice(1, 2), slice(0, 2), slice(0, 3)))
+        self.assertIn((slice(1, 2), slice(2, 4), slice(3, 5)), arr.keys)
+        sleep.assert_any_call(0.5)
+        self.assertEqual(sleep.call_count, 5)
+
+    def test_open_layers_reuses_z_chunk_for_multiple_offsets(self) -> None:
+        class FakeArray:
+            shape = (4, 4, 4)
+            chunks = (4, 2, 2)
+
+            def __init__(self) -> None:
+                self.data = np.arange(64, dtype=np.float32).reshape(self.shape)
+                self.keys = []
+
+            def __getitem__(self, key):
+                self.keys.append(key)
+                return self.data[key]
+
+        arr = FakeArray()
+        fake_fsspec = types.SimpleNamespace(get_mapper=lambda url: f"mapper:{url}")
+        fake_zarr = types.SimpleNamespace(open=lambda mapper, mode="r": {"1": arr})
+
+        with mock.patch.dict(sys.modules, {"fsspec": fake_fsspec, "zarr": fake_zarr}), \
+             mock.patch("scripts.prepare_vesuvius_segment_npz.time.sleep"):
+            layers, z_indices = _open_layers("url", "1", [-1, 0, 1], public_chunk_delay_sec=0.1)
+
+        self.assertEqual(z_indices, [1, 2, 3])
+        self.assertTrue(np.array_equal(layers, arr.data[[1, 2, 3]]))
+        self.assertEqual(len(arr.keys), 4)
+        self.assertEqual(arr.keys[0], (slice(0, 4), slice(0, 2), slice(0, 2)))
 
     def test_self_test(self) -> None:
         result = self_test()
