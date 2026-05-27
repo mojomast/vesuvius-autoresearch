@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -273,9 +274,10 @@ def _loo_full_tile_diagnostics(summary: dict[str, Any] | None, project_root: Pat
 
 def _as_float(value: Any) -> float | None:
     try:
-        return float(value)
+        out = float(value)
     except (TypeError, ValueError):
         return None
+    return out if math.isfinite(out) else None
 
 
 def _safe_ratio(numerator: Any, denominator: Any) -> float | None:
@@ -283,7 +285,12 @@ def _safe_ratio(numerator: Any, denominator: Any) -> float | None:
     right = _as_float(denominator)
     if left is None or right is None or abs(right) < 1e-9:
         return None
-    return left / right
+    ratio = left / right
+    return ratio if math.isfinite(ratio) else None
+
+
+def _safe_metric(value: Any) -> float | None:
+    return _as_float(value)
 
 
 def _positive_rate_risk_summary(run: dict[str, Any], full_tiles: list[dict[str, Any]], loo_full_tiles: dict[str, Any]) -> dict[str, Any]:
@@ -293,7 +300,7 @@ def _positive_rate_risk_summary(run: dict[str, Any], full_tiles: list[dict[str, 
     for item in full_tiles:
         ratio = _safe_ratio(item.get("pred_positive_rate"), item.get("val_positive_rate"))
         if ratio is not None:
-            full_tile_ratios.append({"segment_id": item.get("segment_id"), "pred_to_val_ratio": ratio, "pred_positive_rate": item.get("pred_positive_rate"), "val_positive_rate": item.get("val_positive_rate")})
+            full_tile_ratios.append({"segment_id": item.get("segment_id"), "pred_to_val_ratio": ratio, "pred_positive_rate": _safe_metric(item.get("pred_positive_rate")), "val_positive_rate": _safe_metric(item.get("val_positive_rate"))})
 
     sampled_vs_full_tile: list[dict[str, Any]] = []
     loo_tile_evidence = loo_full_tiles.get("evidence", []) if isinstance(loo_full_tiles, dict) else []
@@ -308,13 +315,13 @@ def _positive_rate_risk_summary(run: dict[str, Any], full_tiles: list[dict[str, 
         sampled_vs_full_tile.append({
             "segment_id": item.get("segment_id"),
             "seed": item.get("seed"),
-            "sampled_pred_positive_rate": item.get("loo_pred_positive_rate"),
-            "full_tile_pred_positive_rate": item.get("pred_positive_rate"),
+            "sampled_pred_positive_rate": _safe_metric(item.get("loo_pred_positive_rate")),
+            "full_tile_pred_positive_rate": _safe_metric(item.get("pred_positive_rate")),
             "sampled_to_full_pred_positive_rate_ratio": pred_rate_ratio,
             "sampled_pred_to_val_ratio": sampled_ratio,
             "full_tile_pred_to_val_ratio": full_ratio,
-            "sampled_best_threshold": item.get("loo_best_threshold"),
-            "full_tile_best_threshold": item.get("best_threshold"),
+            "sampled_best_threshold": _safe_metric(item.get("loo_best_threshold")),
+            "full_tile_best_threshold": _safe_metric(item.get("best_threshold")),
             "val_f1_delta_full_minus_sampled": (full_f1 - sampled_f1) if full_f1 is not None and sampled_f1 is not None else None,
             "average_precision_delta_full_minus_sampled": (full_ap - sampled_ap) if full_ap is not None and sampled_ap is not None else None,
         })

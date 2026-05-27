@@ -13,6 +13,7 @@ from unittest import mock
 
 from research_dashboard.artifacts import preview_artifact
 from research_dashboard.app import make_handler
+from research_dashboard.experiments import _positive_rate_risk_summary
 from research_dashboard.inventory import build_inventory
 from research_dashboard.snapshot import build_snapshot
 
@@ -406,6 +407,18 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(risk["risk_level"], "warning")
         self.assertAlmostEqual(risk["loo_sampled_vs_full_tile"][0]["sampled_to_full_pred_positive_rate_ratio"], 2.0)
         self.assertTrue(any("LOO full-tile" in warning for warning in risk["warnings"]))
+
+    def test_positive_rate_risk_summary_is_strict_json_safe(self) -> None:
+        risk = _positive_rate_risk_summary(
+            {"metrics": {"pred_positive_rate": float("nan"), "val_positive_rate": 0.1}},
+            [{"segment_id": "seg", "pred_positive_rate": float("inf"), "val_positive_rate": 0.1}],
+            {"evidence": [{"segment_id": "seg", "loo_pred_positive_rate": float("nan"), "pred_positive_rate": 0.2, "loo_best_threshold": float("inf"), "best_threshold": 0.3}]},
+        )
+
+        json.dumps(risk, allow_nan=False)
+        self.assertIsNone(risk["candidate_pred_to_val_ratio"])
+        self.assertEqual(risk["loo_sampled_vs_full_tile"][0]["sampled_pred_positive_rate"], None)
+        self.assertEqual(risk["loo_sampled_vs_full_tile"][0]["sampled_best_threshold"], None)
 
     def test_dashboard_detects_nested_full_tile_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
