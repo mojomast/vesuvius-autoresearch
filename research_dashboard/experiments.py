@@ -259,12 +259,85 @@ def _loo_full_tile_diagnostics(summary: dict[str, Any] | None, project_root: Pat
                 "artifact_dir": row.get("artifact_dir"),
                 "loo_val_f1": row.get("val_f1"),
                 "loo_average_precision": row.get("average_precision"),
+                "loo_best_threshold": row.get("best_threshold"),
+                "loo_pred_positive_rate": row.get("pred_positive_rate"),
+                "loo_val_positive_rate": row.get("val_positive_rate"),
             })
     evidence.sort(key=lambda item: str(item.get("segment_id") or ""))
     return {
         "coverage_count": len(evidence),
         "segments_covered": sorted({str(item.get("segment_id")) for item in evidence if item.get("segment_id")}),
         "evidence": evidence,
+    }
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_ratio(numerator: Any, denominator: Any) -> float | None:
+    left = _as_float(numerator)
+    right = _as_float(denominator)
+    if left is None or right is None or abs(right) < 1e-9:
+        return None
+    return left / right
+
+
+def _positive_rate_risk_summary(run: dict[str, Any], full_tiles: list[dict[str, Any]], loo_full_tiles: dict[str, Any]) -> dict[str, Any]:
+    metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+    candidate_ratio = _safe_ratio(metrics.get("pred_positive_rate"), metrics.get("val_positive_rate"))
+    full_tile_ratios: list[dict[str, Any]] = []
+    for item in full_tiles:
+        ratio = _safe_ratio(item.get("pred_positive_rate"), item.get("val_positive_rate"))
+        if ratio is not None:
+            full_tile_ratios.append({"segment_id": item.get("segment_id"), "pred_to_val_ratio": ratio, "pred_positive_rate": item.get("pred_positive_rate"), "val_positive_rate": item.get("val_positive_rate")})
+
+    sampled_vs_full_tile: list[dict[str, Any]] = []
+    loo_tile_evidence = loo_full_tiles.get("evidence", []) if isinstance(loo_full_tiles, dict) else []
+    for item in loo_tile_evidence:
+        pred_rate_ratio = _safe_ratio(item.get("loo_pred_positive_rate"), item.get("pred_positive_rate"))
+        sampled_ratio = _safe_ratio(item.get("loo_pred_positive_rate"), item.get("loo_val_positive_rate"))
+        full_ratio = _safe_ratio(item.get("pred_positive_rate"), item.get("val_positive_rate"))
+        full_f1 = _as_float(item.get("val_f1"))
+        sampled_f1 = _as_float(item.get("loo_val_f1"))
+        full_ap = _as_float(item.get("average_precision"))
+        sampled_ap = _as_float(item.get("loo_average_precision"))
+        sampled_vs_full_tile.append({
+            "segment_id": item.get("segment_id"),
+            "seed": item.get("seed"),
+            "sampled_pred_positive_rate": item.get("loo_pred_positive_rate"),
+            "full_tile_pred_positive_rate": item.get("pred_positive_rate"),
+            "sampled_to_full_pred_positive_rate_ratio": pred_rate_ratio,
+            "sampled_pred_to_val_ratio": sampled_ratio,
+            "full_tile_pred_to_val_ratio": full_ratio,
+            "sampled_best_threshold": item.get("loo_best_threshold"),
+            "full_tile_best_threshold": item.get("best_threshold"),
+            "val_f1_delta_full_minus_sampled": (full_f1 - sampled_f1) if full_f1 is not None and sampled_f1 is not None else None,
+            "average_precision_delta_full_minus_sampled": (full_ap - sampled_ap) if full_ap is not None and sampled_ap is not None else None,
+        })
+
+    warnings: list[str] = []
+    if candidate_ratio is not None and candidate_ratio >= 3.5:
+        warnings.append(f"candidate sampled pred/val positive-rate ratio is high ({candidate_ratio:.2f}x)")
+    high_full = [item for item in full_tile_ratios if float(item["pred_to_val_ratio"]) >= 3.5]
+    if high_full:
+        warnings.append(f"{len(high_full)} candidate full-tile segment(s) have pred/val positive-rate ratio >= 3.5x")
+    loo_high = [item for item in sampled_vs_full_tile if item.get("full_tile_pred_to_val_ratio") is not None and float(item["full_tile_pred_to_val_ratio"]) >= 3.5]
+    if loo_high:
+        warnings.append(f"{len(loo_high)} LOO full-tile segment(s) have pred/val positive-rate ratio >= 3.5x")
+    divergent = [item for item in sampled_vs_full_tile if item.get("sampled_to_full_pred_positive_rate_ratio") is not None and (float(item["sampled_to_full_pred_positive_rate_ratio"]) < 0.5 or float(item["sampled_to_full_pred_positive_rate_ratio"]) > 2.0)]
+    if divergent:
+        warnings.append(f"{len(divergent)} LOO segment(s) have sampled/full-tile predicted positive rates outside 0.5x-2.0x")
+
+    return {
+        "risk_level": "warning" if warnings else "ok",
+        "warnings": warnings,
+        "candidate_pred_to_val_ratio": candidate_ratio,
+        "candidate_full_tile_pred_to_val_ratios": full_tile_ratios,
+        "loo_sampled_vs_full_tile": sampled_vs_full_tile,
     }
 
 
@@ -344,6 +417,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
             "coverage_count": len(full_tiles),
         },
         "loo_full_tile": loo_full_tiles,
+        "risk_summary": _positive_rate_risk_summary(run, full_tiles, loo_full_tiles),
         "weak_fold_full_tile": {
             "weak_fold_id": weak_fold_id or None,
             "status": weak_status,
@@ -534,7 +608,7 @@ def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, An
                 for line in jsonl_path.read_text().splitlines():
                     row = json.loads(line)
                     if isinstance(row, dict):
-                        rows.append({key: row.get(key) for key in ("run_id", "artifact_dir", "heldout_segment", "seed", "val_f1", "average_precision", "returncode")})
+                        rows.append({key: row.get(key) for key in ("run_id", "artifact_dir", "heldout_segment", "seed", "val_f1", "average_precision", "best_threshold", "pred_positive_rate", "val_positive_rate", "returncode")})
             except Exception:
                 rows = []
         summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids"), "rows": rows})

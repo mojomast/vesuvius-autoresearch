@@ -146,12 +146,17 @@ def render_markdown(report: dict[str, Any]) -> str:
         weak = evidence.get("weak_fold_full_tile") or {}
         full = evidence.get("full_tile") or {}
         loo_full = evidence.get("loo_full_tile") or {}
+        risk = evidence.get("risk_summary") or {}
         lines.extend(["", "## Candidate Evidence"])
         lines.append(f"- Candidate: `{evidence.get('candidate_run_id')}`")
         if loo.get("worst_fold_id"):
             lines.append(f"- Weak fold: `{loo.get('worst_fold_id')}` F1={loo.get('worst_fold_val_f1')}")
         lines.append(f"- Full-tile segments covered: {', '.join(str(item) for item in full.get('segments_covered') or []) or 'none'}")
         lines.append(f"- LOO full-tile diagnostics covered: {', '.join(str(item) for item in loo_full.get('segments_covered') or []) or 'none'}")
+        if risk:
+            warnings = risk.get("warnings") or []
+            detail = f" - {warnings[0]}" if warnings else ""
+            lines.append(f"- Positive-rate risk: {risk.get('risk_level', 'unknown')}{detail}")
         lines.append(f"- Weak-fold full-tile status: {weak.get('status')}")
         actions = evidence.get("promotion_actions") or dashboard.get("promotion_actions") or []
         if actions:

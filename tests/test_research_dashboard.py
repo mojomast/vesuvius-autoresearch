@@ -370,16 +370,16 @@ class ResearchDashboardTest(unittest.TestCase):
             logs.mkdir()
             summary = logs / "candidate.summary.json"
             summary.write_text(json.dumps({"promotion_ready": True, "run_ids": ["candidate"], "worst_fold_id": "weakseg", "worst_fold_val_f1": 0.047, "promotion_warnings": []}))
-            (logs / "candidate.jsonl").write_text(json.dumps({"run_id": "loo_weak", "artifact_dir": str(root / "experiments" / "runs" / "loo_weak"), "heldout_segment": "weakseg", "seed": 15050, "val_f1": 0.047, "average_precision": 0.03, "returncode": 0}) + "\n")
+            (logs / "candidate.jsonl").write_text(json.dumps({"run_id": "loo_weak", "artifact_dir": str(root / "experiments" / "runs" / "loo_weak"), "heldout_segment": "weakseg", "seed": 15050, "val_f1": 0.047, "average_precision": 0.03, "best_threshold": 0.29, "pred_positive_rate": 0.40, "val_positive_rate": 0.10, "returncode": 0}) + "\n")
             db = root / "experiments" / "experiments.db"
             db.parent.mkdir(parents=True)
             candidate_dir = root / "experiments" / "runs" / "candidate"
             candidate_tile_dir = candidate_dir / "full_tile_goodseg"
             candidate_tile_dir.mkdir(parents=True)
-            (candidate_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "goodseg"}, "promotion_checks": {"eligible": True}}))
+            (candidate_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "goodseg"}, "promotion_checks": {"eligible": True}, "pred_positive_rate": 0.36, "val_positive_rate": 0.09}))
             loo_tile_dir = root / "experiments" / "runs" / "loo_weak" / "full_tile_weakseg"
             loo_tile_dir.mkdir(parents=True)
-            (loo_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "weakseg"}, "promotion_checks": {"eligible": True}, "val_f1": 0.12, "average_precision": 0.08}))
+            (loo_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "weakseg"}, "promotion_checks": {"eligible": True}, "val_f1": 0.12, "average_precision": 0.08, "best_threshold": 0.31, "pred_positive_rate": 0.20, "val_positive_rate": 0.05}))
             cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "goodseg"}}
             metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}
             conn = sqlite3.connect(db)
@@ -401,6 +401,11 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(loo_full["coverage_count"], 1)
         self.assertEqual(loo_full["segments_covered"], ["weakseg"])
         self.assertEqual(loo_full["evidence"][0]["loo_run_id"], "loo_weak")
+        self.assertEqual(loo_full["evidence"][0]["loo_pred_positive_rate"], 0.40)
+        risk = snapshot["research_summary"]["candidate_evidence"]["risk_summary"]
+        self.assertEqual(risk["risk_level"], "warning")
+        self.assertAlmostEqual(risk["loo_sampled_vs_full_tile"][0]["sampled_to_full_pred_positive_rate_ratio"], 2.0)
+        self.assertTrue(any("LOO full-tile" in warning for warning in risk["warnings"]))
 
     def test_dashboard_detects_nested_full_tile_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
