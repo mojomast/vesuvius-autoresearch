@@ -31,6 +31,11 @@ def main() -> int:
     parser.add_argument("--public-chunk-delay-sec", type=float, default=0.0, help="Opt-in sleep after each public Zarr chunk read; 0 keeps the fast direct layer read")
     parser.add_argument("--public-chunk-retry-count", type=int, default=0, help="Retry individual public Zarr chunk reads after HTTP 429 responses")
     parser.add_argument("--public-chunk-retry-delay-sec", type=float, default=0.0, help="Sleep this many seconds between public Zarr chunk 429 retries")
+    parser.add_argument("--mine-output", help="Optional NPZ path for mined false-positive hard-negative patches")
+    parser.add_argument("--mine-max-patches", type=int, default=128, help="Maximum mined hard-negative patches when --mine-output is set")
+    parser.add_argument("--mine-threshold", type=float, default=None, help="Probability threshold for mining; defaults to evaluation threshold")
+    parser.add_argument("--mine-stride", type=int, default=None, help="Mining patch stride; defaults to patch size")
+    parser.add_argument("--mine-max-label-positive-rate", type=float, default=0.001, help="Maximum label positive rate allowed in mined negative patches")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files")
     parser.add_argument("--self-test", action="store_true", help="Run a lightweight synthetic tiling/evaluation self-test")
     args = parser.parse_args()
@@ -58,6 +63,11 @@ def main() -> int:
         public_chunk_delay_sec=args.public_chunk_delay_sec,
         public_chunk_retry_count=args.public_chunk_retry_count,
         public_chunk_retry_delay_sec=args.public_chunk_retry_delay_sec,
+        mine_output=Path(args.mine_output) if args.mine_output else None,
+        mine_max_patches=args.mine_max_patches,
+        mine_threshold=args.mine_threshold,
+        mine_stride=args.mine_stride,
+        mine_max_label_positive_rate=args.mine_max_label_positive_rate,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

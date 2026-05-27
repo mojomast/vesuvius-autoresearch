@@ -13,9 +13,12 @@ from data.tile_inference import (
     evaluate_probability_map,
     _promotion_checks,
     load_public_segment,
+    mine_failure_patches,
+    run_full_tile_inference,
     self_test,
     stitch_probabilities_from_predictor,
     tile_origins,
+    write_mined_npz,
     write_outputs,
 )
 from scripts.prepare_vesuvius_segment_npz import _open_layers
@@ -137,6 +140,76 @@ class TileInferenceTest(unittest.TestCase):
         self.assertIn("probability_map", outputs)
         self.assertIn("metrics_json", outputs)
         self.assertIn("threshold_csv", outputs)
+
+    def test_mine_failure_patches_selects_false_positive_negatives(self) -> None:
+        image = np.arange(64, dtype=np.float32).reshape(1, 8, 8)
+        label = np.zeros((8, 8), dtype=np.float32)
+        label[:4, :4] = 1.0
+        prob_map = np.zeros((8, 8), dtype=np.float32)
+        prob_map[4:, 4:] = 0.9
+        prob_map[:4, :4] = 0.95
+
+        images, labels, meta = mine_failure_patches(
+            image,
+            label,
+            prob_map,
+            patch_size=4,
+            stride=4,
+            threshold=0.5,
+            max_patches=2,
+            max_label_positive_rate=0.0,
+        )
+
+        self.assertEqual(images.shape, (1, 1, 4, 4))
+        self.assertEqual(labels.shape, (1, 1, 4, 4))
+        self.assertEqual(meta["samples"], 1)
+        self.assertEqual(meta["origins_yx"], [[4, 4]])
+        self.assertTrue(np.array_equal(images[0], image[:, 4:, 4:]))
+        self.assertEqual(float(labels.mean()), 0.0)
+
+    def test_write_mined_npz_uses_runner_schema_and_metadata(self) -> None:
+        images = np.zeros((2, 1, 4, 4), dtype=np.float32)
+        labels = np.zeros((2, 1, 4, 4), dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "mined.npz"
+            paths = write_mined_npz(output, images, labels, {"samples": 2})
+            with np.load(output) as data:
+                self.assertEqual(data["images"].shape, images.shape)
+                self.assertEqual(data["labels"].shape, labels.shape)
+            self.assertTrue(Path(paths["mined_metadata_json"]).exists())
+            with self.assertRaisesRegex(FileExistsError, "Refusing to overwrite"):
+                write_mined_npz(output, images, labels)
+
+    def test_run_full_tile_inference_optionally_writes_mined_npz(self) -> None:
+        image = np.zeros((1, 8, 8), dtype=np.float32)
+        label = np.zeros((8, 8), dtype=np.float32)
+        prob_map = np.zeros((8, 8), dtype=np.float32)
+        prob_map[4:, 4:] = 0.8
+        cfg = {"dataset": {"patch_size": 4}, "evaluation": {"threshold": 0.5}, "model": {"name": "tiny_torch_unet"}}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("data.tile_inference.load_public_segment", return_value=(image, label, {"segment_id": "seg"})), \
+             mock.patch("data.tile_inference.load_torch_unet_artifact", return_value=([object()], cfg, Path(tmp) / "artifact", {})), \
+             mock.patch("data.tile_inference.stitch_probabilities", return_value=(prob_map, {"patches": 4})):
+            output_dir = Path(tmp) / "tile"
+            mined_path = Path(tmp) / "mined.npz"
+            result = run_full_tile_inference(
+                artifact=Path(tmp) / "artifact",
+                segment_id="seg",
+                output_dir=output_dir,
+                mine_output=mined_path,
+                mine_max_patches=1,
+                mine_threshold=0.5,
+                mine_stride=4,
+            )
+
+            self.assertTrue(mined_path.exists())
+            with np.load(mined_path) as data:
+                self.assertEqual(data["images"].shape, (1, 1, 4, 4))
+                self.assertEqual(data["labels"].shape, (1, 1, 4, 4))
+            self.assertIn("mined_npz", result["outputs"])
+            self.assertEqual(result["metrics"]["mined_hard_negatives"]["samples"], 1)
 
     def test_public_segment_retry_handles_rate_limit(self) -> None:
         class RateLimitError(Exception):

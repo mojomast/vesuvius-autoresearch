@@ -427,6 +427,56 @@ HTML = """<!doctype html>
       border-radius: 0 0 8px 8px;
       max-height: 250px;
     }
+
+    .decoded-output-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+    .decoded-output-card {
+      background: #02040a;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.75rem;
+    }
+    .decoded-output-card img {
+      width: 100%;
+      max-height: 460px;
+      object-fit: contain;
+      image-rendering: pixelated;
+      border-radius: 4px;
+      background: #000;
+    }
+    .decoded-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-top: 0.5rem;
+    }
+    .decoded-gallery-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+    .decoded-gallery-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.75rem;
+      background: rgba(7, 9, 19, 0.35);
+      min-height: 170px;
+    }
+    .decoded-gallery-card img {
+      width: 100%;
+      max-height: 180px;
+      object-fit: contain;
+      image-rendering: pixelated;
+      background: #000;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.05);
+      margin-top: 0.5rem;
+    }
     
     .console-input {
       background: rgba(7, 9, 19, 0.6);
@@ -573,11 +623,34 @@ HTML = """<!doctype html>
           </div>
         </div>
 
+        <!-- Usefulness-ranked candidates -->
+        <div class="panel">
+          <h2>Research Usefulness Leaderboard</h2>
+          <div id="quality-leaderboard-container">
+            <div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">Scoring candidates by full-tile quality and promotion evidence...</div>
+          </div>
+        </div>
+
         <!-- 2D Validation Segment heat-map matrix -->
         <div class="panel">
           <h2>Validation Fold Matrix (Train → Validate F1 Cross-grid)</h2>
           <div id="segment-matrix-container">
             <div style="color:var(--muted);text-align:center;padding:2rem;font-size:0.8rem;">Discovering cross-fold matrix variables...</div>
+          </div>
+        </div>
+
+        <!-- Decoded full-tile output gallery -->
+        <div class="panel">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.5rem;">
+            <h2 style="margin:0;">Decoded Output Gallery</h2>
+            <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+              <button style="padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="decodeVisibleOutputs()">Decode Visible</button>
+              <button style="padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="decodeAllOutputs()">Decode All</button>
+            </div>
+          </div>
+          <div style="color:var(--muted);font-size:0.72rem;">Review full-tile <code>probability_map.npy</code> outputs across recent runs. Cards show the decoded probability heatmap when loaded; click a card for the larger heatmap plus threshold mask.</div>
+          <div id="decoded-output-gallery">
+            <div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">Scanning recent run artifacts for decoded outputs...</div>
           </div>
         </div>
 
@@ -688,6 +761,7 @@ HTML = """<!doctype html>
     let selectedTrainSegment = null;
     let selectedValSegment = null;
     let fullLogs = [];
+    const decodedPreviewCache = new Map();
 
     const fmt = (v, d = 4) => {
       const num = Number(v);
@@ -778,7 +852,9 @@ HTML = """<!doctype html>
       renderMilestones(rawData.progress.milestones, summary.foundation_readiness);
       renderCandidateEvidence(decision.candidate_evidence || rawData.research_summary?.candidate_evidence || {});
       renderTrendChart(rawData.experiments.metric_trends);
+      renderQualityLeaderboard(rawData.experiments.leaderboard);
       renderFoldMatrix(rawData.experiments.validation_matrix);
+      renderDecodedOutputGallery(rawData.experiments.recent);
       renderRecentRuns(rawData.experiments.recent);
       renderActiveProcesses(ops.processes);
       renderConfigBadges(rawData.configs);
@@ -804,6 +880,8 @@ HTML = """<!doctype html>
       const cmd = action.command_text || weak.command_text;
       const riskWarnings = risk.warnings || [];
       const riskText = riskWarnings.length ? riskWarnings[0] : `positive-rate risk ${risk.risk_level || 'unknown'}`;
+      const qualityItems = [...(full.evidence || []), ...(looFull.evidence || [])];
+      const qualityAction = qualityItems.map(item => item.quality_next_action).find(Boolean) || 'none';
       container.innerHTML = `
         <div class="milestone-item"><span class="milestone-label">Candidate</span><span class="run-pill" style="cursor:pointer;" onclick="selectRun('${esc(evidence.candidate_run_id)}')">${esc(String(evidence.candidate_run_id).slice(0, 8))}</span></div>
         <div class="milestone-item"><span class="milestone-label">LOO weak fold</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(loo.worst_fold_id || 'unknown')} · F1 ${fmt(loo.worst_fold_val_f1, 4)}</span></div>
@@ -811,10 +889,180 @@ HTML = """<!doctype html>
         <div class="milestone-item"><span class="milestone-label">LOO tile panel</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((looFull.segments_covered || []).join(', ') || 'none')} · ${esc(String(looFull.coverage_count || 0))} runs</span></div>
         <div class="milestone-item"><span class="milestone-label">Positive-rate risk</span><span class="indicator-badge ${risk.risk_level === 'warning' ? 'badge-warning' : 'badge-success'}">${esc(risk.risk_level || 'unknown')}</span></div>
         <div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);">${esc(riskText)}</div>
+        <div class="milestone-item"><span class="milestone-label">Quality next action</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(qualityAction)}</span></div>
         <div class="milestone-item"><span class="milestone-label">Weak-fold tile</span><span class="indicator-badge ${weak.status === 'done' ? 'badge-success' : 'badge-warning'}">${esc(weak.status || 'unknown')}</span></div>
         <div style="margin-top:0.5rem;color:var(--text);font-size:0.75rem;">${esc(action.label || 'Review candidate evidence')}</div>
         ${cmd ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(cmd).replace(/'/g, '&#39;')}')">Copy next command</button>` : ''}
       `;
+    }
+
+    function verdictBadgeClass(verdict) {
+      if (verdict === 'pass') return 'badge-success';
+      if (verdict === 'fail') return 'badge-error';
+      return 'badge-warning';
+    }
+
+    function verdictText(verdict) {
+      return String(verdict || 'unknown').toUpperCase();
+    }
+
+    function renderQualityLeaderboard(rows) {
+      const container = document.getElementById('quality-leaderboard-container');
+      if (!container) return;
+      if (!rows || rows.length === 0) {
+        container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">No candidate quality rows available yet.</div>';
+        return;
+      }
+      container.innerHTML = `
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>Run</th><th>Quality</th><th>F1</th><th>AP</th><th>Full Tile</th><th>Promotion</th><th>Reason</th><th>Leaderboard next action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.slice(0, 12).map(row => {
+                 const q = row.quality_verdict || {};
+                 const reason = (row.quality_reasons || q.reasons || row.top_blockers || [])[0] || 'none';
+                 const nextAction = row.quality_next_action || (row.quality_next_actions || [])[0]?.label || 'promotion review';
+                 return `
+                  <tr style="cursor:pointer;" onclick="selectRun('${esc(row.run_id)}')">
+                    <td style="font-family:var(--font-mono);">${esc(row.rank)}</td>
+                    <td><code class="run-pill">${esc(String(row.run_id || '').slice(0, 8))}</code></td>
+                    <td><span class="indicator-badge ${verdictBadgeClass(q.verdict)}">${verdictText(q.verdict)}</span> <span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${fmt(row.quality_score, 3)}</span></td>
+                    <td style="font-family:var(--font-mono);">${fmt(row.val_f1, 4)}</td>
+                    <td style="font-family:var(--font-mono);">${fmt(row.average_precision, 4)}</td>
+                    <td style="font-family:var(--font-mono);">${esc(row.full_tile_coverage_count || 0)}</td>
+                     <td><span class="indicator-badge ${row.promotion_status === 'eligible' ? 'badge-success' : 'badge-warning'}">${esc(row.promotion_status || 'unknown')}</span></td>
+                     <td style="font-size:0.68rem;color:var(--muted);font-family:var(--font-mono);">${esc(reason)}</td>
+                     <td style="font-size:0.68rem;color:var(--muted);font-family:var(--font-mono);">${esc(nextAction)}</td>
+                   </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function collectDecodedOutputs(recent) {
+      const outputs = [];
+      (recent || []).forEach(run => {
+        (run.artifacts || []).forEach(file => {
+          if (file.name === 'probability_map.npy') {
+            outputs.push({ run, file });
+          }
+        });
+      });
+      return outputs;
+    }
+
+    function decodedOutputCardId(index) {
+      return `decoded-output-card-${index}`;
+    }
+
+    function renderDecodedOutputGallery(recent) {
+      const container = document.getElementById('decoded-output-gallery');
+      if (!container) return;
+      const outputs = collectDecodedOutputs(recent);
+      if (!outputs.length) {
+        container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">No decoded probability maps found in recent run artifacts. Run full-tile inference to create <code>probability_map.npy</code>.</div>';
+        return;
+      }
+      container.innerHTML = `
+        <div style="font-size:0.7rem;color:var(--muted);font-family:var(--font-mono);margin-top:0.5rem;">${outputs.length} decoded output(s) found across recent runs.</div>
+        <div class="decoded-gallery-grid">
+          ${outputs.slice(0, 48).map(({run, file}, idx) => {
+            const m = run.metrics || {};
+            const rel = file.relative_path || file.name;
+            const cached = decodedPreviewCache.get(file.path);
+            const q = (cached && cached.quality_verdict) || file.quality_verdict || {};
+            const reason = (q.reasons || [])[0] || 'pending-map-score';
+            return `
+              <div class="decoded-gallery-card" id="${decodedOutputCardId(idx)}">
+                <div style="display:flex;justify-content:space-between;gap:0.5rem;align-items:start;">
+                  <div>
+                    <div style="font-family:var(--font-mono);font-size:0.7rem;color:var(--accent);font-weight:700;">${esc(run.run_id || 'unknown').slice(0, 12)}</div>
+                    <div style="font-size:0.65rem;color:var(--muted);word-break:break-all;">${esc(rel)}</div>
+                  </div>
+                  <button style="font-size:0.65rem;padding:0.2rem 0.4rem;" onclick="decodeGalleryOutput(${idx})">Decode</button>
+                </div>
+                <div class="decoded-metrics">
+                  <span class="pill">F1=${fmt(m.val_f1 ?? m.tile_f1, 4)}</span>
+                  <span class="pill">AP=${fmt(m.average_precision, 4)}</span>
+                  <span class="pill">pred+=${fmt(m.pred_positive_rate, 4)}</span>
+                  <span class="indicator-badge ${verdictBadgeClass(q.verdict)}">${verdictText(q.verdict)}</span>
+                  <span class="pill">q=${fmt(q.score, 3)}</span>
+                </div>
+                <div style="font-size:0.62rem;color:var(--muted);font-family:var(--font-mono);margin-top:0.25rem;">${esc(reason)}</div>
+                <div data-output-path="${esc(file.path)}" data-output-name="${esc(rel)}" style="color:var(--muted);font-size:0.68rem;margin-top:0.75rem;">${cached ? decodedOutputPreviewHtml(file.path, rel, cached) : 'Not decoded yet.'}</div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    function decodedOutputPreviewHtml(filePath, fileName, p) {
+      const q = p.quality_verdict || {};
+      const mq = p.map_quality || {};
+      return `
+        <img src="${p.heatmap_data_url}" alt="Decoded probability heatmap" onclick="previewArtifact('${esc(filePath)}', '${esc(fileName)}')" style="cursor:pointer;">
+        <div class="decoded-metrics">
+          <span class="indicator-badge ${verdictBadgeClass(q.verdict)}">${verdictText(q.verdict)}</span>
+          <span class="pill">q=${fmt(q.score, 3)}</span>
+          <span class="pill">map=${esc(mq.verdict || 'n/a')}</span>
+          <span class="pill">shape=${esc((p.shape || []).join('x'))}</span>
+          <span class="pill">thr=${fmt(p.threshold, 4)}</span>
+          <span class="pill">mean=${fmt(p.mean, 4)}</span>
+          <span class="pill">p95=${fmt(p.p95, 4)}</span>
+          <span class="pill">max=${fmt(p.max, 4)}</span>
+        </div>
+      `;
+    }
+
+    async function decodeGalleryOutput(index) {
+      const card = document.getElementById(decodedOutputCardId(index));
+      if (!card) return;
+      const target = card.querySelector('[data-output-path]');
+      if (!target) return;
+      const filePath = target.getAttribute('data-output-path');
+      const fileName = target.getAttribute('data-output-name') || 'probability_map.npy';
+      target.innerHTML = '<div style="color:var(--muted);font-family:var(--font-mono);font-size:0.68rem;">Decoding probability map...</div>';
+      try {
+        const response = await fetch(apiUrl(`/api/artifact?path=${encodeURIComponent(filePath)}`));
+        if (!response.ok) throw new Error(response.statusText);
+        const data = await response.json();
+        if (data.preview_error) throw new Error(data.preview_error);
+        const p = data.preview || {};
+        decodedPreviewCache.set(filePath, p);
+        target.innerHTML = decodedOutputPreviewHtml(filePath, fileName, p);
+      } catch (err) {
+        target.innerHTML = `<div style="color:var(--error);font-size:0.68rem;font-family:var(--font-mono);">Decode failed: ${esc(err.message)}</div>`;
+      }
+    }
+
+    function decodeVisibleOutputs() {
+      const cards = Array.from(document.querySelectorAll('.decoded-gallery-card')).slice(0, 24);
+      cards.forEach((card, idx) => {
+        if (card.querySelector('img')) return;
+        decodeGalleryOutput(idx);
+      });
+      showToast(`Decoding ${cards.length} visible output card(s)`);
+    }
+
+    async function decodeAllOutputs() {
+      const cards = Array.from(document.querySelectorAll('.decoded-gallery-card'));
+      let decoded = 0;
+      showToast(`Decoding all ${cards.length} output card(s)`);
+      for (let idx = 0; idx < cards.length; idx += 1) {
+        const target = cards[idx].querySelector('[data-output-path]');
+        if (!target || cards[idx].querySelector('img')) continue;
+        await decodeGalleryOutput(idx);
+        decoded += 1;
+      }
+      showToast(`Decoded ${decoded} new output card(s); cached previews survive dashboard refreshes`);
     }
 
     // A. Milestones Readiness
@@ -1057,10 +1305,11 @@ HTML = """<!doctype html>
               <td colspan="6" style="padding:0;">
                 <div class="drawer">
                   <div style="font-weight:700; font-size:0.75rem; color:var(--accent); margin-bottom:0.4rem;">Run Directory Artifact Explorer</div>
+                  <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.5rem;">Open <code>probability_map.npy</code> to inspect decoded heatmaps and threshold masks from full-tile inference.</div>
                   <div style="margin-bottom:0.75rem;">
                     ${files.map(f => `
                       <span class="pill ${f.kind === 'pt' ? 'missing' : 'available'}" style="cursor:pointer;" onclick="previewArtifact('${esc(f.path)}', '${esc(f.name)}')">
-                        📁 ${esc(f.name)} <span style="color:var(--muted);font-size:0.6rem;margin-left:0.25rem;">(${(f.size_bytes / 1024).toFixed(1)}k)</span>
+                        ${f.name === 'probability_map.npy' ? 'Decoded output' : 'Artifact'} ${esc(f.relative_path || f.name)} <span style="color:var(--muted);font-size:0.6rem;margin-left:0.25rem;">(${(f.size_bytes / 1024).toFixed(1)}k)</span>
                       </span>
                     `).join('') || '<span style="color:var(--muted);font-size:0.7rem;">No run artifacts discovered.</span>'}
                   </div>
@@ -1118,7 +1367,37 @@ HTML = """<!doctype html>
         }
 
         const isImg = data.kind && ['png','jpg','jpeg','webp','gif'].includes(data.kind.toLowerCase());
-        if (isImg && data.preview) {
+        if (data.kind === 'npy' && data.preview && data.preview.heatmap_data_url) {
+          const p = data.preview;
+          const metricPills = [
+            ['quality', `${verdictText(p.quality_verdict?.verdict)} ${fmt(p.quality_verdict?.score, 3)}`],
+            ['map_quality', `${verdictText(p.map_quality?.verdict)} ${fmt(p.map_quality?.score, 3)}`],
+            ['shape', (p.shape || []).join('x')],
+            ['rendered', (p.rendered_shape || []).join('x')],
+            ['threshold', fmt(p.threshold, 4)],
+            ['pred+', fmt(p.pred_positive_rate, 4)],
+            ['mean', fmt(p.mean, 4)],
+            ['p95', fmt(p.p95, 4)],
+            ['max', fmt(p.max, 4)],
+          ];
+          const extraMetrics = Object.entries(p.metrics || {}).map(([k, v]) => [k, typeof v === 'number' ? fmt(v, 4) : v]);
+          display.innerHTML = `
+            <div style="color:var(--muted);font-size:0.72rem;">Decoded NumPy probability map. Left is probability intensity; right is binary decoded mask at the selected threshold.</div>
+            <div class="decoded-metrics">
+              ${metricPills.concat(extraMetrics).map(([k, v]) => `<span class="pill">${esc(k)}=${esc(v)}</span>`).join('')}
+            </div>
+            <div class="decoded-output-grid">
+              <div class="decoded-output-card">
+                <div style="font-size:0.72rem;color:var(--accent);font-weight:700;margin-bottom:0.5rem;">Probability Heatmap</div>
+                <img src="${p.heatmap_data_url}" alt="Decoded probability heatmap">
+              </div>
+              <div class="decoded-output-card">
+                <div style="font-size:0.72rem;color:var(--accent);font-weight:700;margin-bottom:0.5rem;">Threshold Mask</div>
+                <img src="${p.mask_data_url}" alt="Decoded threshold mask">
+              </div>
+            </div>
+          `;
+        } else if (isImg && data.preview) {
           display.innerHTML = `
             <div style="background:#000; padding:1rem; border-radius:8px; border:1px solid var(--line); display:flex; justify-content:center;">
               <img src="${data.preview}" style="max-width:100%; max-height:400px; border-radius:4px; box-shadow:0 0 20px rgba(0,0,0,0.5);" alt="Run Visual Prediction">

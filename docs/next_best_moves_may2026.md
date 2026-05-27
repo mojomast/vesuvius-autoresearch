@@ -68,6 +68,7 @@ Record these fields from `metrics.json` for full-tile runs:
 - `fixed_threshold_f1`, `fixed_threshold_status`, and `threshold_selection`
 - `promotion_checks.validation_setup` and `promotion_checks.resolved_data`
 - `promotion_checks.eligible` and `promotion_checks.warnings`
+- dashboard-derived `quality_verdict`, `quality_next_action`, and `quality_next_actions` from the snapshot
 
 Promotion criteria for full-tile results:
 
@@ -75,8 +76,11 @@ Promotion criteria for full-tile results:
 - Preserve or improve tiled `val_f1` and `val_f05` without a large jump in `pred_positive_rate`.
 - Keep `val_positive_rate` consistent with the held-out segment metadata.
 - Inspect probability quantiles before promotion when a threshold sweep is the main source of lift.
+- Resolve dashboard quality next actions before promotion review. A `review` verdict requires human inspection of full-tile quality; a `fail` verdict blocks promotion until remediated.
 
 Public-directory full-tile reads may be rate limited. Prefer dashboard-generated weak-fold commands with `--public-retry-count`, `--public-retry-delay-sec`, `--public-chunk-delay-sec`, `--public-chunk-retry-count`, and `--public-chunk-retry-delay-sec` so Zarr fetches cool down between `429 Too Many Requests` responses instead of immediately failing and being rerun manually. The chunk flags are opt-in; without them, layer reads keep the faster direct path.
+
+When a decoded full-tile output fails because of flooding, speckles, or suspicious positive-rate ratio, mine false-positive hard negatives from the same full-tile pass instead of launching another blind sweep. `scripts/infer_full_tile.py` can write a runner-schema mined NPZ with `--mine-output path/to/hard_negatives.npz --mine-max-patches 512`; by default mining uses the selected best threshold and keeps patches with near-zero label positives. Only combine mined negatives into training folds where the mined segment is training-eligible, never into the held-out segment for that fold.
 
 If a model only wins on positive-biased validation but fails on tiled validation, keep it diagnostic-only.
 

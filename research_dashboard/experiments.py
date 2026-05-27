@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from .artifacts import list_artifact_files
+from .quality import metrics_quality_verdict, quality_next_actions
 
 
 def _get_nested(obj: dict[str, Any], path: tuple[str, ...], default: Any = None) -> Any:
@@ -204,6 +205,8 @@ def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) ->
         checks = data.get("promotion_checks") if isinstance(data.get("promotion_checks"), dict) else {}
         region = data.get("evaluation_region") if isinstance(data.get("evaluation_region"), dict) else {}
         segment_id = str(region.get("segment_id") or checks.get("inference_segment_id") or "")
+        quality = metrics_quality_verdict(data)
+        actions = quality_next_actions(quality, target="full_tile", segment_id=segment_id or None)
         out.append({
             "path": str(path),
             "relative_path": _rel_path(path, project_root),
@@ -226,8 +229,46 @@ def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) ->
             "fixed_threshold_status": data.get("fixed_threshold_status"),
             "threshold_selection": data.get("threshold_selection"),
             "selected_threshold_reason": data.get("selected_threshold_reason"),
+            "quality_verdict": quality,
+            "quality_score": quality.get("score"),
+            "quality_reasons": quality.get("reasons", []),
+            "quality_next_actions": actions,
+            "quality_next_action": actions[0].get("label") if actions else None,
         })
     return out
+
+
+def _quality_blocks_promotion(item: dict[str, Any]) -> bool:
+    quality = item.get("quality_verdict") if isinstance(item.get("quality_verdict"), dict) else {}
+    has_quality_metrics = any(item.get(key) is not None for key in ("val_f1", "average_precision", "pred_positive_rate", "val_positive_rate", "fixed_threshold_f1"))
+    return quality.get("verdict") == "fail" and has_quality_metrics
+
+
+def _quality_promotion_actions(full_tiles: list[dict[str, Any]], loo_full_tiles: dict[str, Any]) -> list[dict[str, Any]]:
+    items = list(full_tiles)
+    if isinstance(loo_full_tiles, dict):
+        items.extend(item for item in loo_full_tiles.get("evidence", []) if isinstance(item, dict))
+    actions: list[dict[str, Any]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for verdict in ("fail", "review"):
+        for item in items:
+            quality = item.get("quality_verdict") if isinstance(item.get("quality_verdict"), dict) else {}
+            if quality.get("verdict") != verdict:
+                continue
+            segment = item.get("segment_id") or item.get("heldout_segment")
+            action_items = quality_next_actions(quality, target="candidate_full_tile", segment_id=segment)
+            if not action_items:
+                continue
+            for action in action_items:
+                key = (str(action.get("id")), str(segment) if segment is not None else None)
+                if key in seen:
+                    continue
+                seen.add(key)
+                label = str(action.get("label") or "Review quality evidence")
+                if segment:
+                    label = f"{label} for segment {segment}"
+                actions.append({**action, "label": label, "quality_verdict": verdict, "segment_id": segment, "writes_artifacts": False})
+    return actions
 
 
 def _weak_fold_loo_run(summary: dict[str, Any] | None, weak_fold_id: str) -> dict[str, Any] | None:
@@ -370,6 +411,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
     summary = _linked_loo_summary(run, loo_summaries, project_root)
     full_tiles = _full_tile_metrics(run, project_root)
     loo_full_tiles = _loo_full_tile_diagnostics(summary, project_root)
+    full_tile_quality_actions = _quality_promotion_actions(full_tiles, {})
     artifact_dir = Path(str(run.get("artifact_dir") or ""))
     weak_fold_id = str((summary or {}).get("worst_fold_id") or "")
     weak_loo_run = _weak_fold_loo_run(summary, weak_fold_id)
@@ -418,6 +460,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
         actions.append({"id": "weak_fold_full_tile", "label": f"Run full-tile on weak fold {weak_fold_id}", "kind": "inference", "command": command, "command_text": command_text, "writes_artifacts": True, "safe_to_execute_from_dashboard": False})
     if not full_tiles:
         actions.append({"id": "full_tile_candidate", "label": "Run candidate full-tile evidence", "kind": "inference", "writes_artifacts": True, "safe_to_execute_from_dashboard": False})
+    actions.extend(_quality_promotion_actions(full_tiles, loo_full_tiles))
     if run.get("promotion_status") == "eligible":
         actions.append({"id": "promotion_review", "label": f"Review promotion candidate {run.get('run_id')}", "kind": "review", "writes_artifacts": False})
 
@@ -438,6 +481,8 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
             "segments_covered": [item.get("segment_id") for item in full_tiles if item.get("segment_id")],
             "evidence": full_tiles,
             "coverage_count": len(full_tiles),
+            "quality_next_actions": full_tile_quality_actions,
+            "quality_next_action": full_tile_quality_actions[0].get("label") if full_tile_quality_actions else None,
         },
         "loo_full_tile": loo_full_tiles,
         "risk_summary": _positive_rate_risk_summary(run, full_tiles, loo_full_tiles),
@@ -492,6 +537,8 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
             add("missing_seed_repeat_loo", "validation")
         if not _full_tile_ready(run):
             add("missing_full_tile_evidence", "inference")
+        elif any(_quality_blocks_promotion(item) for item in _full_tile_metrics(run, project_root)):
+            add("full_tile_quality_fail", "quality")
     best_threshold = metrics.get("best_threshold")
     if best_threshold is not None:
         threshold = float(best_threshold)
@@ -661,10 +708,56 @@ def _config_diff(before: dict[str, Any] | None, after: dict[str, Any] | None, li
     return diffs
 
 
+def _leaderboard_rows(runs: list[dict[str, Any]], project_root: Path | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+        setup = run.get("validation_setup", {}) if isinstance(run.get("validation_setup"), dict) else {}
+        full_tiles = _full_tile_metrics(run, project_root)
+        best_tile = max(full_tiles, key=lambda item: float(item.get("quality_score") or 0.0), default=None)
+        metric_quality = metrics_quality_verdict(metrics)
+        tile_quality = best_tile.get("quality_verdict") if isinstance(best_tile, dict) else None
+        quality = tile_quality if isinstance(tile_quality, dict) else metric_quality
+        ratio = _safe_ratio(metrics.get("pred_positive_rate"), metrics.get("val_positive_rate"))
+        quality_actions = quality_next_actions(quality, target="leaderboard", run_id=str(run.get("run_id") or ""), segment_id=setup.get("val_segment_id")) if isinstance(quality, dict) else []
+        rows.append({
+            "run_id": run.get("run_id"),
+            "timestamp": run.get("timestamp"),
+            "model_name": metrics.get("model_name") or _get_nested(run.get("config", {}), ("model", "name"), "unknown"),
+            "val_f1": metrics.get("val_f1"),
+            "average_precision": metrics.get("average_precision"),
+            "promotion_status": run.get("promotion_status"),
+            "champion_classes": run.get("champion_classes", []),
+            "validation_mode": setup.get("mode"),
+            "train_segment_id": setup.get("train_segment_id"),
+            "val_segment_id": setup.get("val_segment_id"),
+            "pred_positive_rate_ratio": ratio,
+            "full_tile_coverage_count": len(full_tiles),
+            "best_full_tile_verdict": tile_quality,
+            "quality_verdict": quality,
+            "quality_score": quality.get("score") if isinstance(quality, dict) else None,
+            "quality_reasons": quality.get("reasons", []) if isinstance(quality, dict) else [],
+            "quality_next_actions": quality_actions,
+            "quality_next_action": (quality_actions or [{}])[0].get("label"),
+            "blocker_count": len(run.get("promotion_blockers") or []),
+            "top_blockers": [item.get("code") for item in (run.get("promotion_blockers") or [])[:3]],
+        })
+
+    def key(row: dict[str, Any]) -> tuple[float, float, float]:
+        status_bonus = 0.15 if row.get("promotion_status") == "eligible" else 0.0
+        tile_bonus = 0.05 * min(int(row.get("full_tile_coverage_count") or 0), 3)
+        return (float(row.get("quality_score") or 0.0) + status_bonus + tile_bonus, float(row.get("val_f1") or 0.0), float(row.get("average_precision") or 0.0))
+
+    ranked = sorted(rows, key=key, reverse=True)[:limit]
+    for idx, row in enumerate(ranked, start=1):
+        row["rank"] = idx
+    return ranked
+
+
 def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
     db_path = project_root / "experiments" / "experiments.db"
     loo_summaries = _load_loo_summaries(project_root)
-    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries, project_root), "loo_summaries": loo_summaries, "metric_trends": [], "validation_matrix": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
+    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries, project_root), "loo_summaries": loo_summaries, "metric_trends": [], "validation_matrix": [], "leaderboard": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
     if not db_path.exists():
         return empty
     try:
@@ -733,6 +826,7 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         "loo_summaries": loo_summaries,
         "metric_trends": [{"run_id": r["run_id"], "timestamp": r["timestamp"], "main_metric": r["main_metric"], "val_f1": r.get("metrics", {}).get("val_f1"), "average_precision": r.get("metrics", {}).get("average_precision")} for r in chronological],
         "validation_matrix": sorted(matrix.values(), key=lambda item: (item["train_segment_id"], item["val_segment_id"])),
+        "leaderboard": _leaderboard_rows(runs, project_root),
         "config_diffs": {"latest_vs_previous": _config_diff(previous.get("config") if previous else None, latest.get("config") if latest else None), "latest_vs_best": _config_diff(best.get("config") if best else None, latest.get("config") if latest else None), "latest_vs_baseline": _config_diff(baseline.get("config") if baseline else None, latest.get("config") if latest else None)},
         "hypotheses": [],
     }

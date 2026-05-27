@@ -446,6 +446,69 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
     return metrics, rows
 
 
+def mine_failure_patches(image: np.ndarray, label: np.ndarray, prob_map: np.ndarray, patch_size: int = 64, stride: int | None = None, threshold: float = 0.5, max_patches: int = 128, max_label_positive_rate: float = 0.001) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Mine high-confidence false-positive patches in runner NPZ schema."""
+    step = int(patch_size if stride is None else stride)
+    _validate_tiling_args(int(patch_size), step)
+    if max_patches <= 0:
+        raise ValueError("max_patches must be positive")
+    if image.ndim != 3:
+        raise ValueError(f"Expected image [C,H,W], got shape {image.shape}")
+    if label.ndim != 2 or prob_map.ndim != 2:
+        raise ValueError(f"Expected label/probability map [H,W], got {label.shape} and {prob_map.shape}")
+    if image.shape[-2:] != label.shape or prob_map.shape != label.shape:
+        raise ValueError(f"Image, label, and probability shapes must align, got {image.shape}, {label.shape}, {prob_map.shape}")
+
+    candidates = []
+    for yy, xx in tile_origins(label.shape[0], label.shape[1], int(patch_size), step):
+        label_patch = label[yy:yy + patch_size, xx:xx + patch_size]
+        prob_patch = prob_map[yy:yy + patch_size, xx:xx + patch_size]
+        label_positive_rate = float((label_patch > 0.5).mean())
+        if label_positive_rate > float(max_label_positive_rate):
+            continue
+        fp_rate = float(((prob_patch >= threshold) & ~(label_patch > 0.5)).mean())
+        if fp_rate <= 0.0:
+            continue
+        candidates.append((fp_rate, float(prob_patch.mean()), yy, xx, label_positive_rate))
+    candidates.sort(reverse=True)
+    selected = candidates[:int(max_patches)]
+    if selected:
+        images = np.stack([image[:, yy:yy + patch_size, xx:xx + patch_size] for _fp, _mean, yy, xx, _lab in selected]).astype(np.float32)
+        labels = np.stack([label[yy:yy + patch_size, xx:xx + patch_size][None, :, :] for _fp, _mean, yy, xx, _lab in selected]).astype(np.float32)
+    else:
+        images = np.empty((0, image.shape[0], int(patch_size), int(patch_size)), dtype=np.float32)
+        labels = np.empty((0, 1, int(patch_size), int(patch_size)), dtype=np.float32)
+    meta = {
+        "sampling": "full_tile_false_positive_hard_negative",
+        "patch_size": int(patch_size),
+        "stride": step,
+        "threshold": float(threshold),
+        "max_patches": int(max_patches),
+        "max_label_positive_rate": float(max_label_positive_rate),
+        "candidate_patches": int(len(candidates)),
+        "samples": int(images.shape[0]),
+        "actual_samples": int(images.shape[0]),
+        "positive_rate": float(labels.mean()) if labels.size else 0.0,
+        "origins_yx": [[int(yy), int(xx)] for _fp, _mean, yy, xx, _lab in selected],
+        "false_positive_rates": [float(fp) for fp, _mean, _yy, _xx, _lab in selected],
+        "probability_means": [float(mean) for _fp, mean, _yy, _xx, _lab in selected],
+    }
+    return images, labels, meta
+
+
+def write_mined_npz(output: Path, images: np.ndarray, labels: np.ndarray, meta: dict[str, Any] | None = None, overwrite: bool = False) -> dict[str, str]:
+    if images.ndim != 4 or labels.ndim != 4 or labels.shape[1] != 1 or images.shape[0] != labels.shape[0] or images.shape[-2:] != labels.shape[-2:]:
+        raise ValueError(f"Expected runner schema images [N,C,H,W] and labels [N,1,H,W], got {images.shape} and {labels.shape}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    meta_path = output.with_suffix(".metadata.json")
+    existing = [path for path in [output, meta_path] if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError("Refusing to overwrite existing mined output files without overwrite=True: " + ", ".join(str(path) for path in existing))
+    np.savez_compressed(output, images=images.astype(np.float32), labels=labels.astype(np.float32))
+    meta_path.write_text(json.dumps(_jsonable(meta or {}), indent=2, sort_keys=True) + "\n")
+    return {"mined_npz": str(output), "mined_metadata_json": str(meta_path)}
+
+
 def write_outputs(output_dir: Path, prob_map: np.ndarray, metrics: dict[str, Any], threshold_rows: list[dict[str, float]], overwrite: bool = False) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     prob_path = output_dir / "probability_map.npy"
@@ -491,7 +554,7 @@ def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
     }
 
 
-def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False, public_retry_count: int = 0, public_retry_delay_sec: float = 0.0, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0) -> dict[str, Any]:
+def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False, public_retry_count: int = 0, public_retry_delay_sec: float = 0.0, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0, mine_output: Path | None = None, mine_max_patches: int = 128, mine_threshold: float | None = None, mine_stride: int | None = None, mine_max_label_positive_rate: float = 0.001) -> dict[str, Any]:
     offsets = z_offsets if z_offsets is not None else [0]
     image, label, segment_meta = load_public_segment(segment_id, level, offsets, catalog_source, public_retry_count, public_retry_delay_sec, public_chunk_delay_sec, public_chunk_retry_count, public_chunk_retry_delay_sec)
     models, cfg, artifact_dir, model_meta = load_torch_unet_artifact(artifact, image.shape[0], device)
@@ -532,10 +595,37 @@ def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, l
             "public_chunk_retry_count": int(public_chunk_retry_count),
             "public_chunk_retry_delay_sec": float(public_chunk_retry_delay_sec),
             "overwrite": bool(overwrite),
+            "mine_output": str(mine_output) if mine_output is not None else None,
         },
         "promotion_checks": _promotion_checks(cfg, segment_id),
     })
+    mined_payload = None
+    if mine_output is not None:
+        mining_threshold = float(metrics.get("best_threshold", fixed_threshold) if mine_threshold is None else mine_threshold)
+        mined_images, mined_labels, mined_meta = mine_failure_patches(
+            image,
+            label,
+            prob_map,
+            patch_size=patch,
+            stride=mine_stride,
+            threshold=mining_threshold,
+            max_patches=mine_max_patches,
+            max_label_positive_rate=mine_max_label_positive_rate,
+        )
+        mined_meta.update({
+            "source": "full_tile_failure_mining",
+            "segment_id": str(segment_id),
+            "artifact_dir": str(artifact_dir),
+            "parent_full_tile_output_dir": str(output_dir),
+            "level": str(level),
+            "z_offsets": [int(x) for x in offsets],
+            "threshold_source": "best_threshold" if mine_threshold is None else "explicit",
+        })
+        metrics["mined_hard_negatives"] = mined_meta
+        mined_payload = (mined_images, mined_labels, mined_meta)
     outputs = write_outputs(output_dir, prob_map, metrics, threshold_rows, overwrite=overwrite)
+    if mine_output is not None and mined_payload is not None:
+        outputs.update(write_mined_npz(mine_output, mined_payload[0], mined_payload[1], mined_payload[2], overwrite=overwrite))
     return {"metrics": metrics, "outputs": outputs}
 
 

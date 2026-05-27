@@ -44,6 +44,7 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - When the promotion gate is ready, pause exploration by default and spend compute on promotion review, weak-fold full-tile checks, or data diagnostics.
 - AutoResearch planning must consume dashboard candidate evidence, not just peak-score summaries: if a weak-fold full-tile action is available, surface that action and its paced public-directory command before proposing more experiments.
 - Dashboard and audit top-level next actions should also prefer unfinished candidate evidence actions, so a plateau does not look like idle promotion readiness while weak-fold diagnostics remain missing.
+- Dashboard quality verdict next actions should be handled before promotion review: `review` means inspect full-tile quality evidence, and `fail` means remediate the full-tile quality failure before promotion.
 - Weak-fold full-tile diagnostics should run on the seed-repeat LOO artifact that actually held out the weak fold; using a different promotion candidate artifact is diagnostic-only and can leak the target segment into training.
 - Treat a ready gate as the start of review, not the end: run full-tile diagnostics on the linked LOO weakest fold before claiming Scroll Prize robustness.
 - Use `scripts/evaluate_leave_one_out.py --jobs N` for seed-repeat LOO throughput only when resources allow; jobs are independent process workers and parent-only JSONL output preserves reproducibility.
@@ -60,6 +61,7 @@ A config should be considered a robust champion only if it has:
 - Comparable or improved average precision.
 - Seed-repeat stability when the change affects training or model initialization; promotion summaries require at least three distinct successful seeds.
 - Full-tile validation metrics when the change affects data, thresholding, or inference.
+- Passing or reviewed full-tile quality verdicts; failing quality verdicts block promotion when full-tile quality metrics are present.
 - Candidate-linked evidence: seed-repeat LOO and full-tile metrics must match the same config/run lineage as the robust candidate being promoted.
 - A short note explaining whether it is a peak-score champion, robust champion, or diagnostic-only run.
 - A calibration note reporting AP relative to prevalence, best threshold, fixed-threshold F1/status, pred/val positive-rate ratio, Brier score, expected calibration error, and whether threshold selection was unconstrained or positive-rate-constrained.

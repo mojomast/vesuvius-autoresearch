@@ -11,14 +11,58 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from research_dashboard.artifacts import preview_artifact
-from research_dashboard.app import make_handler
+import numpy as np
+
+from research_dashboard.artifacts import list_artifact_files, preview_artifact
+from research_dashboard.app import HTML, make_handler
 from research_dashboard.experiments import _positive_rate_risk_summary
 from research_dashboard.inventory import build_inventory
+from research_dashboard.quality import decoded_output_quality
 from research_dashboard.snapshot import build_snapshot
 
 
 class ResearchDashboardTest(unittest.TestCase):
+    def test_dashboard_has_decoded_output_gallery(self) -> None:
+        self.assertIn("Decoded Output Gallery", HTML)
+        self.assertIn("decoded-output-gallery", HTML)
+        self.assertIn("decodeVisibleOutputs", HTML)
+        self.assertIn("decodeAllOutputs", HTML)
+        self.assertIn("decodedPreviewCache", HTML)
+        self.assertIn("Research Usefulness Leaderboard", HTML)
+        self.assertIn("quality-leaderboard-container", HTML)
+        self.assertIn("Quality next action", HTML)
+        self.assertIn("Leaderboard next action", HTML)
+
+    def test_decoded_output_quality_passes_coherent_structure(self) -> None:
+        probs = np.full((16, 16), 0.05, dtype=np.float32)
+        probs[4:12, 3:13] = 0.82
+        probs[5:11, 4:12] = 0.92
+
+        quality = decoded_output_quality(probs, threshold=0.5)
+
+        self.assertEqual(quality["verdict"], "pass")
+        self.assertGreaterEqual(quality["score"], 0.70)
+        self.assertGreaterEqual(quality["supported_positive_rate"], 0.95)
+        self.assertLess(quality["transition_density"], 0.15)
+
+    def test_decoded_output_quality_rejects_noise_failure_modes(self) -> None:
+        blank = decoded_output_quality(np.full((8, 8), 0.02, dtype=np.float32), threshold=0.5)
+        flood = decoded_output_quality(np.full((8, 8), 0.90, dtype=np.float32), threshold=0.5)
+        speckles = np.full((16, 16), 0.05, dtype=np.float32)
+        speckles[1::3, 1::3] = 0.90
+        speckle = decoded_output_quality(speckles, threshold=0.5)
+        checker = (np.indices((8, 8)).sum(axis=0) % 2).astype(np.float32) * 0.90 + 0.05
+        noisy = decoded_output_quality(checker, threshold=0.5)
+
+        self.assertEqual(blank["verdict"], "fail")
+        self.assertIn("blank_or_no_positive_mask", blank["flags"])
+        self.assertEqual(flood["verdict"], "fail")
+        self.assertIn("flooding", flood["flags"])
+        self.assertEqual(speckle["verdict"], "fail")
+        self.assertIn("speckle_or_isolated_positives", speckle["flags"])
+        self.assertEqual(noisy["verdict"], "fail")
+        self.assertIn("fragmented_threshold_mask", noisy["flags"])
+
     def test_snapshot_contract_from_temp_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -447,6 +491,99 @@ class ResearchDashboardTest(unittest.TestCase):
         full_tile_gate = next(item for item in snapshot["research_summary"]["decision"]["promotion_gate"]["criteria"] if item["id"] == "full_tile")
         self.assertEqual(full_tile_gate["state"], "done")
 
+    def test_dashboard_surfaces_full_tile_quality_and_leaderboard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "quality_run"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}, "val_f1": 0.22, "average_precision": 0.2, "val_positive_rate": 0.08, "pred_positive_rate": 0.14, "fixed_threshold_f1": 0.12}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.22, "average_precision": 0.2, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.14, "val_positive_rate": 0.08, "loo_promotion_ready": True, "fixed_threshold_f1": 0.12}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("quality_run", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.22, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        evidence = snapshot["research_summary"]["candidate_evidence"]["full_tile"]["evidence"][0]
+        self.assertIn(evidence["quality_verdict"]["verdict"], {"pass", "review"})
+        self.assertEqual(snapshot["experiments"]["leaderboard"][0]["run_id"], "quality_run")
+        self.assertIn("quality_verdict", snapshot["experiments"]["leaderboard"][0])
+        self.assertIn("quality_next_actions", evidence)
+        self.assertIn("quality_next_actions", snapshot["research_summary"]["candidate_evidence"]["full_tile"])
+        self.assertIn("quality_next_action", snapshot["experiments"]["leaderboard"][0])
+
+    def test_quality_review_action_precedes_promotion_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "quality_review.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["quality_review"], "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "quality_review"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}, "val_f1": 0.50, "average_precision": 0.30, "val_positive_rate": 0.10, "pred_positive_rate": 0.25, "fixed_threshold_f1": 0.30}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.50, "average_precision": 0.30, "precision": 0.5, "recall": 0.6, "pred_positive_rate": 0.25, "val_positive_rate": 0.10, "loo_promotion_ready": True, "fixed_threshold_f1": 0.30}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("quality_review", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.5, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        actions = snapshot["research_summary"]["candidate_evidence"]["promotion_actions"]
+        self.assertEqual(snapshot["experiments"]["recent"][0]["promotion_status"], "eligible")
+        self.assertEqual(actions[0]["id"], "review_positive_rate")
+        self.assertEqual(actions[1]["id"], "promotion_review")
+        self.assertIn("Review positive-rate ratio", snapshot["research_summary"]["decision"]["next_action"])
+
+    def test_quality_fail_blocks_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "quality_fail.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["quality_fail"], "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "quality_fail"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}, "val_f1": 0.02, "average_precision": 0.02, "val_positive_rate": 0.10, "pred_positive_rate": 0.90, "fixed_threshold_f1": 0.0}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.50, "average_precision": 0.30, "precision": 0.5, "recall": 0.6, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "loo_promotion_ready": True, "fixed_threshold_f1": 0.30}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("quality_fail", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.5, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        actions = snapshot["research_summary"]["candidate_evidence"]["promotion_actions"]
+        self.assertEqual(run["promotion_status"], "blocked")
+        self.assertIn("full_tile_quality_fail", {blocker["code"] for blocker in run["promotion_blockers"]})
+        self.assertEqual(actions[0]["id"], "calibrate_positive_rate")
+        self.assertNotIn("promotion_review", {action["id"] for action in actions})
+
     def test_artifact_preview_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -461,6 +598,27 @@ class ResearchDashboardTest(unittest.TestCase):
             self.assertEqual(preview["preview"]["val_f1"], 1.0)
             with self.assertRaisesRegex(ValueError, "experiments/runs"):
                 preview_artifact(root, str(outside))
+
+    def test_artifact_preview_decodes_probability_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            full_tile = root / "experiments" / "runs" / "run1" / "full_tile_seg"
+            full_tile.mkdir(parents=True)
+            prob_path = full_tile / "probability_map.npy"
+            np.save(prob_path, np.asarray([[0.1, 0.8], [0.3, 0.9]], dtype=np.float32))
+            (full_tile / "metrics.json").write_text(json.dumps({"best_threshold": 0.7, "val_f1": 0.2}))
+
+            files = list_artifact_files(str(root / "experiments" / "runs" / "run1"))
+            preview = preview_artifact(root, str(prob_path))
+
+        self.assertEqual(files[0]["relative_path"], "full_tile_seg/probability_map.npy")
+        self.assertEqual(preview["kind"], "npy")
+        self.assertEqual(preview["preview"]["shape"], [2, 2])
+        self.assertAlmostEqual(preview["preview"]["threshold"], 0.7)
+        self.assertTrue(preview["preview"]["heatmap_data_url"].startswith("data:image/png;base64,"))
+        self.assertTrue(preview["preview"]["mask_data_url"].startswith("data:image/png;base64,"))
+        self.assertIn("map_quality", preview["preview"])
+        self.assertIn("quality_verdict", preview["preview"])
 
     def test_inventory_uses_copyable_safe_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
