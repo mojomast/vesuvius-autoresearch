@@ -98,6 +98,8 @@ class TileInferenceTest(unittest.TestCase):
         self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 2.0)
         self.assertIn("threshold_risk_summary", metrics)
         self.assertLessEqual(metrics["threshold_risk_summary"]["best_under_prratio2p0"]["pred_to_val_ratio"], 2.0)
+        self.assertEqual(metrics["threshold_risk_summary"]["configured_max_pred_positive_rate_ratio"], 2.0)
+        self.assertTrue(any(row["configured"] for row in metrics["threshold_risk_summary"]["cap_comparisons"]))
         self.assertEqual(metrics["target_pred_positive_rate"], metrics["val_positive_rate"])
 
     def test_tile_calibration_diagnostics_have_expected_values(self) -> None:
@@ -111,6 +113,16 @@ class TileInferenceTest(unittest.TestCase):
         self.assertGreaterEqual(metrics["expected_calibration_error"], 0.0)
         self.assertLessEqual(metrics["expected_calibration_error"], 1.0)
         self.assertEqual(metrics["fixed_threshold_status"], "ok")
+        self.assertEqual(metrics["fixed_threshold_failure_reason"], "ok")
+
+    def test_tile_fixed_threshold_failure_reason_identifies_no_fixed_positives(self) -> None:
+        prob_map = np.asarray([[0.4, 0.3], [0.35, 0.1]], dtype=np.float32)
+        label = np.asarray([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+
+        metrics, _rows = evaluate_probability_map(prob_map, label, fixed_threshold=0.5)
+
+        self.assertEqual(metrics["fixed_threshold_status"], "weak")
+        self.assertEqual(metrics["fixed_threshold_failure_reason"], "no_fixed_positive_predictions")
 
     def test_tile_metrics_resolve_auto_train_positive_rate_target(self) -> None:
         label = np.zeros((10, 10), dtype=np.float32)

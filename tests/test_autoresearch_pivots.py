@@ -26,6 +26,12 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIn(("model", "base_channels"), paths)
         self.assertIn(("training", "max_train_samples"), paths)
 
+    def test_torch_candidates_include_positive_rate_loss_weight(self) -> None:
+        cfg = load_config("configs/robust_calibrated_prloss_w0p03_lr0012_prratio3_seed11018.yaml")
+        paths = [path for path, _value, _reason in _proposal_candidates(cfg)]
+
+        self.assertIn(("training", "positive_rate_loss_weight"), paths)
+
     def test_mutation_family_classifies_existing_candidate_paths(self) -> None:
         self.assertEqual(_mutation_family(("training", "learning_rate")), "optimizer")
         self.assertEqual(_mutation_family(("training", "dice_loss_weight")), "loss_calibration")
@@ -56,6 +62,7 @@ class AutoResearchPivotTest(unittest.TestCase):
 
         self.assertGreaterEqual(len(bases), 2)
         self.assertEqual(bases[0][0], "robust_multisegment_dice035_expanded.yaml")
+        self.assertIn("robust_calibrated_prloss_w0p03_lr0012_prratio3_seed11018.yaml", {item[0] for item in bases})
         self.assertIn("multi_segment_robust", bases[0][1]["dataset"].get("research_scope", ""))
 
     def test_unattended_torch_bases_are_cpu_bounded(self) -> None:

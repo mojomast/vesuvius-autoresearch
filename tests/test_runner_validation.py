@@ -95,8 +95,12 @@ class RunnerValidationTest(unittest.TestCase):
         self.assertIn("threshold_risk_summary", metrics)
         self.assertIn("best_under_prratio2p0", metrics["threshold_risk_summary"])
         self.assertIn("best_under_prratio3p5", metrics["threshold_risk_summary"])
+        self.assertEqual(metrics["threshold_risk_summary"]["configured_max_pred_positive_rate_ratio"], 4.0)
+        self.assertTrue(any(row["configured"] for row in metrics["threshold_risk_summary"]["cap_comparisons"]))
+        self.assertGreater(metrics["threshold_risk_summary"]["cap_comparisons"][0]["eligible_threshold_count"], 0)
         self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
         self.assertIn(metrics["fixed_threshold_status"], {"ok", "weak"})
+        self.assertIn(metrics["fixed_threshold_failure_reason"], {"ok", "no_fixed_positive_predictions", "fixed_zero_precision", "fixed_zero_recall", "weak_relative_to_selected_f1"})
         self.assertGreaterEqual(metrics["brier_score"], 0.0)
         self.assertLessEqual(metrics["expected_calibration_error"], 1.0)
         self.assertGreater(metrics["ap_prevalence_lift"], 0.0)
@@ -141,9 +145,20 @@ class RunnerValidationTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["brier_score"], 0.0625)
         self.assertAlmostEqual(metrics["ap_prevalence_lift"], 2.0)
         self.assertEqual(metrics["fixed_threshold_status"], "ok")
+        self.assertEqual(metrics["fixed_threshold_failure_reason"], "ok")
         self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
         self.assertIn("Threshold Risk", summary)
         self.assertIn("Best under <=2.0x", summary)
+
+    def test_fixed_threshold_failure_reason_identifies_no_fixed_positives(self) -> None:
+        labels = np.asarray([1, 0, 1, 0], dtype=np.float32)
+        probs = np.asarray([0.4, 0.3, 0.35, 0.1], dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metrics = _pixel_metrics_from_probs(probs, labels, labels, 0.5, Path(tmp), {})
+
+        self.assertEqual(metrics["fixed_threshold_status"], "weak")
+        self.assertEqual(metrics["fixed_threshold_failure_reason"], "no_fixed_positive_predictions")
 
 
 if __name__ == "__main__":

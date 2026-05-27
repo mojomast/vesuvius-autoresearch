@@ -561,6 +561,33 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(snapshot["experiments"]["leaderboard"][0]["extra_train_npz_count"], 1)
         self.assertEqual(snapshot["research_summary"]["candidate_evidence"]["research_scope"], "multi_segment_robust_expanded")
 
+    def test_quality_action_uses_fixed_threshold_failure_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "fixed_fail"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}, "val_f1": 0.30, "average_precision": 0.20, "val_positive_rate": 0.10, "pred_positive_rate": 0.25, "fixed_threshold_f1": 0.0, "fixed_threshold_failure_reason": "no_fixed_positive_predictions"}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.30, "average_precision": 0.20, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.25, "val_positive_rate": 0.10, "loo_promotion_ready": True, "fixed_threshold_f1": 0.0, "fixed_threshold_failure_reason": "no_fixed_positive_predictions"}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("fixed_fail", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.30, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        evidence = snapshot["research_summary"]["candidate_evidence"]["full_tile"]["evidence"][0]
+        reasons = {action["reason"] for action in evidence["quality_next_actions"]}
+        self.assertIn("no_fixed_positive_predictions", reasons)
+        self.assertIn("fixed threshold predicts no positives", evidence["quality_next_action"])
+
     def test_quality_review_action_precedes_promotion_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

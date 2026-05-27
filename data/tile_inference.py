@@ -371,19 +371,53 @@ def _threshold_row_summary(row: dict[str, float] | None, val_positive_rate: floa
     }
 
 
-def _threshold_risk_summary(rows: list[dict[str, float]], fixed_row: dict[str, float], selected_row: dict[str, float], val_positive_rate: float) -> dict[str, Any]:
+def _fixed_threshold_failure_reason(fixed_row: dict[str, float], selected_row: dict[str, float]) -> str:
+    if float(fixed_row["f1"]) >= 0.5 * float(selected_row["f1"]):
+        return "ok"
+    if float(fixed_row["pred_positive_rate"]) <= 0.0:
+        return "no_fixed_positive_predictions"
+    if float(fixed_row["precision"]) <= 0.0:
+        return "fixed_zero_precision"
+    if float(fixed_row["recall"]) <= 0.0:
+        return "fixed_zero_recall"
+    return "weak_relative_to_selected_f1"
+
+
+def _threshold_risk_summary(rows: list[dict[str, float]], fixed_row: dict[str, float], selected_row: dict[str, float], val_positive_rate: float, max_ratio: Any = None, min_ratio: Any = None) -> dict[str, Any]:
     unconstrained = max(rows, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if rows else None
     caps: dict[str, Any] = {}
-    for cap in (2.0, 3.0, 3.5):
+    cap_values = [2.0, 3.0, 3.5]
+    configured_max = float(max_ratio) if max_ratio is not None else None
+    configured_min = float(min_ratio) if min_ratio is not None else None
+    if configured_max is not None and configured_max not in cap_values:
+        cap_values.append(configured_max)
+    cap_comparisons: list[dict[str, Any]] = []
+    selected_f1 = max(float(selected_row["f1"]), 1e-12)
+    unconstrained_f1 = max(float((unconstrained or selected_row)["f1"]), 1e-12)
+    for cap in cap_values:
         eligible = [row for row in rows if row["pred_positive_rate"] / max(val_positive_rate, 1e-12) <= cap]
         best = max(eligible, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if eligible else None
-        caps[f"best_under_prratio{str(cap).replace('.', 'p')}"] = _threshold_row_summary(best, val_positive_rate)
+        summary = _threshold_row_summary(best, val_positive_rate)
+        key = f"best_under_prratio{str(cap).replace('.', 'p')}"
+        caps[key] = summary
+        cap_comparisons.append({
+            "cap": float(cap),
+            "configured": configured_max is not None and abs(float(cap) - configured_max) < 1e-9,
+            "eligible_threshold_count": len(eligible),
+            "best": summary,
+            "f1_retained_vs_selected": (float(best["f1"]) / selected_f1) if best else None,
+            "f1_retained_vs_unconstrained": (float(best["f1"]) / unconstrained_f1) if best else None,
+        })
     selected_ratio = selected_row["pred_positive_rate"] / max(val_positive_rate, 1e-12)
     return {
         "selected": _threshold_row_summary(selected_row, val_positive_rate),
         "fixed_0p5": _threshold_row_summary(fixed_row, val_positive_rate),
         "best_unconstrained": _threshold_row_summary(unconstrained, val_positive_rate),
         **caps,
+        "configured_max_pred_positive_rate_ratio": configured_max,
+        "configured_min_pred_positive_rate_ratio": configured_min,
+        "configured_cap_constrained_selection": configured_max is not None and selected_ratio <= configured_max + 1e-9,
+        "cap_comparisons": cap_comparisons,
         "cap_binding": bool(abs(selected_ratio - 3.0) <= 0.15 or abs(selected_ratio - 3.5) <= 0.15 or abs(selected_ratio - 2.0) <= 0.15),
         "selected_pred_to_val_ratio": float(selected_ratio),
     }
@@ -441,6 +475,7 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
     expected_calibration_error = _expected_calibration_error(probs, labels, calibration_bins)
     ap_prevalence_lift = float(average_precision / max(label_positive_rate, 1e-12))
     fixed_threshold_status = "ok" if fixed["f1"] >= 0.5 * float(best_f1["f1"]) else "weak"
+    fixed_threshold_failure_reason = _fixed_threshold_failure_reason(fixed, best_f1)
     metrics = {
         "tile_loss": loss,
         "tile_f1": float(best_f1["f1"]),
@@ -466,10 +501,11 @@ def evaluate_probability_map(prob_map: np.ndarray, label: np.ndarray, fixed_thre
         "threshold_selection": threshold_selection,
         "selected_threshold_reason": threshold_selection,
         "fixed_threshold_status": fixed_threshold_status,
+        "fixed_threshold_failure_reason": fixed_threshold_failure_reason,
         "max_pred_positive_rate_ratio": max_ratio,
         "min_pred_positive_rate_ratio": min_ratio,
         "target_pred_positive_rate": target_rate,
-        "threshold_risk_summary": _threshold_risk_summary(rows, fixed, best_f1, label_positive_rate),
+        "threshold_risk_summary": _threshold_risk_summary(rows, fixed, best_f1, label_positive_rate, max_ratio, min_ratio),
         "prob_min": float(np.min(probs)),
         "prob_mean": float(np.mean(probs)),
         "prob_p95": float(np.quantile(probs, 0.95)),

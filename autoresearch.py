@@ -47,6 +47,7 @@ SEARCH_PATHS = (
     ("training", "max_train_pixels"),
     ("training", "sample_positive_fraction"),
     ("training", "dice_loss_weight"),
+    ("training", "positive_rate_loss_weight"),
     ("training", "tversky_loss_weight"),
     ("training", "tversky_alpha"),
     ("training", "tversky_beta"),
@@ -79,6 +80,7 @@ SIGNATURE_DEFAULTS = {
     ("training", "max_train_pixels"): 600000,
     ("training", "sample_positive_fraction"): None,
     ("training", "dice_loss_weight"): None,
+    ("training", "positive_rate_loss_weight"): None,
     ("training", "tversky_loss_weight"): None,
     ("training", "tversky_alpha"): None,
     ("training", "tversky_beta"): None,
@@ -94,6 +96,7 @@ SIGNATURE_DEFAULTS = {
 }
 PIVOT_CONFIGS = (
     "robust_multisegment_dice035_expanded.yaml",
+    "robust_calibrated_prloss_w0p03_lr0012_prratio3_seed11018.yaml",
     "robust_tta_seed_ensemble.yaml",
     "residual_25d_torch_unet_cpu.yaml",
 )
@@ -234,6 +237,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         batch_size = int(_get_nested(base, ("training", "batch_size"), 8))
         max_train_samples = int(_get_nested(base, ("training", "max_train_samples"), 512) or 0)
         dice = float(_get_nested(base, ("training", "dice_loss_weight"), 0.0) or 0.0)
+        prloss = float(_get_nested(base, ("training", "positive_rate_loss_weight"), 0.0) or 0.0)
         augment_flips = bool(_get_nested(base, ("training", "augment_flips"), False))
         tta_flips = bool(_get_nested(base, ("evaluation", "tta_flips"), False))
         bounded_samples = max_train_samples if max_train_samples > 0 else 1024
@@ -242,6 +246,8 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "learning_rate"), round(min(0.006, lr * 1.5), 6), "raise torch learning rate modestly to test convergence-limited behavior"),
             (("training", "dice_loss_weight"), round(max(0.0, dice - 0.15), 4), "reduce Dice weight to test whether BCE precision improves"),
             (("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), "increase Dice weight to test ink-recall stability"),
+            (("training", "positive_rate_loss_weight"), round(max(0.0, prloss - 0.02), 4), "reduce positive-rate loss weight to test probability calibration spread"),
+            (("training", "positive_rate_loss_weight"), round(min(0.1, prloss + 0.02), 4), "increase positive-rate loss weight to tighten prediction rate toward the cap"),
             (("training", "tversky_loss_weight"), 0.15, "add a light Tversky term to test recall/precision balance on the current robust base"),
             (("training", "tversky_beta"), 0.8, "bias Tversky toward false-negative reduction for rare ink recall"),
             (("training", "sampling_strategy"), "hard_mining", "try hard-negative mining to improve precision against textured non-ink"),
@@ -293,7 +299,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
 def _mutation_family(path: Tuple[str, ...]) -> str:
     if path in {("training", "learning_rate"), ("training", "weight_decay"), ("training", "epochs"), ("training", "batch_size")}:
         return "optimizer"
-    if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
+    if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "positive_rate_loss_weight"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
         return "loss_calibration"
     if path in {("training", "sampling_strategy"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips")}:
         return "data_sampling"

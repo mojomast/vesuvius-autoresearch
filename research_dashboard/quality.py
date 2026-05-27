@@ -9,6 +9,10 @@ _REASON_ACTIONS: dict[str, tuple[str, str, str]] = {
     "positive_rate_ratio_suspicious": ("calibrate_positive_rate", "Tighten positive-rate constraints before promotion", "blocker"),
     "positive_rate_ratio_review": ("review_positive_rate", "Review positive-rate ratio before promotion", "warning"),
     "fixed_threshold_weak": ("calibrate_probability_scale", "Calibrate probability scale; fixed 0.5 threshold is weak", "warning"),
+    "no_fixed_positive_predictions": ("calibrate_probability_scale", "Calibrate probability scale; fixed threshold predicts no positives", "warning"),
+    "fixed_zero_precision": ("calibrate_probability_scale", "Calibrate probability scale; fixed threshold has zero precision", "warning"),
+    "fixed_zero_recall": ("calibrate_probability_scale", "Calibrate probability scale; fixed threshold has zero recall", "warning"),
+    "weak_relative_to_selected_f1": ("calibrate_probability_scale", "Calibrate probability scale; fixed threshold is weak versus selected threshold", "warning"),
     "weak_ap_lift": ("improve_ranking_signal", "Improve AP/prevalence lift before threshold sweeps", "warning"),
     "weak_full_tile_f1": ("inspect_full_tile_errors", "Inspect full-tile false positives and false negatives", "blocker"),
     "blank_or_no_positive_mask": ("check_inference_wiring", "Check checkpoint/input normalization; decoded mask is blank", "blocker"),
@@ -207,19 +211,22 @@ def metrics_quality_verdict(metrics: dict[str, Any]) -> dict[str, Any]:
         score += min(0.35, val_f1)
     if ap_lift is not None:
         score += min(0.25, max(0.0, (ap_lift - 1.0) * 0.15))
+    ratio_review_reason = None
     if ratio is not None:
         if 0.5 <= ratio <= 2.0:
             score += 0.25
         elif 0.25 <= ratio <= 3.0:
             score += 0.12
-            reasons.append("positive_rate_ratio_review")
+            ratio_review_reason = "positive_rate_ratio_review"
         else:
             reasons.append("positive_rate_ratio_suspicious")
     if fixed_f1 is not None and val_f1 is not None:
         if fixed_f1 >= 0.5 * val_f1:
             score += 0.15
         else:
-            reasons.append("fixed_threshold_weak")
+            reasons.append(str(metrics.get("fixed_threshold_failure_reason") or "fixed_threshold_weak"))
+    if ratio_review_reason:
+        reasons.append(ratio_review_reason)
 
     if ap_lift is not None and ap_lift < 1.25:
         reasons.append("weak_ap_lift")
