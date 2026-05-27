@@ -1,0 +1,38 @@
+# Moderate positive-rate cap with internal three-seed averaging and no TTA.
+dataset:
+  research_scope: multi_segment_robust_expanded_seed_ensemble_notta
+  train_npz: data/real_cross_folds_expanded_combined/all_segments/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: expanded-multi-segment-train_reference-val
+model:
+  name: tiny_torch_unet
+  base_channels: 8
+training:
+  epochs: 5
+  batch_size: 8
+  learning_rate: 0.0012
+  weight_decay: 0.0001
+  pos_weight: auto
+  max_train_samples: 0
+  num_threads: 4
+  seed: 11001
+  seeds: [11001, 11018, 15050]
+  allow_cuda: false
+  dice_loss_weight: 0.35
+  augment_flips: false
+  positive_rate_loss_weight: 0.03
+  positive_rate_loss_target: auto_train
+  positive_rate_loss_tolerance: 0.02
+evaluation:
+  main_metric: val_f1
+  threshold: 0.50
+  tta_flips: false
+  max_pred_positive_rate_ratio: 3.5
+  min_pred_positive_rate_ratio: 0.1
+  target_pred_positive_rate: auto_val
+autoresearch:
+  parent_reason: no-TTA seed ensemble follow-up after prratio3p5 full-tile panel and weak-fold seed stability passed
+  scope_policy: expanded_multi_segment_leave_one_out
+outputs:
+  runs_dir: experiments/runs
