@@ -86,6 +86,7 @@ class AuditResearchStateTest(unittest.TestCase):
                     "candidate_run_id": "candidate",
                     "loo": {"worst_fold_id": "weakseg", "worst_fold_val_f1": 0.04},
                     "full_tile": {"segments_covered": ["goodseg"]},
+                    "loo_full_tile": {"segments_covered": ["goodseg", "weakseg"], "coverage_count": 2},
                     "weak_fold_full_tile": {"status": "missing"},
                     "promotion_actions": [{"label": "Run full-tile on weak fold weakseg", "command_text": ".venv/bin/python scripts/infer_full_tile.py --segment-id weakseg"}],
                 },
@@ -97,6 +98,7 @@ class AuditResearchStateTest(unittest.TestCase):
 
         self.assertIn("## Candidate Evidence", markdown)
         self.assertIn("Next action: Run full-tile on weak fold weakseg before promotion review.", markdown)
+        self.assertIn("LOO full-tile diagnostics covered: goodseg, weakseg", markdown)
         self.assertIn("`weakseg`", markdown)
         self.assertIn("Run full-tile on weak fold weakseg", markdown)
         self.assertIn("scripts/infer_full_tile.py", markdown)

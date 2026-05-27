@@ -69,6 +69,8 @@ Seed-repeat LOO and full-tile evidence are candidate-linked: unrelated global su
 
 When candidate evidence has an unfinished diagnostic action, `research_summary.decision.next_action` should prefer that action over generic promotion text. A ready gate starts review; it does not hide missing weak-fold full-tile diagnostics.
 
+`research_summary.candidate_evidence.loo_full_tile` summarizes candidate-linked full-tile diagnostics across the seed-repeat LOO panel. It is separate from `full_tile`, which only describes full-tile outputs under the selected candidate artifact directory.
+
 Keep Vesuvius-specific data parsing and command inventory in `research_dashboard/*`. Hermes or any other host dashboard should render or proxy this contract instead of copying the domain logic.
 
 ## Parallel Development Workflow

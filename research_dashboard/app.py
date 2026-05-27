@@ -797,6 +797,7 @@ HTML = """<!doctype html>
       const loo = evidence.loo || {};
       const weak = evidence.weak_fold_full_tile || {};
       const full = evidence.full_tile || {};
+      const looFull = evidence.loo_full_tile || {};
       const actions = evidence.promotion_actions || [];
       const action = actions[0] || {};
       const cmd = action.command_text || weak.command_text;
@@ -804,6 +805,7 @@ HTML = """<!doctype html>
         <div class="milestone-item"><span class="milestone-label">Candidate</span><span class="run-pill" style="cursor:pointer;" onclick="selectRun('${esc(evidence.candidate_run_id)}')">${esc(String(evidence.candidate_run_id).slice(0, 8))}</span></div>
         <div class="milestone-item"><span class="milestone-label">LOO weak fold</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(loo.worst_fold_id || 'unknown')} · F1 ${fmt(loo.worst_fold_val_f1, 4)}</span></div>
         <div class="milestone-item"><span class="milestone-label">Full-tile coverage</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((full.segments_covered || []).join(', ') || 'none')}</span></div>
+        <div class="milestone-item"><span class="milestone-label">LOO tile panel</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((looFull.segments_covered || []).join(', ') || 'none')} · ${esc(String(looFull.coverage_count || 0))} runs</span></div>
         <div class="milestone-item"><span class="milestone-label">Weak-fold tile</span><span class="indicator-badge ${weak.status === 'done' ? 'badge-success' : 'badge-warning'}">${esc(weak.status || 'unknown')}</span></div>
         <div style="margin-top:0.5rem;color:var(--text);font-size:0.75rem;">${esc(action.label || 'Review candidate evidence')}</div>
         ${cmd ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(cmd).replace(/'/g, '&#39;')}')">Copy next command</button>` : ''}

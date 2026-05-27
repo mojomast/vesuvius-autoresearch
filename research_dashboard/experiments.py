@@ -235,11 +235,45 @@ def _weak_fold_loo_run(summary: dict[str, Any] | None, weak_fold_id: str) -> dic
     return min(rows, key=lambda row: abs(float(row.get("val_f1") or 0.0) - target_f1))
 
 
+def _loo_full_tile_diagnostics(summary: dict[str, Any] | None, project_root: Path | None = None) -> dict[str, Any]:
+    if not summary:
+        return {"coverage_count": 0, "segments_covered": [], "evidence": []}
+    evidence: list[dict[str, Any]] = []
+    seen: set[tuple[str | None, str]] = set()
+    for row in summary.get("rows", []):
+        if not isinstance(row, dict) or not row.get("artifact_dir") or not row.get("heldout_segment"):
+            continue
+        heldout = str(row.get("heldout_segment"))
+        for item in _full_tile_metrics({"artifact_dir": row.get("artifact_dir")}, project_root):
+            if item.get("segment_id") != heldout:
+                continue
+            key = (item.get("segment_id"), item.get("path"))
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence.append({
+                **item,
+                "heldout_segment": heldout,
+                "loo_run_id": row.get("run_id"),
+                "seed": row.get("seed"),
+                "artifact_dir": row.get("artifact_dir"),
+                "loo_val_f1": row.get("val_f1"),
+                "loo_average_precision": row.get("average_precision"),
+            })
+    evidence.sort(key=lambda item: str(item.get("segment_id") or ""))
+    return {
+        "coverage_count": len(evidence),
+        "segments_covered": sorted({str(item.get("segment_id")) for item in evidence if item.get("segment_id")}),
+        "evidence": evidence,
+    }
+
+
 def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {"candidate_run_id": None, "promotion_actions": []}
     summary = _linked_loo_summary(run, loo_summaries, project_root)
     full_tiles = _full_tile_metrics(run, project_root)
+    loo_full_tiles = _loo_full_tile_diagnostics(summary, project_root)
     artifact_dir = Path(str(run.get("artifact_dir") or ""))
     weak_fold_id = str((summary or {}).get("worst_fold_id") or "")
     weak_loo_run = _weak_fold_loo_run(summary, weak_fold_id)
@@ -309,6 +343,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
             "evidence": full_tiles,
             "coverage_count": len(full_tiles),
         },
+        "loo_full_tile": loo_full_tiles,
         "weak_fold_full_tile": {
             "weak_fold_id": weak_fold_id or None,
             "status": weak_status,

@@ -377,7 +377,9 @@ class ResearchDashboardTest(unittest.TestCase):
             candidate_tile_dir = candidate_dir / "full_tile_goodseg"
             candidate_tile_dir.mkdir(parents=True)
             (candidate_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "goodseg"}, "promotion_checks": {"eligible": True}}))
-            (root / "experiments" / "runs" / "loo_weak").mkdir(parents=True)
+            loo_tile_dir = root / "experiments" / "runs" / "loo_weak" / "full_tile_weakseg"
+            loo_tile_dir.mkdir(parents=True)
+            (loo_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "weakseg"}, "promotion_checks": {"eligible": True}, "val_f1": 0.12, "average_precision": 0.08}))
             cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "goodseg"}}
             metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}
             conn = sqlite3.connect(db)
@@ -395,6 +397,10 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(weak["loo_run"]["run_id"], "loo_weak")
         self.assertIn("experiments/runs/loo_weak", weak["command_text"])
         self.assertNotIn("--artifact experiments/runs/candidate", weak["command_text"])
+        loo_full = snapshot["research_summary"]["candidate_evidence"]["loo_full_tile"]
+        self.assertEqual(loo_full["coverage_count"], 1)
+        self.assertEqual(loo_full["segments_covered"], ["weakseg"])
+        self.assertEqual(loo_full["evidence"][0]["loo_run_id"], "loo_weak")
 
     def test_dashboard_detects_nested_full_tile_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
