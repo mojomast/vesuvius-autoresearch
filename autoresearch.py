@@ -615,7 +615,9 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
             top_action = actions[0] if actions and isinstance(actions[0], dict) else {}
             next_action = str(top_action.get("label") or decision.get("next_action") or "Promotion gate is ready; review the promotion candidate before more exploration.")
             weak_tile = evidence.get("weak_fold_full_tile", {}) if isinstance(evidence.get("weak_fold_full_tile"), dict) else {}
-            command = top_action.get("command_text") or weak_tile.get("command_text")
+            command = top_action.get("command_text")
+            if not command and top_action.get("id") == "weak_fold_full_tile" and weak_tile.get("status") != "done":
+                command = weak_tile.get("command_text")
             reasoning = [
                 "promotion_gate_ready",
                 "pause_exploration_before_more_local_sweeps",

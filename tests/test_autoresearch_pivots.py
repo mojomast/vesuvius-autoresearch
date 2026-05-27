@@ -211,6 +211,30 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIn("--public-chunk-delay-sec 0.5", payload["command"])
         self.assertIn("use_public_directory_backoff_and_chunk_pacing", payload["reasoning"])
 
+    def test_promotion_ready_payload_omits_completed_weak_fold_command_for_review(self) -> None:
+        snapshot = {
+            "research_summary": {
+                "decision": {
+                    "next_action": "Review promotion candidate candidate",
+                    "promotion_gate": {"ready": True},
+                    "candidate_evidence": {
+                        "candidate_run_id": "candidate",
+                        "weak_fold_full_tile": {"status": "done", "command_text": "completed command"},
+                    },
+                    "promotion_actions": [{"id": "promotion_review", "label": "Review promotion candidate candidate", "kind": "review", "writes_artifacts": False}],
+                }
+            }
+        }
+
+        with patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+            payload = _promotion_ready_payload()
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["action_id"], "promotion_review")
+        self.assertIsNone(payload["command"])
+        self.assertNotIn("use_public_directory_backoff_and_chunk_pacing", payload["reasoning"])
+
     def test_recent_winner_followups_prefer_expanded_robust_over_focused_residual_score(self) -> None:
         robust = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
         _set_nested(robust, ("training", "learning_rate"), 0.003)
