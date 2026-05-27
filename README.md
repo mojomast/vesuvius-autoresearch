@@ -45,6 +45,20 @@ python3 autoresearch.py --plan --json
 
 If the dashboard promotion gate is ready, AutoResearch pauses exploration by default and prints the promotion/verification action instead of generating more local F1 micro-sweeps. Override only for deliberate diagnostics with `AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0`.
 
+Seed-repeat LOO can be accelerated with independent process workers while preserving deterministic JSONL order:
+
+```bash
+python3 scripts/evaluate_leave_one_out.py \
+  --base-config configs/robust_calibrated_prloss_w0p03_lr0012.yaml \
+  --fold-map data/real_cross_folds_expanded_combined/fold_map.json \
+  --output-jsonl logs/robust_candidate_seedrepeat.jsonl \
+  --summary-json logs/robust_candidate_seedrepeat.summary.json \
+  --seeds 11001,11018,15050 \
+  --jobs 2
+```
+
+Keep `--jobs` modest on CPU hosts because each worker writes independent run artifacts and shares the experiment DB. Pending generated `configs/auto_*` signatures expire after `AUTORESEARCH_PENDING_CONFIG_TTL_HOURS=24` by default so crashed proposal files do not block future search forever; set it to `0` to reserve all generated configs indefinitely.
+
 ## Standalone Dashboard
 
 Launch the read-only Vesuvius dashboard without Hermes:

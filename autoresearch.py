@@ -208,8 +208,12 @@ def _tested_signatures(runs: List[Dict[str, Any]]) -> set[Tuple[Any, ...]]:
 
 def _reserved_signatures(runs: List[Dict[str, Any]]) -> set[Tuple[Any, ...]]:
     signatures = _tested_signatures(runs)
+    ttl_hours = float(os.environ.get("AUTORESEARCH_PENDING_CONFIG_TTL_HOURS", "24"))
+    now = time.time()
     for path in CONFIGS.glob("auto_*.yaml"):
         try:
+            if ttl_hours > 0 and now - path.stat().st_mtime > ttl_hours * 3600:
+                continue
             signatures.add(_search_signature(load_config(path)))
         except Exception:
             continue

@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -211,6 +213,46 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIn(_search_signature(reserved_cfg), reserved)
         self.assertTrue(proposals)
         self.assertNotEqual(_search_signature(proposals[0][1]), _search_signature(reserved_cfg))
+
+    def test_stale_generated_auto_configs_do_not_reserve_signatures_forever(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        candidate_path, candidate_value, _reason = _proposal_candidates(cfg)[0]
+        reserved_cfg = copy.deepcopy(cfg)
+        _set_nested(reserved_cfg, candidate_path, candidate_value)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            try:
+                path = autoresearch.CONFIGS / "auto_stale.yaml"
+                path.write_text(autoresearch.yaml.safe_dump(reserved_cfg, sort_keys=False))
+                old_time = time.time() - 48 * 3600
+                os.utime(path, (old_time, old_time))
+                with patch.dict("os.environ", {"AUTORESEARCH_PENDING_CONFIG_TTL_HOURS": "1"}):
+                    reserved = _reserved_signatures([])
+            finally:
+                autoresearch.CONFIGS = old_configs
+
+        self.assertNotIn(_search_signature(reserved_cfg), reserved)
+
+    def test_pending_config_ttl_can_be_disabled(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        candidate_path, candidate_value, _reason = _proposal_candidates(cfg)[0]
+        reserved_cfg = copy.deepcopy(cfg)
+        _set_nested(reserved_cfg, candidate_path, candidate_value)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            try:
+                path = autoresearch.CONFIGS / "auto_stale.yaml"
+                path.write_text(autoresearch.yaml.safe_dump(reserved_cfg, sort_keys=False))
+                old_time = time.time() - 48 * 3600
+                os.utime(path, (old_time, old_time))
+                with patch.dict("os.environ", {"AUTORESEARCH_PENDING_CONFIG_TTL_HOURS": "0"}):
+                    reserved = _reserved_signatures([])
+            finally:
+                autoresearch.CONFIGS = old_configs
+
+        self.assertIn(_search_signature(reserved_cfg), reserved)
 
     def test_promotion_gate_flags_bad_positive_rate(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")

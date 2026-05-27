@@ -42,6 +42,8 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - Keep generated configs diagnostic-only until seed-repeat LOO and full-tile checks pass.
 - Use `python3 autoresearch.py --plan --json` to inspect the next cycle without writing generated configs or launching experiments.
 - When the promotion gate is ready, pause exploration by default and spend compute on promotion review, weak-fold full-tile checks, or data diagnostics.
+- Use `scripts/evaluate_leave_one_out.py --jobs N` for seed-repeat LOO throughput only when resources allow; jobs are independent process workers and parent-only JSONL output preserves reproducibility.
+- Let stale generated `configs/auto_*` reservations expire so killed exploratory configs do not permanently suppress useful ideas; completed DB runs remain reserved evidence.
 
 ## Promotion Gate
 

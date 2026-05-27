@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import copy
 import json
 import statistics
@@ -173,6 +174,35 @@ def _parse_seeds(raw: str | None, default_seed: int | None) -> list[int | None]:
     return seeds
 
 
+def _run_fold_job(fold_config: str, row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = run_experiment(fold_config)
+        metrics = result["metrics"]
+        row.update({
+            "returncode": 0,
+            "run_id": result["run_id"],
+            "artifact_dir": result["artifact_dir"],
+            "val_f1": float(metrics["val_f1"]),
+            "val_f05": float(metrics["val_f05"]),
+            "average_precision": float(metrics["average_precision"]),
+            "precision": float(metrics["precision"]),
+            "recall": float(metrics["recall"]),
+            "best_threshold": float(metrics["best_threshold"]),
+            "val_positive_rate": float(metrics["val_positive_rate"]),
+            "pred_positive_rate": float(metrics["pred_positive_rate"]),
+        })
+    except Exception as exc:
+        row.update({"returncode": 1, "error": repr(exc)})
+    return row
+
+
+def _write_rows_jsonl(output_jsonl: Path, rows: list[dict[str, Any]]) -> None:
+    with output_jsonl.open("a") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+            print(json.dumps(row, sort_keys=True), flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate a config with leave-one-segment-out folds")
     parser.add_argument("--base-config", required=True, help="YAML/JSON config to evaluate")
@@ -182,8 +212,11 @@ def main() -> int:
     parser.add_argument("--label", default=None, help="Label stored in outputs; defaults to base config stem")
     parser.add_argument("--seeds", default=None, help="Comma-separated training.seed values to repeat for each held-out segment")
     parser.add_argument("--min-seeds-for-promotion", type=int, default=3, help="Distinct successful seeds required before setting promotion_ready")
+    parser.add_argument("--jobs", type=int, default=1, help="Parallel fold jobs for non-dry-run execution; default 1")
     parser.add_argument("--dry-run", action="store_true", help="Write planned fold configs without running experiments")
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be >= 1")
 
     base_path = _resolve(args.base_config)
     fold_map_path = _resolve(args.fold_map)
@@ -201,6 +234,7 @@ def main() -> int:
     rows: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="vesuvius_loo_") as tmpdir:
         tmp = Path(tmpdir)
+        tasks: list[tuple[str, dict[str, Any]]] = []
         for heldout_segment, fold in sorted(fold_map.items()):
             for seed in seeds:
                 cfg = copy.deepcopy(base_cfg)
@@ -223,29 +257,15 @@ def main() -> int:
                 if args.dry_run:
                     row["returncode"] = 0
                     row["dry_run"] = True
+                    rows.append(row)
                 else:
-                    try:
-                        result = run_experiment(fold_config)
-                        metrics = result["metrics"]
-                        row.update({
-                            "returncode": 0,
-                            "run_id": result["run_id"],
-                            "artifact_dir": result["artifact_dir"],
-                            "val_f1": float(metrics["val_f1"]),
-                            "val_f05": float(metrics["val_f05"]),
-                            "average_precision": float(metrics["average_precision"]),
-                            "precision": float(metrics["precision"]),
-                            "recall": float(metrics["recall"]),
-                            "best_threshold": float(metrics["best_threshold"]),
-                            "val_positive_rate": float(metrics["val_positive_rate"]),
-                            "pred_positive_rate": float(metrics["pred_positive_rate"]),
-                        })
-                    except Exception as exc:
-                        row.update({"returncode": 1, "error": repr(exc)})
-                rows.append(row)
-                with output_jsonl.open("a") as fh:
-                    fh.write(json.dumps(row, sort_keys=True) + "\n")
-                print(json.dumps(row, sort_keys=True), flush=True)
+                    tasks.append((str(fold_config), row))
+        if tasks and args.jobs == 1:
+            rows.extend(_run_fold_job(config_path, row) for config_path, row in tasks)
+        elif tasks:
+            with ProcessPoolExecutor(max_workers=args.jobs) as executor:
+                rows.extend(executor.map(_run_fold_job, [task[0] for task in tasks], [task[1] for task in tasks]))
+        _write_rows_jsonl(output_jsonl, rows)
 
     summary = _summarize(rows, min_seeds_for_promotion=args.min_seeds_for_promotion)
     summary.update({"label": label, "base_config": str(base_path), "fold_map": str(fold_map_path), "seeds": seeds})
