@@ -46,6 +46,51 @@ def _resolve_repo_path(raw: str | os.PathLike[str]) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def _metadata_segment_ids(meta: Dict[str, Any]) -> set[str]:
+    data = meta.get("metadata", {}) if isinstance(meta.get("metadata"), dict) else {}
+    ids: set[str] = set()
+    for key in ("segment_id", "heldout_segment"):
+        value = data.get(key) or meta.get(key)
+        if value is not None:
+            ids.add(str(value))
+    for key in ("train_segments", "segments"):
+        value = data.get(key) or meta.get(key)
+        if isinstance(value, list):
+            ids.update(str(item) for item in value if item is not None)
+    return {item for item in ids if item and item != "?"}
+
+
+def _check_extra_train_fold_safety(extra_metas: list[Dict[str, Any]], heldout_segment: str | None) -> None:
+    if not heldout_segment or str(heldout_segment) == "?":
+        return
+    heldout = str(heldout_segment)
+    for meta in extra_metas:
+        if heldout in _metadata_segment_ids(meta):
+            raise ValueError(f"dataset.extra_train_npzs includes held-out segment {heldout}: {meta.get('path')}")
+
+
+def _load_training_arrays(train_npz: str, cfg: Dict[str, Any]) -> tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    tr = np.load(train_npz)
+    images = tr["images"]
+    labels = tr["labels"]
+    extra_metas = cfg.get("resolved_data", {}).get("train_extra", [])
+    if not extra_metas:
+        return images, labels, {"extra_train_npz_count": 0, "extra_train_samples": 0}
+
+    image_parts = [images]
+    label_parts = [labels]
+    for meta in extra_metas:
+        with np.load(meta["path"]) as extra:
+            image_parts.append(extra["images"])
+            label_parts.append(extra["labels"])
+    images = np.concatenate(image_parts, axis=0)
+    labels = np.concatenate(label_parts, axis=0)
+    return images, labels, {
+        "extra_train_npz_count": len(extra_metas),
+        "extra_train_samples": int(sum(int(meta.get("samples", 0)) for meta in extra_metas)),
+    }
+
+
 def init_db(db_path: Path = DB_PATH) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
@@ -344,8 +389,8 @@ def _validation_setup(train_meta: Dict[str, Any], val_meta: Dict[str, Any]) -> D
 
 
 def _train_logreg(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact_dir: Path) -> Dict[str, Any]:
-    tr = np.load(train_npz); va = np.load(val_npz)
-    Xtr_img, ytr_img = tr["images"], tr["labels"]
+    Xtr_img, ytr_img, extra_train_metrics = _load_training_arrays(train_npz, cfg)
+    va = np.load(val_npz)
     Xva_img, yva_img = va["images"], va["labels"]
     model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
@@ -384,6 +429,7 @@ def _train_logreg(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact_di
         "initial_prior": float(prior),
         "train_loss_last": losses[-1] if losses else None,
         "epochs": epochs,
+        **extra_train_metrics,
     }, cfg.get("evaluation", {}))
 
 
@@ -394,8 +440,8 @@ def _standardize_features(train_x: np.ndarray, val_x: np.ndarray) -> tuple[np.nd
 
 
 def _train_numpy_mlp(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact_dir: Path) -> Dict[str, Any]:
-    tr = np.load(train_npz); va = np.load(val_npz)
-    Xtr_img, ytr_img = tr["images"], tr["labels"]
+    Xtr_img, ytr_img, extra_train_metrics = _load_training_arrays(train_npz, cfg)
+    va = np.load(val_npz)
     Xva_img, yva_img = va["images"], va["labels"]
     model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
@@ -484,6 +530,7 @@ def _train_numpy_mlp(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact
         "initial_prior": float(prior),
         "train_loss_last": losses[-1] if losses else None,
         "epochs": epochs,
+        **extra_train_metrics,
     }, cfg.get("evaluation", {}))
 
 
@@ -496,8 +543,9 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     except ImportError as exc:
         raise ImportError("model.name=tiny_torch_unet or residual_25d_torch_unet requires PyTorch installed in the project venv") from exc
 
-    tr = np.load(train_npz); va = np.load(val_npz)
-    Xtr_img, ytr_img = tr["images"].astype(np.float32), tr["labels"].astype(np.float32)
+    Xtr_img, ytr_img, extra_train_metrics = _load_training_arrays(train_npz, cfg)
+    Xtr_img, ytr_img = Xtr_img.astype(np.float32), ytr_img.astype(np.float32)
+    va = np.load(val_npz)
     Xva_img, yva_img = va["images"].astype(np.float32), va["labels"].astype(np.float32)
     model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
@@ -762,6 +810,7 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "augment_flips": augment_flips,
         "tta_flips": tta_flips,
         **sampling_metrics,
+        **extra_train_metrics,
         "device": str(device),
     }, metrics_eval_cfg)
 
@@ -776,6 +825,9 @@ def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH)
     val_scroll = str(dataset.get("val_scroll_id", "2" if train_scroll != "2" else "1"))
     train_npz = dataset.get("train_npz")
     val_npz = dataset.get("val_npz")
+    extra_train_npzs = dataset.get("extra_train_npzs") or []
+    if isinstance(extra_train_npzs, (str, os.PathLike)):
+        extra_train_npzs = [extra_train_npzs]
     if train_npz or val_npz:
         if not train_npz or not val_npz:
             raise ValueError("dataset.train_npz and dataset.val_npz must be provided together")
@@ -784,7 +836,9 @@ def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH)
     else:
         train_meta = prepare_training_subset(train_scroll, "train", str(data_root / f"scroll_{train_scroll}_train_ps{patch_size}_n{max_samples}"), patch_size, max_samples)
         val_meta = prepare_training_subset(val_scroll, "val", str(data_root / f"scroll_{val_scroll}_val_ps{patch_size}_n{max_samples}"), patch_size, max_samples)
-    cfg["resolved_data"] = {"train": train_meta, "val": val_meta}
+    extra_train_metas = [validate_prepared_npz(_resolve_repo_path(path), split="train_extra", patch_size=patch_size) for path in extra_train_npzs]
+    _check_extra_train_fold_safety(extra_train_metas, cfg.get("autoresearch", {}).get("heldout_segment"))
+    cfg["resolved_data"] = {"train": train_meta, "val": val_meta, "train_extra": extra_train_metas}
     cfg["validation_setup"] = _validation_setup(train_meta, val_meta)
     raw = json.dumps(_jsonable(cfg), sort_keys=True)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + hashlib.sha1(raw.encode()).hexdigest()[:8]

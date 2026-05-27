@@ -882,8 +882,10 @@ HTML = """<!doctype html>
       const riskText = riskWarnings.length ? riskWarnings[0] : `positive-rate risk ${risk.risk_level || 'unknown'}`;
       const qualityItems = [...(full.evidence || []), ...(looFull.evidence || [])];
       const qualityAction = qualityItems.map(item => item.quality_next_action).find(Boolean) || 'none';
+      const scopeText = evidence.research_scope || evidence.scope_policy || 'unknown';
       container.innerHTML = `
         <div class="milestone-item"><span class="milestone-label">Candidate</span><span class="run-pill" style="cursor:pointer;" onclick="selectRun('${esc(evidence.candidate_run_id)}')">${esc(String(evidence.candidate_run_id).slice(0, 8))}</span></div>
+        <div class="milestone-item"><span class="milestone-label">Research scope</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(scopeText)}</span></div>
         <div class="milestone-item"><span class="milestone-label">LOO weak fold</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(loo.worst_fold_id || 'unknown')} · F1 ${fmt(loo.worst_fold_val_f1, 4)}</span></div>
         <div class="milestone-item"><span class="milestone-label">Full-tile coverage</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((full.segments_covered || []).join(', ') || 'none')}</span></div>
         <div class="milestone-item"><span class="milestone-label">LOO tile panel</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((looFull.segments_covered || []).join(', ') || 'none')} · ${esc(String(looFull.coverage_count || 0))} runs</span></div>
@@ -918,19 +920,21 @@ HTML = """<!doctype html>
           <table>
             <thead>
               <tr>
-                <th>#</th><th>Run</th><th>Quality</th><th>F1</th><th>AP</th><th>Full Tile</th><th>Promotion</th><th>Reason</th><th>Leaderboard next action</th>
+                <th>#</th><th>Run</th><th>Scope</th><th>Quality</th><th>F1</th><th>AP</th><th>Full Tile</th><th>Promotion</th><th>Reason</th><th>Leaderboard next action</th>
               </tr>
             </thead>
             <tbody>
               ${rows.slice(0, 12).map(row => {
-                 const q = row.quality_verdict || {};
-                 const reason = (row.quality_reasons || q.reasons || row.top_blockers || [])[0] || 'none';
-                 const nextAction = row.quality_next_action || (row.quality_next_actions || [])[0]?.label || 'promotion review';
-                 return `
-                  <tr style="cursor:pointer;" onclick="selectRun('${esc(row.run_id)}')">
-                    <td style="font-family:var(--font-mono);">${esc(row.rank)}</td>
-                    <td><code class="run-pill">${esc(String(row.run_id || '').slice(0, 8))}</code></td>
-                    <td><span class="indicator-badge ${verdictBadgeClass(q.verdict)}">${verdictText(q.verdict)}</span> <span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${fmt(row.quality_score, 3)}</span></td>
+                  const q = row.quality_verdict || {};
+                  const reason = (row.quality_reasons || q.reasons || row.top_blockers || [])[0] || 'none';
+                  const nextAction = row.quality_next_action || (row.quality_next_actions || [])[0]?.label || 'promotion review';
+                  const scope = row.research_scope || row.scope_policy || 'unknown';
+                  return `
+                   <tr style="cursor:pointer;" onclick="selectRun('${esc(row.run_id)}')">
+                     <td style="font-family:var(--font-mono);">${esc(row.rank)}</td>
+                     <td><code class="run-pill">${esc(String(row.run_id || '').slice(0, 8))}</code></td>
+                     <td style="font-size:0.68rem;color:var(--muted);font-family:var(--font-mono);">${esc(scope)}${row.extra_train_npz_count ? ` · HN ${esc(row.extra_train_npz_count)}` : ''}</td>
+                     <td><span class="indicator-badge ${verdictBadgeClass(q.verdict)}">${verdictText(q.verdict)}</span> <span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${fmt(row.quality_score, 3)}</span></td>
                     <td style="font-family:var(--font-mono);">${fmt(row.val_f1, 4)}</td>
                     <td style="font-family:var(--font-mono);">${fmt(row.average_precision, 4)}</td>
                     <td style="font-family:var(--font-mono);">${esc(row.full_tile_coverage_count || 0)}</td>

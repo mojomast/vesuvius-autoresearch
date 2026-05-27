@@ -500,8 +500,8 @@ class ResearchDashboardTest(unittest.TestCase):
             full_tile_dir = run_dir / "full_tile_abc"
             full_tile_dir.mkdir(parents=True)
             (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}, "val_f1": 0.22, "average_precision": 0.2, "val_positive_rate": 0.08, "pred_positive_rate": 0.14, "fixed_threshold_f1": 0.12}))
-            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
-            metrics = {"val_f1": 0.22, "average_precision": 0.2, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.14, "val_positive_rate": 0.08, "loo_promotion_ready": True, "fixed_threshold_f1": 0.12}
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "autoresearch": {"scope_policy": "recent_robust_torch_winner"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.22, "average_precision": 0.2, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.14, "val_positive_rate": 0.08, "loo_promotion_ready": True, "fixed_threshold_f1": 0.12, "extra_train_npz_count": 1, "extra_train_samples": 128}
             conn = sqlite3.connect(db)
             try:
                 conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
@@ -520,6 +520,10 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("quality_next_actions", evidence)
         self.assertIn("quality_next_actions", snapshot["research_summary"]["candidate_evidence"]["full_tile"])
         self.assertIn("quality_next_action", snapshot["experiments"]["leaderboard"][0])
+        self.assertEqual(snapshot["experiments"]["leaderboard"][0]["research_scope"], "multi_segment_robust_expanded")
+        self.assertEqual(snapshot["experiments"]["leaderboard"][0]["scope_policy"], "recent_robust_torch_winner")
+        self.assertEqual(snapshot["experiments"]["leaderboard"][0]["extra_train_npz_count"], 1)
+        self.assertEqual(snapshot["research_summary"]["candidate_evidence"]["research_scope"], "multi_segment_robust_expanded")
 
     def test_quality_review_action_precedes_promotion_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

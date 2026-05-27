@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite it and the underlying Vesuvius Challenge datasets."
+title: "Vesuvius AutoResearch"
+version: "0.1.0"
+date-released: "2026-05-27"
+license: "MIT"
+authors:
+  - name: "Vesuvius AutoResearch contributors"
+repository-code: "https://github.com/scrollprize/vesuvius-autoresearch"
+abstract: "CPU-safe Vesuvius Scroll Prize ink-detection research, validation, dashboard, and packaging tooling."
+keywords:
+  - vesuvius challenge
+  - scroll prize
+  - ink detection
+  - computed tomography
+  - machine learning
+references:
+  - type: dataset
+    title: "Vesuvius Challenge - CT Scans of Herculaneum Papyri"
+    url: "https://scrollprize.org/data"
+  - type: dataset
+    title: "EduceLab-Scrolls"
+    url: "https://scrollprize.org/data"
+  - type: article
+    title: "EduceLab-Scrolls: Verifiable Recovery of Text from Herculaneum Papyri using X-ray CT"
+    authors:
+      - family-names: "Parsons"
+        given-names: "S."
+    year: 2023

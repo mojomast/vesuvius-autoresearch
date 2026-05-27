@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 .venv/
+build/
+dist/
+*.egg-info/
 data/*
 !data/__init__.py
 !data/vesuvius_data.py
@@ -17,3 +21,15 @@ logs/*.lock
 configs/auto_*.yaml
 configs/auto_*.yml
 configs/auto_*.json
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.db
+*.sqlite
+*.sqlite3
+full_tile*/
+predictions/
+outputs/

@@ -408,6 +408,7 @@ def _positive_rate_risk_summary(run: dict[str, Any], full_tiles: list[dict[str, 
 def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {"candidate_run_id": None, "promotion_actions": []}
+    config = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
     summary = _linked_loo_summary(run, loo_summaries, project_root)
     full_tiles = _full_tile_metrics(run, project_root)
     loo_full_tiles = _loo_full_tile_diagnostics(summary, project_root)
@@ -467,6 +468,8 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
     return {
         "candidate_run_id": run.get("run_id"),
         "candidate_artifact_dir": run.get("artifact_dir"),
+        "research_scope": _get_nested(config, ("dataset", "research_scope"), None),
+        "scope_policy": _get_nested(config, ("autoresearch", "scope_policy"), None),
         "loo": {
             "ready": bool(summary and summary.get("promotion_ready")),
             "summary_path": summary.get("path") if summary else None,
@@ -711,6 +714,7 @@ def _config_diff(before: dict[str, Any] | None, after: dict[str, Any] | None, li
 def _leaderboard_rows(runs: list[dict[str, Any]], project_root: Path | None = None, limit: int = 20) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for run in runs:
+        config = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
         metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
         setup = run.get("validation_setup", {}) if isinstance(run.get("validation_setup"), dict) else {}
         full_tiles = _full_tile_metrics(run, project_root)
@@ -724,6 +728,10 @@ def _leaderboard_rows(runs: list[dict[str, Any]], project_root: Path | None = No
             "run_id": run.get("run_id"),
             "timestamp": run.get("timestamp"),
             "model_name": metrics.get("model_name") or _get_nested(run.get("config", {}), ("model", "name"), "unknown"),
+            "research_scope": _get_nested(config, ("dataset", "research_scope"), None),
+            "scope_policy": _get_nested(config, ("autoresearch", "scope_policy"), None),
+            "extra_train_npz_count": metrics.get("extra_train_npz_count") or len(_get_nested(config, ("resolved_data", "train_extra"), []) or []),
+            "extra_train_samples": metrics.get("extra_train_samples"),
             "val_f1": metrics.get("val_f1"),
             "average_precision": metrics.get("average_precision"),
             "promotion_status": run.get("promotion_status"),

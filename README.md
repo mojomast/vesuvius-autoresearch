@@ -4,6 +4,35 @@ Minimal continuous experiment pipeline for Vesuvius ScrollPrize ink-detection re
 
 The active workflow uses real Vesuvius data only. If real prepared NPZs or official data access are unavailable, runs fail loudly instead of falling back to fake data.
 
+## Open-Source Prize Readiness
+
+This repository is packaged for Scroll Prize open-source review: code is MIT licensed, raw data and generated artifacts are excluded from git, and reproducibility metadata is documented separately from local experiment outputs.
+
+Reviewer-facing docs:
+
+- `DATA.md`: data sources, licensing, local paths, and no-overlap safety rules.
+- `METHOD.md`: model pipeline, validation gates, hard-negative mining, and hallucination controls.
+- `REPRODUCE.md`: clean install, tests, data preparation, run, LOO, full-tile, and dashboard commands.
+- `CITATION.cff`: citation metadata for this repo and required dataset attribution.
+- `artifacts/README.md`, `weights/README.md`, and `submission/`: templates for external artifacts and prize package metadata.
+
+Quick setup from a clean clone:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m unittest discover -s tests
+```
+
+Install optional public-data ingestion support with:
+
+```bash
+.venv/bin/python -m pip install -e '.[ingestion]'
+```
+
+Do not commit generated data, model weights, experiment databases, logs, full-tile outputs, mined hard negatives, or decoded text/image outputs. Large reproducibility artifacts should be published externally with checksums and described in `artifacts/README.md` or `weights/README.md`.
+
 ## Research Workflow Principles
 
 - Optimize for rare-positive ink detection, not generic accuracy or loss alone.

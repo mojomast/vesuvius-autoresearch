@@ -18,7 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from experiments.runner import ROOT, load_config, run_experiment
+from data.vesuvius_data import validate_prepared_npz
+from experiments.runner import ROOT, _check_extra_train_fold_safety, load_config, run_experiment
 
 
 def _resolve(path: str | Path) -> Path:
@@ -34,6 +35,16 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
+
+
+def _validate_extra_train_npzs_for_fold(cfg: dict[str, Any], heldout_segment: str) -> None:
+    dataset = cfg.get("dataset", {}) if isinstance(cfg.get("dataset"), dict) else {}
+    extra_train_npzs = dataset.get("extra_train_npzs") or []
+    if isinstance(extra_train_npzs, (str, Path)):
+        extra_train_npzs = [extra_train_npzs]
+    patch_size = int(dataset.get("patch_size", 32))
+    metas = [validate_prepared_npz(_resolve(path), split="train_extra", patch_size=patch_size) for path in extra_train_npzs]
+    _check_extra_train_fold_safety(metas, heldout_segment)
 
 
 def _row_id(row: dict[str, Any]) -> str:
@@ -264,6 +275,7 @@ def main() -> int:
                 cfg.setdefault("autoresearch", {})["heldout_segment"] = heldout_segment
                 cfg["autoresearch"]["fold_map"] = str(fold_map_path.relative_to(ROOT) if fold_map_path.is_relative_to(ROOT) else fold_map_path)
                 cfg["autoresearch"]["seed_repeat"] = seed
+                _validate_extra_train_npzs_for_fold(cfg, heldout_segment)
 
                 seed_suffix = f"__seed_{seed}" if seed is not None else ""
                 fold_config = tmp / f"{label}__leaveout_{heldout_segment}{seed_suffix}.yaml"

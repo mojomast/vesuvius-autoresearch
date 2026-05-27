@@ -6,10 +6,34 @@ from pathlib import Path
 
 import numpy as np
 
-from experiments.runner import _pixel_metrics_from_probs, _positive_rate_excess, _resolve_positive_rate_target, _sample_patch_indices, _validation_setup
+from experiments.runner import _check_extra_train_fold_safety, _load_training_arrays, _pixel_metrics_from_probs, _positive_rate_excess, _resolve_positive_rate_target, _sample_patch_indices, _validation_setup
 
 
 class RunnerValidationTest(unittest.TestCase):
+    def test_extra_train_npzs_are_concatenated_and_counted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            train = root / "train.npz"
+            extra = root / "extra.npz"
+            np.savez_compressed(train, images=np.zeros((2, 1, 4, 4), dtype=np.float32), labels=np.zeros((2, 1, 4, 4), dtype=np.float32))
+            np.savez_compressed(extra, images=np.ones((3, 1, 4, 4), dtype=np.float32), labels=np.zeros((3, 1, 4, 4), dtype=np.float32))
+            cfg = {"resolved_data": {"train_extra": [{"path": str(extra), "samples": 3}]}}
+
+            images, labels, metrics = _load_training_arrays(str(train), cfg)
+
+        self.assertEqual(images.shape[0], 5)
+        self.assertEqual(labels.shape[0], 5)
+        self.assertEqual(metrics["extra_train_npz_count"], 1)
+        self.assertEqual(metrics["extra_train_samples"], 3)
+
+    def test_extra_train_fold_safety_rejects_heldout_segment(self) -> None:
+        meta = {"path": "mined.npz", "metadata": {"source": "full_tile_failure_mining", "segment_id": "seg-a"}}
+
+        with self.assertRaisesRegex(ValueError, "held-out segment seg-a"):
+            _check_extra_train_fold_safety([meta], "seg-a")
+
+        _check_extra_train_fold_safety([meta], "seg-b")
+
     def test_sampling_strategy_alias_enables_hard_mining(self) -> None:
         images = np.zeros((8, 3, 4, 4), dtype=np.float32)
         images[:, 1] = np.arange(8, dtype=np.float32).reshape(8, 1, 1)

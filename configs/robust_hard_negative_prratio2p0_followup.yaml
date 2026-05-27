@@ -1,0 +1,40 @@
+# Follow-up for full-tile overprediction failures.
+# After mining, add only fold-safe files to dataset.extra_train_npzs.
+model:
+  name: tiny_torch_unet
+  base_channels: 8
+dataset:
+  patch_size: 64
+  research_scope: multi_segment_robust_expanded
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  validation_mode: leave-one-segment-out
+  extra_train_npzs: []
+training:
+  allow_cuda: false
+  augment_flips: false
+  batch_size: 8
+  dice_loss_weight: 0.35
+  epochs: 5
+  learning_rate: 0.0012
+  max_train_samples: 0
+  num_threads: 4
+  pos_weight: auto
+  positive_rate_loss_target: auto_train
+  positive_rate_loss_tolerance: 0.01
+  positive_rate_loss_weight: 0.06
+  seed: 15050
+  weight_decay: 0.0001
+evaluation:
+  main_metric: val_f1
+  max_pred_positive_rate_ratio: 2.0
+  min_pred_positive_rate_ratio: 0.1
+  target_pred_positive_rate: auto_val
+  threshold: 0.5
+autoresearch:
+  parent_reason: fold-safe hard-negative follow-up to reduce full-tile overprediction toward <2x
+  scope_policy: expanded_multi_segment_leave_one_out
+  heldout_segment: "20230520175435"
+  fold_map: data/real_cross_folds_expanded_combined/fold_map.json
+outputs:
+  runs_dir: experiments/runs

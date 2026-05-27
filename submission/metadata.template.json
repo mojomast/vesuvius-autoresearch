@@ -1,0 +1,33 @@
+{
+  "submission_name": "replace-me",
+  "repo_commit": "replace-me",
+  "config_path": "configs/replace-me.yaml",
+  "command": "replace-me",
+  "data_source": "https://scrollprize.org/data",
+  "scroll_id": "replace-me",
+  "segment_id": "replace-me",
+  "scan_energy": "replace-me",
+  "voxel_size_microns": null,
+  "input_window_px": [64, 64],
+  "prediction_region": {
+    "coordinate_system": "replace-me",
+    "x": [null, null],
+    "y": [null, null],
+    "z": [null, null]
+  },
+  "training_regions": [],
+  "heldout_regions": [],
+  "no_training_prediction_overlap": false,
+  "model": {
+    "name": "replace-me",
+    "weights_url": null,
+    "weights_sha256": null
+  },
+  "outputs": [],
+  "scale_bar": {
+    "length_mm": 10,
+    "present": false
+  },
+  "human_annotation_used": false,
+  "notes": "Fill before external submission. Do not publish hidden text without Scroll Prize coordination."
+}

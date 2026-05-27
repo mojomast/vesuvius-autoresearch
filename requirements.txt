@@ -1,7 +1,9 @@
-numpy
-PyYAML
-torch
+# Lightweight install mirror for environments that do not use pyproject extras.
+# For editable package installs, prefer: .venv/bin/python -m pip install -e .
+numpy>=1.26
+PyYAML>=6.0
+torch>=2.2
 # Optional real-data ingestion dependencies:
-# pip install vesuvius tifffile pillow zarr s3fs lxml nest_asyncio
+# pip install -e '.[ingestion]'
 # First official-tooling run may require accepting terms:
 # python -m vesuvius.accept_terms --yes
