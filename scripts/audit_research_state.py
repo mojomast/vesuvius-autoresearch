@@ -84,6 +84,7 @@ def _dashboard_summary(root: Path) -> dict[str, Any]:
     decision = research_summary.get("decision", {}) if isinstance(research_summary, dict) else {}
     blocker_counts = decision.get("blocker_counts", {}) if isinstance(decision, dict) else {}
     promotion_gate = decision.get("promotion_gate", {}) if isinstance(decision, dict) else {}
+    candidate_evidence = decision.get("candidate_evidence", {}) if isinstance(decision, dict) else {}
     summary.update(
         {
             "snapshot_contract_available": True,
@@ -93,6 +94,8 @@ def _dashboard_summary(root: Path) -> dict[str, Any]:
             "next_action": decision.get("next_action") if isinstance(decision, dict) else None,
             "promotion_gate_ready": promotion_gate.get("ready") if isinstance(promotion_gate, dict) else None,
             "promotion_gate_criteria": promotion_gate.get("criteria", []) if isinstance(promotion_gate, dict) else [],
+            "candidate_evidence": candidate_evidence,
+            "promotion_actions": decision.get("promotion_actions", []) if isinstance(decision, dict) else [],
             "top_promotion_blockers": _top_blockers(blocker_counts if isinstance(blocker_counts, dict) else {}),
         }
     )
@@ -137,6 +140,23 @@ def render_markdown(report: dict[str, Any]) -> str:
     if criteria:
         lines.extend(["", "## Promotion Gate"])
         lines.extend(f"- {item.get('label', item.get('id', 'criterion'))}: {item.get('state')} - {item.get('detail', '')}" for item in criteria)
+    evidence = dashboard.get("candidate_evidence") or {}
+    if evidence:
+        loo = evidence.get("loo") or {}
+        weak = evidence.get("weak_fold_full_tile") or {}
+        full = evidence.get("full_tile") or {}
+        lines.extend(["", "## Candidate Evidence"])
+        lines.append(f"- Candidate: `{evidence.get('candidate_run_id')}`")
+        if loo.get("worst_fold_id"):
+            lines.append(f"- Weak fold: `{loo.get('worst_fold_id')}` F1={loo.get('worst_fold_val_f1')}")
+        lines.append(f"- Full-tile segments covered: {', '.join(str(item) for item in full.get('segments_covered') or []) or 'none'}")
+        lines.append(f"- Weak-fold full-tile status: {weak.get('status')}")
+        actions = evidence.get("promotion_actions") or dashboard.get("promotion_actions") or []
+        if actions:
+            first = actions[0]
+            lines.append(f"- Next evidence action: {first.get('label')}")
+            if first.get("command_text"):
+                lines.append(f"- Command: `{first.get('command_text')}`")
     blockers = dashboard.get("top_promotion_blockers") or []
     if blockers:
         lines.extend(["", "## Top Promotion Blockers"])

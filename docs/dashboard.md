@@ -65,6 +65,8 @@ capabilities
 
 Seed-repeat LOO and full-tile evidence are candidate-linked: unrelated global summaries or full-tile artifacts may still be listed for context, but they do not clear the gate for a different robust candidate. LOO summaries should include at least three distinct successful seeds before `promotion_ready` is true.
 
+`research_summary.candidate_evidence` and `research_summary.promotion_actions` expose the candidate-linked evidence used to accelerate review: linked LOO summary, weakest fold, full-tile segments covered, weak-fold full-tile status, and copyable next commands. These commands are read-only from the dashboard perspective; they are not executed by the UI and artifact-writing commands remain marked `safe_to_execute_from_dashboard: false`.
+
 Keep Vesuvius-specific data parsing and command inventory in `research_dashboard/*`. Hermes or any other host dashboard should render or proxy this contract instead of copying the domain logic.
 
 ## Parallel Development Workflow

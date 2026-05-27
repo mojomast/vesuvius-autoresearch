@@ -172,6 +172,131 @@ def _full_tile_ready(run: dict[str, Any]) -> bool:
     return any("full_tile" in name or "probability_map" in name for name in names)
 
 
+def _rel_path(path: Path, project_root: Path | None = None) -> str:
+    if project_root is not None:
+        try:
+            return str(path.resolve().relative_to(project_root.resolve()))
+        except Exception:
+            pass
+    return str(path)
+
+
+def _linked_loo_summary(run: dict[str, Any], loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> dict[str, Any] | None:
+    for summary in loo_summaries:
+        if _summary_matches_run(summary, run, project_root):
+            return summary
+    return None
+
+
+def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) -> list[dict[str, Any]]:
+    artifact_dir = run.get("artifact_dir")
+    if not artifact_dir:
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(Path(str(artifact_dir)).glob("full_tile*/metrics.json")):
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        checks = data.get("promotion_checks") if isinstance(data.get("promotion_checks"), dict) else {}
+        region = data.get("evaluation_region") if isinstance(data.get("evaluation_region"), dict) else {}
+        segment_id = str(region.get("segment_id") or checks.get("inference_segment_id") or "")
+        out.append({
+            "path": str(path),
+            "relative_path": _rel_path(path, project_root),
+            "segment_id": segment_id or None,
+            "eligible": checks.get("eligible"),
+            "warnings": checks.get("warnings", []),
+            "evaluation_region_type": region.get("type"),
+            "val_f1": data.get("val_f1", data.get("tile_f1")),
+            "average_precision": data.get("average_precision"),
+            "best_threshold": data.get("best_threshold"),
+            "pred_positive_rate": data.get("pred_positive_rate"),
+            "val_positive_rate": data.get("val_positive_rate"),
+        })
+    return out
+
+
+def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> dict[str, Any]:
+    if not isinstance(run, dict):
+        return {"candidate_run_id": None, "promotion_actions": []}
+    summary = _linked_loo_summary(run, loo_summaries, project_root)
+    full_tiles = _full_tile_metrics(run, project_root)
+    artifact_dir = Path(str(run.get("artifact_dir") or ""))
+    weak_fold_id = str((summary or {}).get("worst_fold_id") or "")
+    weak_tile = next((item for item in full_tiles if item.get("segment_id") == weak_fold_id), None) if weak_fold_id else None
+    weak_status = "not_applicable"
+    if weak_fold_id:
+        if not weak_tile:
+            weak_status = "missing"
+        elif weak_tile.get("evaluation_region_type") == "whole_segment" and weak_tile.get("eligible") is True:
+            weak_status = "done"
+        else:
+            weak_status = "warning"
+
+    command: list[str] | None = None
+    command_text = None
+    if weak_fold_id and artifact_dir:
+        artifact_rel = _rel_path(artifact_dir, project_root)
+        output_rel = f"{artifact_rel}/full_tile_weak_fold_{weak_fold_id}"
+        command = [
+            ".venv/bin/python", "scripts/infer_full_tile.py",
+            "--artifact", artifact_rel,
+            "--segment-id", weak_fold_id,
+            "--output-dir", output_rel,
+            "--catalog-source", "public-directory",
+            "--level", "1",
+            "--z-offsets=-4,0,4",
+            "--patch-size", "64",
+            "--stride", "32",
+            "--batch-size", "8",
+            "--device", "cpu",
+        ]
+        command_text = " ".join(command)
+
+    actions: list[dict[str, Any]] = []
+    if not summary:
+        actions.append({"id": "seed_repeat_loo", "label": "Run linked seed-repeat LOO", "kind": "validation", "writes_artifacts": True})
+    elif weak_fold_id and weak_status != "done":
+        actions.append({"id": "weak_fold_full_tile", "label": f"Run full-tile on weak fold {weak_fold_id}", "kind": "inference", "command": command, "command_text": command_text, "writes_artifacts": True, "safe_to_execute_from_dashboard": False})
+    if not full_tiles:
+        actions.append({"id": "full_tile_candidate", "label": "Run candidate full-tile evidence", "kind": "inference", "writes_artifacts": True, "safe_to_execute_from_dashboard": False})
+    if run.get("promotion_status") == "eligible":
+        actions.append({"id": "promotion_review", "label": f"Review promotion candidate {run.get('run_id')}", "kind": "review", "writes_artifacts": False})
+
+    return {
+        "candidate_run_id": run.get("run_id"),
+        "candidate_artifact_dir": run.get("artifact_dir"),
+        "loo": {
+            "ready": bool(summary and summary.get("promotion_ready")),
+            "summary_path": summary.get("path") if summary else None,
+            "seeds": summary.get("seeds") if summary else None,
+            "worst_fold_id": weak_fold_id or None,
+            "worst_fold_val_f1": summary.get("worst_fold_val_f1") if summary else None,
+            "worst_fold_average_precision": (summary.get("per_fold_average_precision") or {}).get(weak_fold_id) if summary and weak_fold_id else None,
+            "median_over_seeds_median_val_f1": summary.get("median_over_seeds_median_val_f1") if summary else None,
+            "warnings": summary.get("warnings", []) if summary else [],
+        },
+        "full_tile": {
+            "segments_covered": [item.get("segment_id") for item in full_tiles if item.get("segment_id")],
+            "evidence": full_tiles,
+            "coverage_count": len(full_tiles),
+        },
+        "weak_fold_full_tile": {
+            "weak_fold_id": weak_fold_id or None,
+            "status": weak_status,
+            "metrics": weak_tile,
+            "command": command,
+            "command_text": command_text,
+            "safe_to_execute_from_dashboard": False,
+            "writes_artifacts": True,
+        },
+        "promotion_actions": actions,
+    }
+
+
 def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]] | None = None, project_root: Path | None = None) -> list[dict[str, str]]:
     cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
     metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
@@ -271,7 +396,9 @@ def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, 
     plateau_epsilon = 0.002
     plateau_detected = plateau_delta is not None and plateau_window >= 5 and plateau_delta <= plateau_epsilon
 
-    gate = _promotion_gate(runs, loo_summaries or [], promotable or robust, project_root)
+    target = promotable or robust
+    gate = _promotion_gate(runs, loo_summaries or [], target, project_root)
+    evidence = _candidate_evidence(target, loo_summaries or [], project_root)
 
     if promotable:
         next_action = f"Promote or seed-repeat verify {promotable.get('run_id')} before release."
@@ -298,6 +425,8 @@ def _decision_snapshot(runs: list[dict[str, Any]], peak: dict[str, Any] | None, 
         "next_action": next_action,
         "blocker_counts": dict(sorted(blocker_counts.items())),
         "promotion_gate": gate,
+        "candidate_evidence": evidence,
+        "promotion_actions": evidence.get("promotion_actions", []),
         "plateau": {"detected": plateau_detected, "window_runs": plateau_window, "metric_delta": plateau_delta, "epsilon": plateau_epsilon},
         "staleness": {"stale_runs_since_peak": stale_runs_since_peak, "peak_run_id": peak.get("run_id") if peak else None},
     }
@@ -329,7 +458,7 @@ def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, An
             continue
         if not isinstance(data, dict) or "promotion_ready" not in data:
             continue
-        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids")})
+        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids")})
         if len(summaries) >= limit:
             break
     return summaries

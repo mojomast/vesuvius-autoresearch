@@ -72,6 +72,33 @@ class AuditResearchStateTest(unittest.TestCase):
         self.assertIn("Experiment DB runs: DB missing", markdown)
         self.assertIn("Dashboard snapshot contract available: False", markdown)
 
+    def test_markdown_renders_candidate_evidence(self) -> None:
+        report = {
+            "project_root": "/tmp/repo",
+            "generated_auto_config_count": 0,
+            "experiment_db": {"exists": True, "run_count": 1},
+            "artifacts": {"run_directory_count": 1, "total_bytes": 10},
+            "logs": {"summary_json_count": 1},
+            "dashboard": {
+                "snapshot_contract_available": True,
+                "candidate_evidence": {
+                    "candidate_run_id": "candidate",
+                    "loo": {"worst_fold_id": "weakseg", "worst_fold_val_f1": 0.04},
+                    "full_tile": {"segments_covered": ["goodseg"]},
+                    "weak_fold_full_tile": {"status": "missing"},
+                    "promotion_actions": [{"label": "Run full-tile on weak fold weakseg", "command_text": ".venv/bin/python scripts/infer_full_tile.py --segment-id weakseg"}],
+                },
+                "promotion_actions": [],
+            },
+        }
+
+        markdown = render_markdown(report)
+
+        self.assertIn("## Candidate Evidence", markdown)
+        self.assertIn("`weakseg`", markdown)
+        self.assertIn("Run full-tile on weak fold weakseg", markdown)
+        self.assertIn("scripts/infer_full_tile.py", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

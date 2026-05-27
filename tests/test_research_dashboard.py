@@ -284,6 +284,77 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertNotIn("missing_full_tile_evidence", codes)
         self.assertEqual(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"], True)
 
+    def test_dashboard_surfaces_weak_fold_full_tile_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "candidate.summary.json").write_text(json.dumps({
+                "promotion_ready": True,
+                "run_ids": ["candidate"],
+                "seeds": [1, 2, 3],
+                "worst_fold_id": "weakseg",
+                "worst_fold_val_f1": 0.04,
+                "per_fold_average_precision": {"weakseg": 0.03},
+                "promotion_warnings": [],
+            }))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "candidate"
+            full_tile_dir = run_dir / "full_tile_goodseg"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "goodseg"}, "promotion_checks": {"eligible": True}, "val_f1": 0.2, "average_precision": 0.1}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "goodseg"}}
+            metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        evidence = snapshot["research_summary"]["candidate_evidence"]
+        self.assertEqual(evidence["candidate_run_id"], "candidate")
+        self.assertEqual(evidence["loo"]["worst_fold_id"], "weakseg")
+        self.assertEqual(evidence["weak_fold_full_tile"]["status"], "missing")
+        action = evidence["promotion_actions"][0]
+        self.assertEqual(action["id"], "weak_fold_full_tile")
+        self.assertIn("--segment-id weakseg", action["command_text"])
+        self.assertFalse(action["safe_to_execute_from_dashboard"])
+
+    def test_dashboard_marks_weak_fold_full_tile_done_when_metrics_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "candidate.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["candidate"], "worst_fold_id": "weakseg", "worst_fold_val_f1": 0.04, "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "candidate"
+            full_tile_dir = run_dir / "full_tile_weak_fold_weakseg"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "weakseg"}, "promotion_checks": {"eligible": True}, "val_f1": 0.05, "average_precision": 0.03}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "weakseg"}}
+            metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        evidence = snapshot["research_summary"]["candidate_evidence"]
+        self.assertEqual(evidence["weak_fold_full_tile"]["status"], "done")
+        self.assertNotEqual(evidence["promotion_actions"][0]["id"], "weak_fold_full_tile")
+
     def test_dashboard_detects_nested_full_tile_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

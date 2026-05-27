@@ -38,6 +38,8 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[s
         "blocker_counts": decision.get("blocker_counts", {}),
         "plateau": decision.get("plateau", {}),
         "staleness": decision.get("staleness", {}),
+        "candidate_evidence": decision.get("candidate_evidence", {}),
+        "promotion_actions": decision.get("promotion_actions", []),
         "decision": decision,
         "champions": experiments.get("champions", {}),
     }
