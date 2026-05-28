@@ -102,6 +102,24 @@ PIVOT_CONFIGS = (
     "robust_tta_seed_ensemble.yaml",
     "residual_25d_torch_unet_cpu.yaml",
 )
+PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
+    ("training", "pos_weight"): (0.25, 25.0),
+    ("training", "learning_rate"): (0.001, 0.25),
+    ("training", "weight_decay"): (0.0, 0.05),
+    ("evaluation", "threshold"): (0.05, 0.95),
+    ("training", "epochs"): (2.0, 20.0),
+    ("training", "dice_loss_weight"): (0.0, 0.8),
+    ("training", "positive_rate_loss_weight"): (0.0, 0.1),
+    ("training", "tversky_loss_weight"): (0.0, 0.5),
+    ("training", "tversky_beta"): (0.1, 0.9),
+    ("model", "base_channels"): (4.0, 16.0),
+    ("training", "batch_size"): (2.0, 32.0),
+    ("training", "max_train_samples"): (1.0, 2048.0),
+    ("model", "depth"): (1.0, 3.0),
+    ("model", "hidden_units"): (8.0, 96.0),
+    ("training", "max_train_pixels"): (100000.0, 1200000.0),
+    ("training", "sample_positive_fraction"): (0.05, 0.95),
+}
 
 
 @dataclass(frozen=True)
@@ -234,6 +252,21 @@ def _get_nested(cfg: Dict[str, Any], path: Tuple[str, ...], default: Any) -> Any
     return cur
 
 
+def _clamp_param(path: Tuple[str, ...], value: Any) -> Any:
+    """Clamp mutable numeric proposal values to safe autoresearch bounds."""
+    bounds = PARAM_BOUNDS.get(path)
+    if bounds is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    low, high = bounds
+    clamped = min(high, max(low, float(value)))
+    return int(clamped) if isinstance(value, int) else clamped
+
+
+def _bounded_candidates(candidates: list[tuple[Tuple[str, ...], Any, str]]) -> list[tuple[Tuple[str, ...], Any, str]]:
+    """Apply `PARAM_BOUNDS` to generated proposal candidates."""
+    return [(path, _clamp_param(path, value), reason) for path, value, reason in candidates]
+
+
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
     if path == ("model", "depth") and isinstance(value, int) and value > 3:
         return 3
@@ -336,7 +369,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         ]
         if max_train_samples and max_train_samples < 2048 and int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024")) >= 2048:
             candidates.append((("training", "max_train_samples"), 2048, "increase robust torch sample budget after local hyperparameter plateau"))
-        return candidates
+        return _bounded_candidates(candidates)
 
     depth = int(_get_nested(base, ("model", "depth"), 2))
     hidden_units = int(_get_nested(base, ("model", "hidden_units"), 24))
@@ -365,7 +398,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "max_train_pixels"), max(100000, max_train_pixels // 2), "fewer local pixels for faster noise-check MLP runs"),
             (("training", "sample_positive_fraction"), 0.25 if sample_positive_fraction != 0.25 else 0.5, "adjust MLP positive sampling fraction to probe prevalence calibration"),
         ])
-    return candidates
+    return _bounded_candidates(candidates)
 
 
 def _mutation_family(path: Tuple[str, ...]) -> str:
