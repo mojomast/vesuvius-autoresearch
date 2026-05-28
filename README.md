@@ -112,6 +112,8 @@ AutoResearch prunes stale generated `configs/auto_*.yaml` files older than 48 ho
 
 GitHub Actions workflows are available in `.github/workflows/`: `autoresearch_test.yml` runs `python -m pytest tests/` on push and pull request, while `autoresearch_cron.yml` runs AutoResearch every 30 minutes and uploads `logs/` plus generated configs as artifacts.
 
+The autoresearch loop now runs through `harness.VesuviusHarness`, a thin adapter over the existing Vesuvius-specific logic. See `harness/README.md` for the base `ResearchHarness` interface and extension pattern for future ScrollPrize research harnesses.
+
 For distributed-lite execution, enqueue existing config paths through `experiments.jobs.enqueue_experiment_config(...)` and run workers with the same core experiment runner:
 
 ```bash

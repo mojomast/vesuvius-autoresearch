@@ -1224,6 +1224,12 @@ def _acquire_autoresearch_lock(lock: Any) -> None:
     msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
 
 
+def _research_harness() -> Any:
+    """Instantiate the active research harness for the autoresearch loop."""
+    from harness.vesuvius_harness import VesuviusHarness
+    return VesuviusHarness(sys.modules[__name__])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run or plan the local AutoResearch cycle")
     parser.add_argument("--plan", action="store_true", help="Print planned proposals without writing configs or launching experiments")
@@ -1237,13 +1243,14 @@ def main() -> int:
     pruned = _prune_stale_configs()
     if pruned:
         print(f"Pruned {pruned} stale generated config(s)", flush=True)
+    harness = _research_harness()
 
     if args.plan:
         runs = _recent_runs()
         if not runs:
             print(json.dumps({"status": "needs_baseline", "proposals": []}, indent=2 if args.json else None))
             return 0
-        ready_payload = _promotion_ready_payload()
+        ready_payload = harness.promotion_ready_payload()
         if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
             payload = ready_payload
             if args.json:
@@ -1265,7 +1272,7 @@ def main() -> int:
                     for item in payload["proposals"]:
                         print(f"  {item['name']}: {item['reason']} [{item.get('strategy_phase')}/{item.get('mutation_family')}]")
                 return 0
-        manual_payload = _promotion_phase_manual_action(runs)
+        manual_payload = harness.promotion_phase_manual_action(runs)
         if manual_payload:
             if args.json:
                 print(json.dumps(manual_payload, indent=2, sort_keys=True))
@@ -1274,13 +1281,13 @@ def main() -> int:
                 if manual_payload.get("command"):
                     print(f"Command: {manual_payload['command']}")
             return 0
-        base = _best_base_config(runs)
+        base = harness.best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         if args.json:
             with contextlib.redirect_stdout(sys.stderr):
-                proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+                proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
         else:
-            proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+            proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
         payload = {"status": "planned", "proposal_count": len(proposals), "fallback_from_action": source_action, "proposals": _proposal_plan(proposals)}
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1303,22 +1310,22 @@ def main() -> int:
             print("No prior runs found; executing baseline first")
             subprocess.run([sys.executable, "run_experiment.py", "--config", str(BASELINE)], cwd=ROOT, check=True)
             runs = _recent_runs()
-        base = _best_base_config(runs)
+        base = harness.best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
-        ready_payload = _promotion_ready_payload()
+        ready_payload = harness.promotion_ready_payload()
         if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
             print(f"Promotion gate is ready; pausing exploration. Next action: {ready_payload.get('next_action')}", flush=True)
             if ready_payload.get("command"):
                 print(f"Command: {ready_payload['command']}", flush=True)
             return 0
-        manual_payload = _promotion_phase_manual_action(runs)
+        manual_payload = harness.promotion_phase_manual_action(runs)
         if manual_payload:
             print(f"AutoResearch promotion action required: {manual_payload.get('next_action')}", flush=True)
             if manual_payload.get("command"):
                 print(f"Command: {manual_payload['command']}", flush=True)
             return 0
-        proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+        proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
         if ready_payload and source_action:
             print(f"Promotion gate ready with auto-executable action={source_action}; generating targeted proposals", flush=True)
         if not proposals:
