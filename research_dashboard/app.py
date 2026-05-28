@@ -714,6 +714,13 @@ HTML = """<!doctype html>
         </div>
 
         <div class="panel">
+          <h2>Param Drift</h2>
+          <div id="param-drift-panel">
+            <div style="color:var(--muted);font-size:0.75rem;padding:0.25rem 0;">Comparing current params against bounds...</div>
+          </div>
+        </div>
+
+        <div class="panel">
           <h2>Mining & Calibration Plan</h2>
           <div id="mining-calibration-panel">
             <div style="color:var(--muted);font-size:0.75rem;padding:0.25rem 0;">Planning fold-safe hard-negative mining and ratio calibration...</div>
@@ -821,7 +828,7 @@ HTML = """<!doctype html>
       if (!rawData) return;
       
       // 1. Meta-information
-      document.getElementById('meta-info').textContent = `${esc(rawData.project.root)} · Schema version: ${esc(rawData.schema_version)} · Gen: ${new Date(rawData.generated_at).toLocaleTimeString()}`;
+      document.getElementById('meta-info').textContent = `${esc(rawData.project.root)} · Harness: ${esc(rawData.harness?.type || 'unknown')} · Schema version: ${esc(rawData.schema_version)} · Gen: ${new Date(rawData.generated_at).toLocaleTimeString()}`;
       
       // 2. Scorecard Telemetry
       const score = rawData.progress.scorecard || {};
@@ -858,6 +865,7 @@ HTML = """<!doctype html>
       // 3. Render Custom Components
       renderMilestones(rawData.progress.milestones, summary.foundation_readiness);
       renderCandidateEvidence(decision.candidate_evidence || rawData.research_summary?.candidate_evidence || {});
+      renderParamDrift(rawData.param_drift || {});
       renderMiningCalibrationPanel(rawData.mining);
       renderTrendChart(rawData.experiments.metric_trends);
       renderQualityLeaderboard(rawData.experiments.leaderboard);
@@ -891,6 +899,7 @@ HTML = """<!doctype html>
       const qualityItems = [...(full.evidence || []), ...(looFull.evidence || [])];
       const qualityAction = qualityItems.map(item => item.quality_next_action).find(Boolean) || 'none';
       const scopeText = evidence.research_scope || evidence.scope_policy || 'unknown';
+      const promoLogs = ((rawData.experiments || {}).promotion_results || []).slice(0, 3).map(item => item.log_file ? `<a href="#" onclick="selectRun('${esc(item.run_id)}');return false;">${esc(item.status)} ${esc(String(item.log_file).split('/').pop())}</a>` : esc(item.status)).join('<br>') || 'none';
       container.innerHTML = `
         <div class="milestone-item"><span class="milestone-label">Candidate</span><span class="run-pill" style="cursor:pointer;" onclick="selectRun('${esc(evidence.candidate_run_id)}')">${esc(String(evidence.candidate_run_id).slice(0, 8))}</span></div>
         <div class="milestone-item"><span class="milestone-label">Research scope</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(scopeText)}</span></div>
@@ -900,10 +909,29 @@ HTML = """<!doctype html>
         <div class="milestone-item"><span class="milestone-label">Positive-rate risk</span><span class="indicator-badge ${risk.risk_level === 'warning' ? 'badge-warning' : 'badge-success'}">${esc(risk.risk_level || 'unknown')}</span></div>
         <div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);">${esc(riskText)}</div>
         <div class="milestone-item"><span class="milestone-label">Quality next action</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(qualityAction)}</span></div>
+        <div class="milestone-item"><span class="milestone-label">Promotion logs</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${promoLogs}</span></div>
         <div class="milestone-item"><span class="milestone-label">Weak-fold tile</span><span class="indicator-badge ${weak.status === 'done' ? 'badge-success' : 'badge-warning'}">${esc(weak.status || 'unknown')}</span></div>
         <div style="margin-top:0.5rem;color:var(--text);font-size:0.75rem;">${esc(action.label || 'Review candidate evidence')}</div>
         ${cmd ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(cmd).replace(/'/g, '&#39;')}')">Copy next command</button>` : ''}
       `;
+    }
+
+    function nestedValue(obj, path) {
+      return String(path || '').split('.').reduce((cur, part) => (cur && typeof cur === 'object') ? cur[part] : undefined, obj);
+    }
+
+    function renderParamDrift(paramDrift) {
+      const container = document.getElementById('param-drift-panel');
+      if (!container) return;
+      const bounds = paramDrift.bounds || {};
+      const cfg = paramDrift.current_config || {};
+      const rows = Object.entries(bounds).map(([path, bound]) => {
+        const value = nestedValue(cfg, path);
+        const numeric = Number(value);
+        const outOfBounds = Number.isFinite(numeric) && (numeric < Number(bound.min) || numeric > Number(bound.max));
+        return `<div class="milestone-item"><span class="milestone-label">${esc(path)}</span><span class="indicator-badge ${outOfBounds ? 'badge-warning' : 'badge-success'}">${esc(value ?? 'n/a')} / ${esc(bound.min)}-${esc(bound.max)}</span></div>`;
+      });
+      container.innerHTML = rows.length ? rows.join('') : '<div style="color:var(--muted);font-size:0.75rem;">No parameter bounds available.</div>';
     }
 
     function verdictBadgeClass(verdict) {
