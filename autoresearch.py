@@ -691,6 +691,53 @@ def _shell_command(args: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in args)
 
 
+def _record_promotion_status(run_id: str, status: str, payload: Dict[str, Any] | None = None) -> None:
+    """Persist automated promotion pipeline status for dashboard and audits."""
+    init_db(DB_PATH)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promotion_results (
+                run_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO promotion_results(run_id, timestamp, status, payload_json) VALUES (?, ?, ?, ?)",
+            (run_id, datetime.now(timezone.utc).isoformat(), status, json.dumps(payload or {}, sort_keys=True)),
+        )
+
+
+def _run_automated_promotion(command_args: list[str], candidate_run_id: str, summary_json: Path, timeout: int) -> dict[str, Any]:
+    """Run leave-one-out promotion evidence and persist success or failure status."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.log"
+    status = "FAILED"
+    payload: Dict[str, Any] = {"command": command_args, "log_file": str(log_path)}
+    try:
+        completed = subprocess.run(command_args, cwd=ROOT, text=True, capture_output=True, timeout=timeout, check=False)
+        log_path.write_text(f"$ {_shell_command(command_args)}\n\nSTDOUT\n{completed.stdout}\n\nSTDERR\n{completed.stderr}\n")
+        payload.update({"returncode": completed.returncode})
+        if completed.returncode == 0:
+            summary = json.loads(summary_json.read_text())
+            status = "SUCCEEDED"
+            payload["summary_json"] = str(summary_json)
+            payload["summary"] = summary
+        else:
+            payload["error"] = f"promotion command exited {completed.returncode}"
+    except subprocess.TimeoutExpired as exc:
+        log_path.write_text(f"$ {_shell_command(command_args)}\n\nTIMEOUT after {timeout}s\n{exc}\n")
+        payload["error"] = f"promotion command timed out after {timeout}s"
+    except Exception as exc:
+        log_path.write_text(f"$ {_shell_command(command_args)}\n\nERROR\n{exc}\n")
+        payload["error"] = str(exc)
+    _record_promotion_status(candidate_run_id, status, payload)
+    return {"automation_status": status, "promotion_log": str(log_path), "promotion_payload": payload}
+
+
 def _path_tail(value: Any) -> str:
     return str(value or "").replace("\\", "/").lstrip("./")
 
@@ -796,11 +843,13 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
         "candidate_linked_evidence_required",
     ]
     command = None
+    command_args = None
+    summary_json = None
     if action == "run_seed_repeat_leave_one_out":
         artifact_dir = Path(str(candidate.get("artifact_dir") or ROOT / "experiments" / "runs" / candidate_run_id))
         base_config = artifact_dir / "config.json"
         output_stem = f"{candidate_run_id}_seedrepeat_loo"
-        command = _shell_command([
+        command_args = [
             ".venv/bin/python",
             "scripts/evaluate_leave_one_out.py",
             "--base-config",
@@ -815,12 +864,14 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
             "11001,11018,15050",
             "--jobs",
             os.environ.get("AUTORESEARCH_LOO_JOBS", "2"),
-        ])
+        ]
+        summary_json = ROOT / f"logs/{output_stem}.summary.json"
+        command = _shell_command(command_args)
         reasoning.append("median_over_seeds_and_folds_required")
     else:
         reasoning.append("full_tile_command_should_come_from_dashboard_candidate_evidence")
 
-    return {
+    payload = {
         "status": "manual_promotion_action",
         "next_action": action,
         "candidate_run_id": candidate_run_id,
@@ -830,6 +881,10 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
         "promotion_required": ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"],
         "proposals": [],
     }
+    if command_args and os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1":
+        timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
+        payload.update(_run_automated_promotion(command_args, candidate_run_id, summary_json or LOGS / "promotion.summary.json", timeout))
+    return payload
 
 
 def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:

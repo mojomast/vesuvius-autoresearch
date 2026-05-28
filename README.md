@@ -90,6 +90,8 @@ python3 autoresearch.py --plan --json
 
 If the dashboard promotion gate is ready, AutoResearch pauses exploration by default and prints the candidate-linked promotion/verification action instead of generating more local F1 micro-sweeps. Planning JSON includes the selected action, candidate run, reasoning trace, and copyable command; weak-fold public full-tile commands include whole-fetch retry and chunk-level pacing flags. Override direct `autoresearch.py` runs only for deliberate diagnostics with `AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` or `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1`. The guarded cron launcher forces promotion-safe defaults unless `SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1` is also set.
 
+Set `AUTORESEARCH_AUTO_PROMOTE=1` to let AutoResearch run the printed seed-repeat leave-one-out command automatically. Automation is disabled by default, writes `logs/promotion_<timestamp>.log`, records `promotion_results` rows in SQLite, and uses `AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS=3600` unless overridden.
+
 Seed-repeat LOO can be accelerated with independent process workers while preserving deterministic JSONL order:
 
 ```bash
