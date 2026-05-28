@@ -1,0 +1,43 @@
+name: AutoResearch Cron
+
+"on":
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run planning only"
+        required: false
+        default: "true"
+
+jobs:
+  autoresearch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+      - name: Run AutoResearch
+        env:
+          AUTORESEARCH_AUTO_PROMOTE: "0"
+          AUTORESEARCH_PROPOSALS: "3"
+          AUTORESEARCH_DEADLINE_SECONDS: "1200"
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python autoresearch.py --plan --json
+          else
+            python autoresearch.py
+          fi
+      - name: Upload logs and configs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoresearch-artifacts
+          path: |
+            logs/
+            configs/auto_*.yaml
+          if-no-files-found: ignore

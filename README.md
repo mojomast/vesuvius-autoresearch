@@ -110,6 +110,8 @@ python3 scripts/evaluate_leave_one_out.py \
 
 AutoResearch prunes stale generated `configs/auto_*.yaml` files older than 48 hours at process startup. This keeps cron proposal accumulation bounded while preserving manual configs, baseline configs, and curated robust pivot configs.
 
+GitHub Actions workflows are available in `.github/workflows/`: `autoresearch_test.yml` runs `python -m pytest tests/` on push and pull request, while `autoresearch_cron.yml` runs AutoResearch every 30 minutes and uploads `logs/` plus generated configs as artifacts.
+
 For distributed-lite execution, enqueue existing config paths through `experiments.jobs.enqueue_experiment_config(...)` and run workers with the same core experiment runner:
 
 ```bash
