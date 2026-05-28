@@ -36,6 +36,45 @@ python3 scripts/setup_data.py --data-dir ./data
 
 The script writes `configs/baseline.yaml` plus the four robust pivot configs used by AutoResearch. It currently leaves authenticated ScrollPrize/public-mirror downloads as explicit TODO stubs and records the expected prepared NPZ paths in generated YAML.
 
+## Architecture
+
+```mermaid
+flowchart TD
+  A[autoresearch.py] --> B[VesuviusHarness]
+  B --> C[Load recent SQLite runs]
+  C --> D[Validate MetricContract]
+  D --> E[Promotion gate]
+  E -->|ready and auto enabled| F[evaluate_leave_one_out.py]
+  E -->|continue| G[Proposal candidates]
+  G --> H[PARAM_BOUNDS clamp]
+  H --> I[Generated config]
+  I --> J[run_experiment.py]
+  J --> K[experiments.db]
+  K --> C
+```
+
+The core loop is intentionally local and inspectable: it reads experiment rows from SQLite, validates metric keys, checks promotion evidence, proposes one-change configs through bounded mutation logic, and executes the standard experiment runner.
+
+## Configuration Reference
+
+| Section | Key | Purpose |
+| --- | --- | --- |
+| `dataset` | `train_npz`, `val_npz` | Prepared NPZ inputs; both are required together. |
+| `dataset` | `research_scope`, `validation_mode` | Search and promotion scope labels. |
+| `model` | `name`, `base_channels`, `depth` | Model family and capacity controls. |
+| `training` | `learning_rate`, `weight_decay`, `pos_weight`, `epochs` | Mutable optimizer/loss parameters clamped by `PARAM_BOUNDS`. |
+| `evaluation` | `main_metric`, `threshold` | Main scoring metric and fixed-threshold diagnostic. |
+| `autoresearch` | `scope_policy`, `promotable`, `promotion_required` | Search metadata and promotion gating intent. |
+| `outputs` | `runs_dir` | Experiment artifact root. |
+
+## Harness Extension
+
+The harness layer lives in `harness/`. Implement `ResearchHarness` from `harness/base.py` to pivot this project toward another ScrollPrize research loop while keeping the same propose/evaluate/promote lifecycle. See `harness/README.md` for the minimal interface and `harness/vesuvius_harness.py` for the adapter over current Vesuvius logic.
+
+## Cron And CI
+
+`.github/workflows/autoresearch_test.yml` runs the full unit suite on push and pull request. `.github/workflows/autoresearch_cron.yml` runs every 30 minutes, supports manual `workflow_dispatch`, and uploads `logs/` plus generated configs as artifacts.
+
 Install optional public-data ingestion support with:
 
 ```bash

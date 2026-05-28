@@ -15,8 +15,26 @@ python3 -m venv .venv
 Run the full unit suite before proposing source changes:
 
 ```bash
-.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m pytest tests/
 ```
+
+Use targeted tests while iterating, then run the full suite before committing. Build steps that change behavior should add or update tests in the same commit.
+
+## Development Workflow
+
+Create configs with:
+
+```bash
+.venv/bin/python scripts/setup_data.py --data-dir ./data
+```
+
+Inspect the next autoresearch tick without writing artifacts:
+
+```bash
+.venv/bin/python autoresearch.py --plan --json
+```
+
+Promotion automation is opt-in with `AUTORESEARCH_AUTO_PROMOTE=1`; leave it disabled unless the candidate and fold map have been reviewed.
 
 ## Artifact Policy
 
@@ -46,3 +64,7 @@ Research claims should include:
 ## Configs
 
 Keep hand-authored configs in `configs/`. Generated `configs/auto_*` files are local search artifacts and should not be added unless intentionally curated into documentation.
+
+## Harness Changes
+
+New research loops should implement `harness.ResearchHarness` and include tests that prove proposal, evaluation, promotion decision, and promotion hooks compose without dashboard assumptions.
