@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+from dataclasses import dataclass, field
 try:
     import fcntl
 except ImportError:
@@ -103,6 +104,76 @@ PIVOT_CONFIGS = (
 )
 
 
+@dataclass(frozen=True)
+class MetricContract:
+    """Required runner-to-autoresearch metric keys and expected Python types."""
+
+    required_metrics: Dict[str, tuple[type, ...]] = field(default_factory=lambda: {
+        "val_loss": (int, float),
+        "val_f1": (int, float),
+        "val_f05": (int, float),
+        "best_threshold": (int, float),
+        "precision": (int, float),
+        "recall": (int, float),
+        "average_precision": (int, float),
+        "ap_prevalence_lift": (int, float),
+        "val_positive_rate": (int, float),
+        "pred_positive_rate": (int, float),
+        "fixed_threshold_status": (str,),
+    })
+    optional_metrics: Dict[str, tuple[type, ...]] = field(default_factory=lambda: {
+        "promotion_checks": (dict,),
+        "loo_promotion_ready": (bool,),
+        "full_tile_promotion_ready": (bool,),
+    })
+
+
+METRIC_CONTRACT = MetricContract()
+
+
+def validate_metric_contract(run: Dict[str, Any], contract: MetricContract = METRIC_CONTRACT) -> Dict[str, Any]:
+    """Validate and normalize an experiment row loaded for autoresearch.
+
+    Args:
+        run: Experiment row with decoded `config` and `metrics` objects.
+        contract: Metric keys and types expected by autoresearch.
+
+    Returns:
+        A shallow copy of `run` with optional promotion evidence defaults present.
+
+    Raises:
+        ValueError: If required row fields or metric keys are missing or mistyped.
+    """
+    missing = [key for key in ("run_id", "timestamp", "config", "main_metric", "metrics", "artifact_dir") if key not in run]
+    if missing:
+        raise ValueError(f"experiment row missing required fields: {', '.join(missing)}")
+    if not isinstance(run.get("config"), dict):
+        raise ValueError("experiment row config must decode to an object")
+    metrics = run.get("metrics")
+    if not isinstance(metrics, dict):
+        raise ValueError("experiment row metrics must decode to an object")
+    normalized_metrics = dict(metrics)
+    defaults: Dict[str, Any] = {"promotion_checks": {}, "loo_promotion_ready": False, "full_tile_promotion_ready": False}
+    for key, value in defaults.items():
+        normalized_metrics.setdefault(key, value)
+    for key, expected in contract.required_metrics.items():
+        if key not in normalized_metrics:
+            raise ValueError(f"metrics missing required key: {key}")
+        value = normalized_metrics[key]
+        if isinstance(value, bool) or not isinstance(value, expected):
+            expected_names = " or ".join(item.__name__ for item in expected)
+            raise ValueError(f"metrics key {key} must be {expected_names}")
+    for key, expected in contract.optional_metrics.items():
+        value = normalized_metrics.get(key)
+        if value is not None and not isinstance(value, expected):
+            expected_names = " or ".join(item.__name__ for item in expected)
+            raise ValueError(f"metrics key {key} must be {expected_names}")
+    normalized = dict(run)
+    normalized["main_metric"] = float(run["main_metric"])
+    normalized["metrics"] = normalized_metrics
+    return normalized
+
+
 def _metric_direction(cfg: Dict[str, Any]) -> int:
     metric = cfg.get("evaluation", {}).get("main_metric", "val_loss")
     return 1 if "loss" in metric.lower() else -1  # sort ascending for loss, descending otherwise
@@ -122,7 +193,7 @@ def _recent_runs(limit: int | None = None) -> List[Dict[str, Any]]:
         rows = conn.execute(query, params).fetchall()
     runs = []
     for run_id, ts, cfg_json, metric, sec_json, artifact_dir in rows:
-        runs.append({"run_id": run_id, "timestamp": ts, "config": json.loads(cfg_json), "main_metric": float(metric), "metrics": json.loads(sec_json), "artifact_dir": artifact_dir})
+        runs.append(validate_metric_contract({"run_id": run_id, "timestamp": ts, "config": json.loads(cfg_json), "main_metric": float(metric), "metrics": json.loads(sec_json), "artifact_dir": artifact_dir}))
     return runs
 
 
