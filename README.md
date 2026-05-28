@@ -22,8 +22,19 @@ Quick setup from a clean clone:
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
+.venv/bin/python scripts/setup_data.py --data-dir ./data
 .venv/bin/python -m unittest discover -s tests
 ```
+
+## Setup
+
+Generate baseline and robust pivot configs for your prepared Vesuvius NPZ directory with:
+
+```bash
+python3 scripts/setup_data.py --data-dir ./data
+```
+
+The script writes `configs/baseline.yaml` plus the four robust pivot configs used by AutoResearch. It currently leaves authenticated ScrollPrize/public-mirror downloads as explicit TODO stubs and records the expected prepared NPZ paths in generated YAML.
 
 Install optional public-data ingestion support with:
 
