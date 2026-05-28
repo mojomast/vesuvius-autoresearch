@@ -299,14 +299,16 @@ def _fixed_threshold_failure_reason(fixed_row: Dict[str, float], selected_row: D
 def _threshold_risk_summary(threshold_rows: list[Dict[str, float]], fixed_row: Dict[str, float], selected_row: Dict[str, float], val_positive_rate: float, max_ratio: Any = None, min_ratio: Any = None) -> Dict[str, Any]:
     unconstrained = max(threshold_rows, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if threshold_rows else None
     caps: Dict[str, Any] = {}
-    cap_values = [2.0, 3.0, 3.5]
+    cap_values = [2.0, 2.5, 3.0, 3.5]
     configured_max = float(max_ratio) if max_ratio is not None else None
     configured_min = float(min_ratio) if min_ratio is not None else None
     if configured_max is not None and configured_max not in cap_values:
         cap_values.append(configured_max)
     cap_comparisons: list[Dict[str, Any]] = []
     selected_f1 = max(float(selected_row["f1"]), 1e-12)
+    selected_f05 = max(float(selected_row["f05"]), 1e-12)
     unconstrained_f1 = max(float((unconstrained or selected_row)["f1"]), 1e-12)
+    unconstrained_f05 = max(float((unconstrained or selected_row)["f05"]), 1e-12)
     for cap in cap_values:
         eligible = [row for row in threshold_rows if row["pred_positive_rate"] / max(val_positive_rate, 1e-12) <= cap]
         best = max(eligible, key=lambda row: (row["f1"], row["precision"], -row["pred_positive_rate"])) if eligible else None
@@ -319,7 +321,9 @@ def _threshold_risk_summary(threshold_rows: list[Dict[str, float]], fixed_row: D
             "eligible_threshold_count": len(eligible),
             "best": summary,
             "f1_retained_vs_selected": (float(best["f1"]) / selected_f1) if best else None,
+            "f05_retained_vs_selected": (float(best["f05"]) / selected_f05) if best else None,
             "f1_retained_vs_unconstrained": (float(best["f1"]) / unconstrained_f1) if best else None,
+            "f05_retained_vs_unconstrained": (float(best["f05"]) / unconstrained_f05) if best else None,
         })
     selected_ratio = selected_row["pred_positive_rate"] / max(val_positive_rate, 1e-12)
     return {
@@ -331,7 +335,7 @@ def _threshold_risk_summary(threshold_rows: list[Dict[str, float]], fixed_row: D
         "configured_min_pred_positive_rate_ratio": configured_min,
         "configured_cap_constrained_selection": configured_max is not None and selected_ratio <= configured_max + 1e-9,
         "cap_comparisons": cap_comparisons,
-        "cap_binding": bool(abs(selected_ratio - 3.0) <= 0.15 or abs(selected_ratio - 3.5) <= 0.15 or abs(selected_ratio - 2.0) <= 0.15),
+        "cap_binding": bool(any(abs(selected_ratio - cap) <= 0.15 for cap in (2.0, 2.5, 3.0, 3.5))),
         "selected_pred_to_val_ratio": float(selected_ratio),
     }
 
@@ -346,7 +350,7 @@ def _threshold_risk_markdown(summary: Dict[str, Any] | None) -> str:
     lines.append(f"- Selected threshold: {float(selected.get('threshold') or 0.0):.3f}; pred/val ratio {float(selected.get('pred_to_val_ratio') or 0.0):.3f}x; F1 {float(selected.get('f1') or 0.0):.6f}\n")
     lines.append(f"- Fixed 0.5 threshold F1: {float(fixed.get('f1') or 0.0):.6f}\n")
     lines.append(f"- Best unconstrained F1: {float(unconstrained.get('f1') or 0.0):.6f}\n")
-    for key, label in (("best_under_prratio2p0", "<=2.0x"), ("best_under_prratio3p0", "<=3.0x"), ("best_under_prratio3p5", "<=3.5x")):
+    for key, label in (("best_under_prratio2p0", "<=2.0x"), ("best_under_prratio2p5", "<=2.5x"), ("best_under_prratio3p0", "<=3.0x"), ("best_under_prratio3p5", "<=3.5x")):
         row = summary.get(key) or {}
         if row:
             lines.append(f"- Best under {label}: threshold {float(row.get('threshold') or 0.0):.3f}; ratio {float(row.get('pred_to_val_ratio') or 0.0):.3f}x; F1 {float(row.get('f1') or 0.0):.6f}\n")

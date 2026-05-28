@@ -70,6 +70,28 @@ def _top_blockers(blocker_counts: dict[str, Any], limit: int = 10) -> list[dict[
     return [{"code": code, "count": count} for code, count in sorted(items, key=lambda item: (-item[1], item[0]))[:limit]]
 
 
+def _top_calibration_mining_action(mining: dict[str, Any]) -> dict[str, Any] | None:
+    decisions = [item for item in mining.get("calibration_mining_decisions") or [] if isinstance(item, dict)]
+    if not decisions:
+        return None
+    priority = {"tighten_positive_rate_cap": 0, "mine_hard_negatives": 1, "review_threshold_risk": 2}
+    action = dict(min(decisions, key=lambda item: priority.get(str(item.get("action")), 99)))
+    commands = [item for item in mining.get("mine_commands") or [] if isinstance(item, dict)]
+    matching = next((item for item in commands if str(item.get("segment_id")) == str(action.get("segment_id"))), None)
+    if matching is None and action.get("action") == "mine_hard_negatives" and commands:
+        matching = commands[0]
+    if matching is not None:
+        action["command_text"] = matching.get("command_text")
+        action["mine_output"] = matching.get("mine_output")
+    cap_commands = [item for item in mining.get("cap_comparison_commands") or [] if isinstance(item, dict)]
+    cap_matching = next((item for item in cap_commands if str(item.get("segment_id")) == str(action.get("segment_id"))), None)
+    if cap_matching is None and cap_commands:
+        cap_matching = cap_commands[0]
+    if cap_matching is not None:
+        action["cap_comparison_command_text"] = cap_matching.get("command_text")
+    return action
+
+
 def _dashboard_summary(root: Path) -> dict[str, Any]:
     summary: dict[str, Any] = {"snapshot_contract_available": False}
     try:
@@ -85,6 +107,7 @@ def _dashboard_summary(root: Path) -> dict[str, Any]:
     blocker_counts = decision.get("blocker_counts", {}) if isinstance(decision, dict) else {}
     promotion_gate = decision.get("promotion_gate", {}) if isinstance(decision, dict) else {}
     candidate_evidence = decision.get("candidate_evidence", {}) if isinstance(decision, dict) else {}
+    mining = snapshot.get("mining", {}) if isinstance(snapshot.get("mining"), dict) else {}
     summary.update(
         {
             "snapshot_contract_available": True,
@@ -97,6 +120,8 @@ def _dashboard_summary(root: Path) -> dict[str, Any]:
             "candidate_evidence": candidate_evidence,
             "promotion_actions": decision.get("promotion_actions", []) if isinstance(decision, dict) else [],
             "top_promotion_blockers": _top_blockers(blocker_counts if isinstance(blocker_counts, dict) else {}),
+            "mining": mining,
+            "top_calibration_mining_action": _top_calibration_mining_action(mining),
         }
     )
     return summary
@@ -168,6 +193,26 @@ def render_markdown(report: dict[str, Any]) -> str:
     if blockers:
         lines.extend(["", "## Top Promotion Blockers"])
         lines.extend(f"- `{item['code']}`: {item['count']}" for item in blockers)
+    top_action = dashboard.get("top_calibration_mining_action") or {}
+    if top_action:
+        lines.extend(["", "## Top Calibration/Mining/Cap Action"])
+        lines.append(f"- Action: `{top_action.get('action')}`")
+        if top_action.get("segment_id"):
+            lines.append(f"- Segment: `{top_action.get('segment_id')}`")
+        if top_action.get("target_max_pred_positive_rate_ratio") is not None:
+            lines.append(f"- Target cap: {top_action.get('target_max_pred_positive_rate_ratio')}x")
+        if top_action.get("reason"):
+            lines.append(f"- Reason: {top_action.get('reason')}")
+        if top_action.get("selected_pred_to_val_ratio") is not None:
+            lines.append(f"- Selected pred/val ratio: {top_action.get('selected_pred_to_val_ratio')}")
+        if top_action.get("f1_retained_fraction") is not None:
+            lines.append(f"- F1 retained: {top_action.get('f1_retained_fraction')}")
+        if top_action.get("f05_retained_fraction") is not None:
+            lines.append(f"- F0.5 retained: {top_action.get('f05_retained_fraction')}")
+        if top_action.get("command_text"):
+            lines.append(f"- Command: `{top_action.get('command_text')}`")
+        if top_action.get("cap_comparison_command_text"):
+            lines.append(f"- Cap comparison: `{top_action.get('cap_comparison_command_text')}`")
     return "\n".join(lines) + "\n"
 
 

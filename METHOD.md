@@ -9,7 +9,7 @@ Vesuvius AutoResearch is a small, CPU-safe research loop for ink-detection exper
 3. Evaluate by threshold sweep, average precision, calibration diagnostics, and positive-rate ratio.
 4. Run leave-one-segment-out validation for robust candidates.
 5. Run full-tile inference on candidate and weak-fold segments.
-6. Use dashboard quality verdicts to select next actions such as calibration or fold-safe hard-negative mining.
+6. Use dashboard quality verdicts and read-only evidence packages to select next actions such as cap calibration, full-tile regression review, or fold-safe hard-negative mining.
 
 ## Models
 
@@ -47,6 +47,14 @@ Use the dry-run planner before retraining:
 
 The planner does not write mined data. It reads dashboard evidence, recommends bounded mining commands for overpredicting full-tile outputs, inventories existing `data/mined/**/*.npz` files, rejects held-out segment leakage, and previews fold-safe `dataset.extra_train_npzs` updates. Mining commands use a fresh `experiments/runs/<run_id>/mining_refresh_<segment_id>` output directory and do not include `--overwrite`, so existing full-tile evidence remains intact.
 
+Before mining or retraining, run the read-only next-move evidence package:
+
+```bash
+.venv/bin/python scripts/package_next_move_evidence.py --markdown
+```
+
+The package composes the dashboard snapshot, planner output, read-only cap comparisons, and optional full-tile artifact pairs. It recommends cap tightening only when all planner-suggested cap comparisons produce retained-cap evidence, surfaces blockers when cap reports fail, and marks embedded mining commands as artifact-writing review-only actions.
+
 Planner output is fold-scoped. `fold_safe_extra_train_npzs_by_heldout` shows which mined NPZs are eligible or rejected for each held-out segment, while top-level `eligible_extra_train_npzs` remains the active weak-fold shortcut. Use `--base-config` and `--heldout-segment` to render a preview-only YAML config in JSON output; if the held-out override does not match the train/val NPZ paths, `config_preview.valid` is false and the YAML preview is omitted.
 
 ## Hallucination Controls
@@ -60,4 +68,4 @@ Planner output is fold-scoped. `fold_safe_extra_train_npzs_by_heldout` shows whi
 
 The current promotion candidate is a research baseline, not a proven decode. Current failures are dominated by overprediction and weak fixed-threshold behavior on full-tile outputs. Treat dashboard next actions as the source of truth for the next research step.
 
-When `threshold_risk_summary.best_under_prratio2p0` preserves roughly 90% of selected F1, tighten the positive-rate cap to `2.0x` before mining or broader retraining. If lower caps collapse F1, prefer fold-safe hard-negative mining or a bounded positive-rate-loss/sampling adjustment rather than another unconstrained threshold sweep.
+Pick the strictest positive-rate cap that preserves about 95% of selected F1 and F0.5, considering intermediate caps such as `2.5x` before mining or broader retraining. If lower caps collapse F1 or F0.5, prefer fold-safe hard-negative mining or a bounded positive-rate-loss/sampling adjustment rather than another unconstrained threshold sweep.

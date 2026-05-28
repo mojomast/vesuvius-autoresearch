@@ -134,12 +134,30 @@ class HardNegativePlannerTest(unittest.TestCase):
             full_tile.mkdir(parents=True)
             metrics = full_tile / "metrics.json"
             metrics.write_text("{}")
-            snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [{"path": str(metrics), "segment_id": "seg-a", "pred_positive_rate": 0.3, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.0, "threshold_risk_summary": {"selected": {"f1": 0.30, "pred_to_val_ratio": 3.0}, "best_under_prratio2p0": {"f1": 0.28, "pred_to_val_ratio": 1.9}, "best_under_prratio3p0": {"f1": 0.30, "pred_to_val_ratio": 2.9}}}]}}}}
+            snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [{"path": str(metrics), "segment_id": "seg-a", "pred_positive_rate": 0.3, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.0, "threshold_risk_summary": {"selected": {"f1": 0.30, "pred_to_val_ratio": 3.0}, "best_under_prratio2p0": {"f1": 0.29, "pred_to_val_ratio": 1.9}, "best_under_prratio3p0": {"f1": 0.30, "pred_to_val_ratio": 2.9}}}]}}}}
 
             plan = build_hard_negative_plan(root, snapshot)
 
         self.assertEqual(plan["calibration_mining_decisions"][0]["action"], "tighten_positive_rate_cap")
         self.assertEqual(plan["mine_commands"], [])
+
+    def test_plan_emits_read_only_cap_comparison_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "experiments" / "runs" / "run1"
+            full_tile = artifact / "full_tile_seg-a"
+            full_tile.mkdir(parents=True)
+            metrics = full_tile / "metrics.json"
+            metrics.write_text("{}")
+            (full_tile / "metrics_by_threshold.csv").write_text("threshold,precision,recall,f05,f1,pred_positive_rate\n")
+            snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [{"path": str(metrics), "segment_id": "seg-a", "pred_positive_rate": 0.3, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.0, "threshold_risk_summary": {"selected": {"f1": 0.30, "f05": 0.20, "pred_to_val_ratio": 3.0}, "best_under_prratio3p0": {"f1": 0.30, "f05": 0.20, "pred_to_val_ratio": 2.9}}}]}}}}
+
+            plan = build_hard_negative_plan(root, snapshot)
+
+        self.assertEqual(plan["cap_comparison_commands"][0]["segment_id"], "seg-a")
+        self.assertFalse(plan["cap_comparison_commands"][0]["writes_artifacts"])
+        self.assertIn("scripts/compare_threshold_caps.py", plan["cap_comparison_commands"][0]["command_text"])
+        self.assertIn("--min-retained-f05", plan["calibration_mining_decisions"][0]["cap_comparison_command_text"])
 
     def test_refreshed_threshold_risk_supersedes_stale_same_artifact_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +180,41 @@ class HardNegativePlannerTest(unittest.TestCase):
         self.assertEqual([item["action"] for item in plan["calibration_mining_decisions"]], ["tighten_positive_rate_cap"])
         self.assertEqual(plan["mine_commands"], [])
 
+    def test_threshold_risk_uses_intermediate_cap_before_mining(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "experiments" / "runs" / "run1"
+            full_tile = artifact / "full_tile_seg-a"
+            full_tile.mkdir(parents=True)
+            metrics = full_tile / "metrics.json"
+            metrics.write_text("{}")
+            snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [{"path": str(metrics), "segment_id": "seg-a", "pred_positive_rate": 0.3, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.0, "threshold_risk_summary": {"selected": {"f1": 0.30, "pred_to_val_ratio": 3.0}, "best_under_prratio2p0": {"f1": 0.20, "pred_to_val_ratio": 1.9}, "best_under_prratio2p5": {"f1": 0.286, "pred_to_val_ratio": 2.4}, "best_under_prratio3p0": {"f1": 0.30, "pred_to_val_ratio": 2.9}}}]}}}}
+
+            plan = build_hard_negative_plan(root, snapshot)
+
+        decision = plan["calibration_mining_decisions"][0]
+        self.assertEqual(decision["action"], "tighten_positive_rate_cap")
+        self.assertEqual(decision["target_max_pred_positive_rate_ratio"], 2.5)
+        self.assertEqual(plan["mine_commands"], [])
+
+    def test_threshold_risk_requires_f05_retention_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "experiments" / "runs" / "run1"
+            full_tile = artifact / "full_tile_seg-a"
+            full_tile.mkdir(parents=True)
+            metrics = full_tile / "metrics.json"
+            metrics.write_text("{}")
+            snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [{"path": str(metrics), "segment_id": "seg-a", "pred_positive_rate": 0.3, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.0, "threshold_risk_summary": {"selected": {"f1": 0.30, "f05": 0.30, "pred_to_val_ratio": 3.0}, "best_under_prratio2p5": {"f1": 0.29, "f05": 0.20, "pred_to_val_ratio": 2.4}, "best_under_prratio3p0": {"f1": 0.30, "f05": 0.29, "pred_to_val_ratio": 2.9}}}]}}}}
+
+            plan = build_hard_negative_plan(root, snapshot)
+
+        decision = plan["calibration_mining_decisions"][0]
+        self.assertEqual(decision["action"], "tighten_positive_rate_cap")
+        self.assertEqual(decision["target_max_pred_positive_rate_ratio"], 3.0)
+        self.assertLess(decision["f05_retained_fraction"], 1.0)
+        self.assertEqual(plan["mine_commands"], [])
+
     def test_explicit_mine_action_still_emits_command_when_cap_tightening_is_primary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -177,7 +230,7 @@ class HardNegativePlannerTest(unittest.TestCase):
                 "val_positive_rate": 0.1,
                 "fixed_threshold_f1": 0.0,
                 "quality_next_actions": [{"id": "mine_hard_negatives"}],
-                "threshold_risk_summary": {"selected": {"f1": 0.30, "pred_to_val_ratio": 3.0}, "best_under_prratio2p0": {"f1": 0.28}},
+                "threshold_risk_summary": {"selected": {"f1": 0.30, "pred_to_val_ratio": 3.0}, "best_under_prratio2p0": {"f1": 0.29}},
             }
             snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [tile]}}}}
 

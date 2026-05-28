@@ -222,6 +222,7 @@ def _tile_needs_mining(tile: dict[str, Any], ratio_threshold: float) -> bool:
 
 
 def _threshold_risk_decision(tile: dict[str, Any]) -> dict[str, Any]:
+    min_retained_f1 = 0.95
     summary = tile.get("threshold_risk_summary") if isinstance(tile.get("threshold_risk_summary"), dict) else {}
     selected = summary.get("selected") if isinstance(summary.get("selected"), dict) else {}
     selected_f1 = float(selected.get("f1") or tile.get("val_f1") or 0.0)
@@ -229,21 +230,63 @@ def _threshold_risk_decision(tile: dict[str, Any]) -> dict[str, Any]:
     if not summary or selected_f1 <= 0.0:
         return {"action": "review_threshold_risk", "reason": "missing_threshold_risk_summary", "selected_pred_to_val_ratio": selected_ratio}
 
-    def kept_fraction(key: str) -> float | None:
+    def kept_fraction(key: str, metric: str) -> float | None:
         row = summary.get(key) if isinstance(summary.get(key), dict) else None
         if not row:
             return None
-        return float(row.get("f1") or 0.0) / max(selected_f1, 1e-12)
+        selected_value = selected.get(metric)
+        if selected_value is None:
+            return None
+        return float(row.get(metric) or 0.0) / max(float(selected_value), 1e-12)
 
-    keep2 = kept_fraction("best_under_prratio2p0")
-    keep3 = kept_fraction("best_under_prratio3p0")
-    if keep2 is not None and keep2 >= 0.90:
-        return {"action": "tighten_positive_rate_cap", "target_max_pred_positive_rate_ratio": 2.0, "reason": "prratio2_preserves_selected_f1", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_fraction": keep2}
-    if keep3 is not None and keep3 >= 0.90:
-        return {"action": "tighten_positive_rate_cap", "target_max_pred_positive_rate_ratio": 3.0, "reason": "prratio3_preserves_selected_f1", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_fraction": keep3}
+    def preserves_signal(f1_fraction: float | None, f05_fraction: float | None) -> bool:
+        return f1_fraction is not None and f1_fraction >= min_retained_f1 and (f05_fraction is None or f05_fraction >= min_retained_f1)
+
+    keep2 = kept_fraction("best_under_prratio2p0", "f1")
+    keep25 = kept_fraction("best_under_prratio2p5", "f1")
+    keep3 = kept_fraction("best_under_prratio3p0", "f1")
+    keep2_f05 = kept_fraction("best_under_prratio2p0", "f05")
+    keep25_f05 = kept_fraction("best_under_prratio2p5", "f05")
+    keep3_f05 = kept_fraction("best_under_prratio3p0", "f05")
+    if preserves_signal(keep2, keep2_f05):
+        return {"action": "tighten_positive_rate_cap", "target_max_pred_positive_rate_ratio": 2.0, "reason": "prratio2_preserves_selected_f1_f05", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_fraction": keep2, "f05_retained_fraction": keep2_f05}
+    if preserves_signal(keep25, keep25_f05):
+        return {"action": "tighten_positive_rate_cap", "target_max_pred_positive_rate_ratio": 2.5, "reason": "prratio2p5_preserves_selected_f1_f05", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_fraction": keep25, "f05_retained_fraction": keep25_f05}
+    if preserves_signal(keep3, keep3_f05):
+        return {"action": "tighten_positive_rate_cap", "target_max_pred_positive_rate_ratio": 3.0, "reason": "prratio3_preserves_selected_f1_f05", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_fraction": keep3, "f05_retained_fraction": keep3_f05}
     if summary.get("cap_binding") or (selected_ratio is not None and float(selected_ratio) >= 2.0):
-        return {"action": "mine_hard_negatives", "reason": "lower_ratio_caps_reduce_selected_f1", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_under_prratio2": keep2, "f1_retained_under_prratio3": keep3}
-    return {"action": "review_threshold_risk", "reason": "no_ratio_pressure", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_under_prratio2": keep2, "f1_retained_under_prratio3": keep3}
+        return {"action": "mine_hard_negatives", "reason": "lower_ratio_caps_reduce_selected_f1_or_f05", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_under_prratio2": keep2, "f1_retained_under_prratio2p5": keep25, "f1_retained_under_prratio3": keep3, "f05_retained_under_prratio2": keep2_f05, "f05_retained_under_prratio2p5": keep25_f05, "f05_retained_under_prratio3": keep3_f05}
+    return {"action": "review_threshold_risk", "reason": "no_ratio_pressure", "selected_pred_to_val_ratio": selected_ratio, "f1_retained_under_prratio2": keep2, "f1_retained_under_prratio2p5": keep25, "f1_retained_under_prratio3": keep3, "f05_retained_under_prratio2": keep2_f05, "f05_retained_under_prratio2p5": keep25_f05, "f05_retained_under_prratio3": keep3_f05}
+
+
+def _cap_comparison_command(tile: dict[str, Any], project_root: Path) -> dict[str, Any] | None:
+    segment_id = tile.get("segment_id") or tile.get("heldout_segment")
+    metrics_path = Path(str(tile.get("path") or ""))
+    if metrics_path.name != "metrics.json":
+        return None
+    if not metrics_path.is_absolute():
+        metrics_path = project_root / metrics_path
+    threshold_csv = metrics_path.with_name("metrics_by_threshold.csv")
+    if not metrics_path.exists() or not threshold_csv.exists():
+        return None
+    command = [
+        ".venv/bin/python", "scripts/compare_threshold_caps.py",
+        "--metrics", _rel_path(metrics_path, project_root),
+        "--caps", "2.0,2.5,3.0,3.5",
+        "--min-retained-f1", "0.95",
+        "--min-retained-f05", "0.95",
+        "--markdown",
+    ]
+    return {
+        "id": f"compare_caps_{segment_id or metrics_path.parent.name}",
+        "segment_id": str(segment_id) if segment_id else None,
+        "metrics_json": _rel_path(metrics_path, project_root),
+        "threshold_csv": _rel_path(threshold_csv, project_root),
+        "command": command,
+        "command_text": " ".join(command),
+        "writes_artifacts": False,
+        "safe_to_execute_from_dashboard": True,
+    }
 
 
 def build_hard_negative_plan(project_root: Path, snapshot: dict[str, Any], *, max_commands: int = 6, ratio_threshold: float = 2.0, target_config: str = "configs/robust_hard_negative_prratio2p0_followup.yaml", heldout_segment: str | None = None, base_config: Path | None = None) -> dict[str, Any]:
@@ -255,13 +298,20 @@ def build_hard_negative_plan(project_root: Path, snapshot: dict[str, Any], *, ma
     fold_map = _fold_eligibility_map(inventory, fold_ids)
 
     mine_commands: list[dict[str, Any]] = []
+    cap_comparison_commands: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
     seen_outputs: set[str] = set()
+    seen_cap_metrics: set[str] = set()
     for tile in _candidate_tiles(snapshot):
         segment_id = tile.get("segment_id") or tile.get("heldout_segment")
         if not segment_id:
             continue
         decision = {**_threshold_risk_decision(tile), "segment_id": str(segment_id)}
+        cap_command = _cap_comparison_command(tile, project_root)
+        if cap_command is not None and cap_command["metrics_json"] not in seen_cap_metrics:
+            seen_cap_metrics.add(str(cap_command["metrics_json"]))
+            cap_comparison_commands.append(cap_command)
+            decision["cap_comparison_command_text"] = cap_command["command_text"]
         decisions.append(decision)
         explicit_mine = any(action.get("id") == "mine_hard_negatives" for action in tile.get("quality_next_actions") or [] if isinstance(action, dict))
         if not _tile_needs_mining(tile, ratio_threshold) or (decision.get("action") == "tighten_positive_rate_cap" and not explicit_mine):
@@ -348,6 +398,7 @@ def build_hard_negative_plan(project_root: Path, snapshot: dict[str, Any], *, ma
         "ratio_threshold": ratio_threshold,
         "mined_inventory": inventory,
         "mine_commands": mine_commands,
+        "cap_comparison_commands": cap_comparison_commands,
         "calibration_mining_decisions": decisions,
         "fold_safe_config_patches": patches,
         "fold_safe_extra_train_npzs_by_heldout": fold_map,

@@ -60,13 +60,32 @@ For non-dry-run seed repeats, prefer `--execution-mode fold-major --limit-worker
 
 ## Full-Tile Inference And Fold-Safe Mining
 
-Before writing any mining artifacts, generate a dry-run plan from the current dashboard snapshot:
+Before writing any mining artifacts, package the current read-only next-move evidence and generate a dry-run plan from the current dashboard snapshot:
+
+```bash
+.venv/bin/python scripts/package_next_move_evidence.py --markdown
+```
+
+This package reuses existing dashboard/full-tile artifacts. It does not write run, mined-data, log, DB, `.npy`, `.npz`, or `.pt` outputs. It synthesizes whether the next move is promotion review, cap tightening, full-tile regression review, or fold-safe mining review.
 
 ```bash
 .venv/bin/python scripts/plan_hard_negative_retrain.py --pretty
 ```
 
-The planner emits copyable `scripts/infer_full_tile.py --mine-output ...` commands, currently eligible mined NPZs, rejected held-out leaks, and preview-only config patches for `dataset.extra_train_npzs`. Planner mining commands write under `data/mined/` and a fresh `experiments/runs/<run_id>/mining_refresh_<segment_id>` output directory; they do not include `--overwrite` and must not reuse an existing full-tile metrics directory.
+The planner emits read-only `scripts/compare_threshold_caps.py` cap comparison commands, copyable `scripts/infer_full_tile.py --mine-output ...` mining commands, currently eligible mined NPZs, rejected held-out leaks, and preview-only config patches for `dataset.extra_train_npzs`. Planner mining commands write under `data/mined/` and a fresh `experiments/runs/<run_id>/mining_refresh_<segment_id>` output directory; they do not include `--overwrite` and must not reuse an existing full-tile metrics directory.
+
+Review positive-rate caps from existing full-tile threshold sweeps without writing artifacts:
+
+```bash
+.venv/bin/python scripts/compare_threshold_caps.py \
+  --metrics experiments/runs/<run_id>/full_tile_<segment_id>/metrics.json \
+  --caps 2.0,2.5,3.0,3.5 \
+  --min-retained-f1 0.95 \
+  --min-retained-f05 0.95 \
+  --markdown
+```
+
+`scripts/recompute_loo_threshold_cap.py` also reuses existing threshold CSVs, but it writes recomputed JSONL/summary outputs when `--output-jsonl`, `--summary-json`, or sweep output paths are supplied. Keep those generated logs outside commits.
 
 Preview a fold-specific config without writing files:
 

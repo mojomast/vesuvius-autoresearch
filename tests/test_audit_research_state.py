@@ -106,6 +106,54 @@ class AuditResearchStateTest(unittest.TestCase):
         self.assertIn("Run full-tile on weak fold weakseg", markdown)
         self.assertIn("scripts/infer_full_tile.py", markdown)
 
+    def test_audit_surfaces_top_cap_tightening_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = {
+                "schema_version": "vesuvius-dashboard/v1",
+                "research_summary": {"decision": {}},
+                "mining": {
+                    "calibration_mining_decisions": [
+                        {"action": "mine_hard_negatives", "segment_id": "seg-b", "reason": "flooding"},
+                        {"action": "tighten_positive_rate_cap", "segment_id": "seg-a", "target_max_pred_positive_rate_ratio": 2.5, "reason": "prratio2p5_preserves_selected_f1_f05", "selected_pred_to_val_ratio": 2.9, "f1_retained_fraction": 0.96, "f05_retained_fraction": 0.97},
+                    ],
+                    "cap_comparison_commands": [{"segment_id": "seg-a", "command_text": ".venv/bin/python scripts/compare_threshold_caps.py --metrics metrics.json --markdown"}],
+                },
+            }
+            with mock.patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+                report = audit_research_state(root)
+
+        action = report["dashboard"]["top_calibration_mining_action"]
+        markdown = render_markdown(report)
+
+        self.assertEqual(action["action"], "tighten_positive_rate_cap")
+        self.assertEqual(action["target_max_pred_positive_rate_ratio"], 2.5)
+        self.assertIn("Top Calibration/Mining/Cap Action", markdown)
+        self.assertIn("Target cap: 2.5x", markdown)
+        self.assertIn("F0.5 retained: 0.97", markdown)
+        self.assertIn("scripts/compare_threshold_caps.py", markdown)
+
+    def test_audit_surfaces_mining_command_for_top_mine_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = {
+                "schema_version": "vesuvius-dashboard/v1",
+                "research_summary": {"decision": {}},
+                "mining": {
+                    "calibration_mining_decisions": [{"action": "mine_hard_negatives", "segment_id": "seg-a", "reason": "lower_ratio_caps_reduce_selected_f1"}],
+                    "mine_commands": [{"segment_id": "seg-a", "command_text": ".venv/bin/python scripts/infer_full_tile.py --mine-output data/mined/seg-a.npz", "mine_output": "data/mined/seg-a.npz"}],
+                },
+            }
+            with mock.patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+                report = audit_research_state(root)
+
+        action = report["dashboard"]["top_calibration_mining_action"]
+        markdown = render_markdown(report)
+
+        self.assertEqual(action["action"], "mine_hard_negatives")
+        self.assertIn("--mine-output", action["command_text"])
+        self.assertIn("scripts/infer_full_tile.py", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,75 @@ python3 scripts/audit_research_state.py
 python3 scripts/audit_research_state.py --markdown
 ```
 
+Package the current read-only next-move evidence in one artifact-reuse report:
+
+```bash
+python3 scripts/package_next_move_evidence.py \
+  --caps 1.75,2.0,2.5,3.0,3.5 \
+  --markdown
+```
+
+This composes the dashboard snapshot, hard-negative/cap planner, planner-suggested cap comparisons, and optional full-tile pairs without writing run, mined-data, or log artifacts.
+The report includes a synthesized `Recommended Next Move` so reviewers can distinguish promotion review, cap tightening, full-tile regression review, and fold-safe mining review without rerunning training.
+Cap tightening is all-artifact gated: every planner-suggested cap comparison must produce a retained-cap recommendation, and any mining command is marked with command-level artifact-writing and dashboard-safety fields.
+
+Compare seed-repeat LOO summaries with explicit gates before spending full-tile budget:
+
+```bash
+python3 scripts/compare_loo_summaries.py \
+  --candidate logs/new_candidate.summary.json \
+  --baseline current_best=logs/current_best.summary.json \
+  --min-median-over-seeds-f1 0.1788 \
+  --min-mean-ap 0.1374 \
+  --min-worst-fold-f1 0.0594 \
+  --markdown
+```
+
+Package single-seed versus ensemble full-tile evidence from existing artifacts before claiming ensemble lift:
+
+```bash
+python3 scripts/compare_full_tile_metrics.py \
+  --pair 20230522181603=experiments/runs/<single_seed_run>/full_tile_20230522181603/metrics.json,experiments/runs/<ensemble_run>/full_tile_20230522181603/metrics.json \
+  --pair 20230530212931=experiments/runs/<single_seed_run>/full_tile_20230530212931/metrics.json,experiments/runs/<ensemble_run>/full_tile_20230530212931/metrics.json \
+  --fail-on-core-regression \
+  --markdown
+```
+
+This command is read-only. It reports per-segment and aggregate deltas for F1, F0.5, AP, AP/prevalence lift, pred/val ratio, and calibration so ensemble evidence stays tied to whole-segment artifacts instead of generated claims.
+
+Compare positive-rate caps from an existing full-tile `metrics_by_threshold.csv` without retraining:
+
+```bash
+python3 scripts/compare_threshold_caps.py \
+  --metrics experiments/runs/<run>/full_tile_<segment>/metrics.json \
+  --caps 2.0,2.5,3.0,3.5 \
+  --min-retained-f1 0.95 \
+  --min-retained-f05 0.95 \
+  --markdown
+```
+
+Recompute an existing LOO JSONL under a new cap using saved per-run threshold CSVs:
+
+```bash
+python3 scripts/recompute_loo_threshold_cap.py \
+  --input-jsonl logs/current_candidate_loo.jsonl \
+  --output-jsonl logs/current_candidate_prratio2p5_recomputed_loo.jsonl \
+  --summary-json logs/current_candidate_prratio2p5_recomputed_loo.summary.json \
+  --cap 2.5
+```
+
+For faster cap selection, sweep multiple caps in one artifact-reuse pass:
+
+```bash
+python3 scripts/recompute_loo_threshold_cap.py \
+  --input-jsonl logs/current_candidate_loo.jsonl \
+  --caps 2.0,2.25,2.5,2.75,3.0 \
+  --output-dir logs/cap_sweeps \
+  --output-prefix current_candidate \
+  --aggregate-json logs/cap_sweeps/current_candidate.aggregate.json \
+  --aggregate-markdown logs/cap_sweeps/current_candidate.aggregate.md
+```
+
 See `docs/dashboard.md` for data sources, safety rules, and the parallel-development workflow for keeping standalone and host dashboards aligned.
 
 Useful local sanity commands:

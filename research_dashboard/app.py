@@ -924,6 +924,7 @@ HTML = """<!doctype html>
         return;
       }
       const commands = plan.mine_commands || [];
+      const capCommands = plan.cap_comparison_commands || [];
       const eligible = plan.eligible_extra_train_npzs || [];
       const rejected = plan.rejected_extra_train_npzs || [];
       const decisions = plan.calibration_mining_decisions || [];
@@ -942,10 +943,13 @@ HTML = """<!doctype html>
       const configPreview = plan.config_preview || {};
       const previewWarnings = configPreview.warnings || [];
       const first = commands[0] || {};
+      const firstCap = capCommands[0] || {};
       container.innerHTML = `
         <div class="milestone-item"><span class="milestone-label">Candidate</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(plan.candidate_run_id || 'unknown')}</span></div>
+        <div class="milestone-item"><span class="milestone-label">Cap comparison commands</span><span class="indicator-badge ${capCommands.length ? 'badge-success' : 'badge-warning'}">${esc(capCommands.length)}</span></div>
         <div class="milestone-item"><span class="milestone-label">Mine commands</span><span class="indicator-badge ${commands.length ? 'badge-warning' : 'badge-success'}">${esc(commands.length)}</span></div>
         <div class="milestone-item"><span class="milestone-label">Top calibration action</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(topDecision.action || 'none')} · ${esc(topDecision.reason || 'no decision')}</span></div>
+        ${topDecision.cap_comparison_command_text ? `<div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);">Cap comparison: read-only, dashboard-safe threshold evidence command.</div>` : ''}
         <div class="milestone-item"><span class="milestone-label">Mined NPZs</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((plan.mined_inventory || {}).count || 0)} found · ${esc(eligible.length)} eligible · ${esc(rejected.length)} rejected</span></div>
         <div class="milestone-item"><span class="milestone-label">Inventory status counts</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">eligible ${esc(statusCounts.eligible || 0)} · review ${esc(statusCounts.review || 0)} · reject ${esc(statusCounts.reject || 0)} · warnings ${esc(warningCount)}</span></div>
         <div class="milestone-item"><span class="milestone-label">Fold-safe summary</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(foldEntries.length)} heldout · ${esc(foldEligible)} eligible · ${esc(foldRejected)} rejected</span></div>
@@ -953,6 +957,7 @@ HTML = """<!doctype html>
         ${previewWarnings.length ? `<div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);">Config preview warnings: ${esc(previewWarnings.join(', '))}</div>` : ''}
         <div class="milestone-item"><span class="milestone-label">Ratio trigger</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${fmt(plan.ratio_threshold, 2)}x</span></div>
         <div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);margin-top:0.35rem;">${esc(plan.next_step || 'Run mining, retrain fold-safe, validate full-tile quality.')}</div>
+        ${firstCap.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(firstCap.command_text).replace(/'/g, '&#39;')}')">Copy read-only cap comparison</button>` : ''}
         ${first.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(first.command_text).replace(/'/g, '&#39;')}')">Copy top mine command</button>` : ''}
       `;
     }

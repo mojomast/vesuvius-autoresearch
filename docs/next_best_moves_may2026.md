@@ -88,7 +88,7 @@ Metric interpretation:
 
 - `average_precision` measures ranking quality across thresholds. Its random baseline is approximately the positive-label prevalence. AP around `0.09` on a segment with `0.05` prevalence is useful signal; AP around `0.10` on `0.087` prevalence is only a small lift.
 - `fixed_threshold_f1` at `0.5` is currently diagnostic only. Recent calibrated full-tile panels often have `fixed_threshold_f1=0.0` because probability maxima are below `0.5`; best operating thresholds are selected by sweep and positive-rate constraints near `0.28-0.34`.
-- `prratio3` is the stricter overprediction-control setting. `prratio3p5` is the current balanced setting. The original `4x` cap remains a recall/F1 reference, not a default promotion target when full-tile runs ride the cap.
+- `prratio2p5` is the intermediate safety setting when `2.0x` loses too much recall but still avoids the floodier `3.0x`/`3.5x` range. `prratio3` is stricter than `3.5x` while recovering more recall than `2.5x`. The original `4x` cap remains a recall/F1 reference, not a default promotion target when full-tile runs ride the cap.
 
 ## 4. TTA And Seed Ensembling
 
@@ -99,6 +99,18 @@ Add ensembling only after the single-seed LOO gate is stable. The initial ensemb
 - Per-fold threshold selection from the validation sweep, not a threshold copied from another fold.
 
 Report ensemble lift against the best individual seed on the same tiled folds. If lift comes mainly from increased prediction rate, inspect precision and probability quantiles before promotion.
+
+Before packaging ensemble evidence, compare the linked single-seed and ensemble full-tile artifacts without writing new outputs:
+
+```bash
+python3 scripts/compare_full_tile_metrics.py \
+  --pair 20230522181603=experiments/runs/<single_seed_run>/full_tile_20230522181603/metrics.json,experiments/runs/<ensemble_run>/full_tile_20230522181603/metrics.json \
+  --pair 20230530212931=experiments/runs/<single_seed_run>/full_tile_20230530212931/metrics.json,experiments/runs/<ensemble_run>/full_tile_20230530212931/metrics.json \
+  --fail-on-core-regression \
+  --markdown
+```
+
+Treat a mixed package as diagnostic evidence: promote the specific improved segment only if candidate lineage is linked, and do not generalize ensemble lift across folds that regress F1, F0.5, or AP.
 
 Seed ensembling and TTA can change probability scale. Re-run threshold calibration and full-tile checks after any ensemble/TTA change; do not assume an ensemble makes threshold `0.5` valid.
 

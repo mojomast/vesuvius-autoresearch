@@ -99,8 +99,10 @@ class TileInferenceTest(unittest.TestCase):
         self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 2.0)
         self.assertIn("threshold_risk_summary", metrics)
         self.assertLessEqual(metrics["threshold_risk_summary"]["best_under_prratio2p0"]["pred_to_val_ratio"], 2.0)
+        self.assertLessEqual(metrics["threshold_risk_summary"]["best_under_prratio2p5"]["pred_to_val_ratio"], 2.5)
         self.assertEqual(metrics["threshold_risk_summary"]["configured_max_pred_positive_rate_ratio"], 2.0)
         self.assertTrue(any(row["configured"] for row in metrics["threshold_risk_summary"]["cap_comparisons"]))
+        self.assertIn("f05_retained_vs_selected", metrics["threshold_risk_summary"]["cap_comparisons"][0])
         self.assertEqual(metrics["target_pred_positive_rate"], metrics["val_positive_rate"])
 
     def test_tile_calibration_diagnostics_have_expected_values(self) -> None:

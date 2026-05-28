@@ -136,9 +136,11 @@ class RunnerValidationTest(unittest.TestCase):
         self.assertLessEqual(metrics["pred_positive_rate"] / metrics["val_positive_rate"], 4.0)
         self.assertIn("threshold_risk_summary", metrics)
         self.assertIn("best_under_prratio2p0", metrics["threshold_risk_summary"])
+        self.assertIn("best_under_prratio2p5", metrics["threshold_risk_summary"])
         self.assertIn("best_under_prratio3p5", metrics["threshold_risk_summary"])
         self.assertEqual(metrics["threshold_risk_summary"]["configured_max_pred_positive_rate_ratio"], 4.0)
         self.assertTrue(any(row["configured"] for row in metrics["threshold_risk_summary"]["cap_comparisons"]))
+        self.assertIn("f05_retained_vs_selected", metrics["threshold_risk_summary"]["cap_comparisons"][0])
         self.assertGreater(metrics["threshold_risk_summary"]["cap_comparisons"][0]["eligible_threshold_count"], 0)
         self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
         self.assertIn(metrics["fixed_threshold_status"], {"ok", "weak"})
@@ -191,6 +193,7 @@ class RunnerValidationTest(unittest.TestCase):
         self.assertEqual(metrics["selected_threshold_reason"], metrics["threshold_selection"])
         self.assertIn("Threshold Risk", summary)
         self.assertIn("Best under <=2.0x", summary)
+        self.assertIn("Best under <=2.5x", summary)
 
     def test_fixed_threshold_failure_reason_identifies_no_fixed_positives(self) -> None:
         labels = np.asarray([1, 0, 1, 0], dtype=np.float32)

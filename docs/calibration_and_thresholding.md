@@ -13,7 +13,7 @@ Every sampled-validation and full-tile metrics file should expose:
 - `expected_calibration_error`: bin-weighted confidence vs accuracy gap.
 - `fixed_threshold_f1` and `fixed_threshold_status`: fixed `0.5` threshold health.
 - `threshold_selection` / `selected_threshold_reason`: whether the operating threshold was unconstrained or positive-rate-constrained.
-- `threshold_risk_summary`: selected, fixed, unconstrained, and cap-constrained threshold rows for `2.0x`, `3.0x`, and `3.5x` positive-rate ratios.
+- `threshold_risk_summary`: selected, fixed, unconstrained, and cap-constrained threshold rows for `2.0x`, `2.5x`, `3.0x`, and `3.5x` positive-rate ratios.
 
 ## Interpreting AP
 
@@ -21,11 +21,12 @@ For rare-positive ink detection, AP must be read against prevalence. If a segmen
 
 ## Positive-Rate Caps
 
+- `prratio2p5`: intermediate safety cap; prefer when `2.0x` loses too much recall but still needs less flooding than `3.0x`.
 - `prratio3`: stricter overprediction control; prefer when precision/rate safety matters most.
 - `prratio3p5`: balanced current operating candidate; recovers much of the `4x` F1 while reducing flooding risk.
 - `4x`: recall/F1 reference and stress test; do not treat as the default promotion target when predictions ride the cap.
 
-Use `threshold_risk_summary.best_under_prratio2p0`, `best_under_prratio3p0`, and `best_under_prratio3p5` to decide the next cap before retraining. If `2.0x` keeps at least about 90% of selected F1/F0.5, tighten the cap to `max_pred_positive_rate_ratio: 2.0` before mining. If only `3.5x` keeps recall and `cap_binding` is true, prefer calibration or fold-safe hard-negative mining before another threshold sweep.
+Use `threshold_risk_summary.best_under_prratio2p0`, `best_under_prratio2p5`, `best_under_prratio3p0`, and `best_under_prratio3p5` to decide the next cap before retraining. Pick the strictest cap that keeps about 95% of selected F1 and F0.5; treat 90-95% retention as review-only until seed-repeat LOO confirms it. If `2.0x` loses too much recall but `2.5x` preserves signal, prefer `max_pred_positive_rate_ratio: 2.5` before mining. If only `3.5x` keeps recall and `cap_binding` is true, prefer calibration or fold-safe hard-negative mining before another threshold sweep.
 
 Tune `training.positive_rate_loss_weight` only after cap evidence shows whether overprediction is threshold-only or requires loss-level pressure. A bounded follow-up should keep the fold, seed, model, patch size, and data fixed while changing the positive-rate loss weight/tolerance.
 
@@ -53,3 +54,31 @@ Important fields:
 Do not use a mined NPZ in a fold whose held-out segment appears in that NPZ's provenance or forbidden segment list.
 
 Do not mine just because a `2.0x` cap is available. Prefer cap tightening when lower caps retain signal; mine hard negatives when lower caps collapse F1 or dashboard quality actions explicitly identify flooding, speckles, or false-positive structure.
+
+## No-Retrain Cap Sweeps
+
+Use saved `metrics_by_threshold.csv` artifacts to evaluate cap policies before launching new training. Single-artifact cap comparison and next-move packaging are read-only; batch LOO recomputation reuses each run artifact once but writes recomputed JSONL/summary outputs under the paths you provide.
+
+For the safest current-state review, package the planner and read-only cap comparisons first:
+
+```bash
+.venv/bin/python scripts/package_next_move_evidence.py \
+  --caps 1.75,2.0,2.5,3.0,3.5 \
+  --markdown
+```
+
+This report reuses dashboard full-tile evidence and planner-emitted cap-comparison commands. It should be run before mining or retraining when the planner action is `tighten_positive_rate_cap`.
+Its `Recommended Next Move` is intentionally conservative: full-tile core regressions block cap or ensemble claims, cap tightening wins over mining when retention passes, and mining remains review-only until an artifact-writing command is deliberately executed outside the report.
+Cap recommendations are all-artifact gated: if any planner-suggested cap comparison errors or lacks a retained-cap row, the report surfaces a cap blocker instead of synthesizing a cap-tightening action.
+
+```bash
+.venv/bin/python scripts/recompute_loo_threshold_cap.py \
+  --input-jsonl logs/current_candidate_loo.jsonl \
+  --caps 2.0,2.25,2.5,2.75,3.0 \
+  --output-dir logs/cap_sweeps \
+  --output-prefix current_candidate \
+  --aggregate-json logs/cap_sweeps/current_candidate.aggregate.json \
+  --aggregate-markdown logs/cap_sweeps/current_candidate.aggregate.md
+```
+
+Prefer this before creating a new cap-only config. It can distinguish a threshold-policy improvement from a training improvement without writing model artifacts, but the recomputed summaries are generated log artifacts and should not be committed.
