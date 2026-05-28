@@ -182,10 +182,34 @@ class AutoResearchPivotTest(unittest.TestCase):
     def test_main_pauses_when_promotion_gate_is_ready(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
         run = {"run_id": "run1", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
-        with patch("sys.argv", ["autoresearch.py"]), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_payload", return_value={"status": "promotion_ready", "next_action": "Promote candidate", "proposals": []}), patch("autoresearch.subprocess.run") as run_mock:
+        with patch("sys.argv", ["autoresearch.py"]), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_payload", return_value={"status": "promotion_ready", "next_action": "Promote candidate", "action_id": "promotion_review", "proposals": []}), patch("autoresearch.subprocess.run") as run_mock:
             self.assertEqual(autoresearch.main(), 0)
 
         run_mock.assert_not_called()
+
+    def test_main_generates_proposals_for_calibrate_probability_scale(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "candidate", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            try:
+                with patch("sys.argv", ["autoresearch.py"]), patch("autoresearch._recent_runs", return_value=[run]), patch("autoresearch._promotion_ready_payload", return_value={"status": "promotion_ready", "next_action": "Calibrate probability scale", "action_id": "calibrate_probability_scale", "candidate_run_id": "candidate", "proposals": []}), patch("autoresearch.subprocess.run") as run_mock:
+                    self.assertEqual(autoresearch.main(), 0)
+
+                run_mock.assert_called()
+                call_args = run_mock.call_args_list[0][0][0]
+                self.assertIn("run_experiment.py", call_args)
+                # Verify the generated config has the threshold changed
+                generated_paths = list(autoresearch.CONFIGS.glob("auto_*promotion*threshold*.yaml"))
+                self.assertTrue(generated_paths)
+                for path in generated_paths:
+                    generated_cfg = load_config(path)
+                    self.assertIn(generated_cfg["evaluation"]["threshold"], [0.33, 0.35])
+                    self.assertEqual(generated_cfg["autoresearch"]["promotion_action_id"], "calibrate_probability_scale")
+                    self.assertEqual(generated_cfg["autoresearch"]["intent"], "promotion_action")
+            finally:
+                autoresearch.CONFIGS = old_configs
 
     def test_promotion_ready_payload_prefers_candidate_evidence_action(self) -> None:
         snapshot = {

@@ -606,6 +606,124 @@ def _proposal_plan(proposals: List[Tuple[str, Dict[str, Any], str]]) -> list[Dic
     return plan
 
 
+_AUTO_ACTIONS: set[str] = {
+    "calibrate_probability_scale",
+    "calibrate_positive_rate",
+    "improve_ranking_signal",
+    "mine_hard_negatives",
+    "repair_precision_recall",
+}
+
+
+def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_payload: dict[str, Any], count: int = 2) -> List[Tuple[str, Dict[str, Any], str]]:
+    """Generate targeted proposals for auto-executable promotion actions."""
+    action_id = ready_payload.get("action_id")
+    candidate_run_id = ready_payload.get("candidate_run_id")
+    candidate_run = next((r for r in runs if r.get("run_id") == candidate_run_id), None)
+    if not candidate_run:
+        return []
+
+    base = _canonicalize_config(candidate_run.get("config", {}))
+    model_name = str(_get_nested(base, ("model", "name"), ""))
+    is_torch = "torch" in model_name
+    proposals: List[Tuple[str, Dict[str, Any], str]] = []
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    tested = _reserved_signatures(runs)
+    seen: set[Tuple[Any, ...]] = set()
+
+    def _make_proposal(path: Tuple[str, ...], value: Any, reason: str) -> Tuple[str, Dict[str, Any], str] | None:
+        cfg = copy.deepcopy(base)
+        cfg.pop("resolved_data", None)
+        cfg.pop("validation_setup", None)
+        if _get_nested(cfg, path, None) == value:
+            return None
+        _set_nested(cfg, path, value)
+        if path == ("training", "sampling_strategy") and value == "hard_mining":
+            cfg.setdefault("training", {}).setdefault("hard_negative_fraction", 0.5)
+        if path == ("training", "tversky_loss_weight"):
+            cfg.setdefault("training", {}).setdefault("tversky_alpha", 0.3)
+            cfg.setdefault("training", {}).setdefault("tversky_beta", 0.7)
+        signature = _search_signature(cfg)
+        if signature in tested or signature in seen:
+            return None
+        seen.add(signature)
+        autoresearch = cfg.setdefault("autoresearch", {})
+        autoresearch["parent_reason"] = reason
+        autoresearch["scope_policy"] = str(autoresearch.get("scope_policy") or base.get("dataset", {}).get("research_scope") or "promotion_action")
+        autoresearch["intent"] = "promotion_action"
+        autoresearch["promotion_action_id"] = action_id
+        autoresearch["promotable"] = False
+        autoresearch["proposal_status"] = "generated"
+        autoresearch["changed_path"] = ".".join(path)
+        autoresearch["mutation_family"] = _mutation_family(path)
+        name = f"auto_{stamp}_promotion_{action_id}_{len(proposals)+1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
+        return (name, cfg, reason)
+
+    if action_id == "calibrate_probability_scale":
+        thresholds = [0.33, 0.35] if is_torch else [0.35, 0.4]
+        for thresh in thresholds:
+            if len(proposals) >= count:
+                break
+            p = _make_proposal(("evaluation", "threshold"), thresh, f"promotion action {action_id}: evaluate threshold={thresh}")
+            if p:
+                proposals.append(p)
+        # Also try a seed repeat to confirm threshold robustness
+        seed = int(_get_nested(base, ("training", "seed"), 1337))
+        if len(proposals) < count:
+            p = _make_proposal(("training", "seed"), seed + 17, f"promotion action {action_id}: seed repeat with threshold-aware calibration")
+            if p:
+                proposals.append(p)
+
+    elif action_id == "calibrate_positive_rate":
+        if is_torch:
+            prloss = float(_get_nested(base, ("training", "positive_rate_loss_weight"), 0.0) or 0.0)
+            values = [round(max(0.0, prloss - 0.02), 4), round(min(0.1, prloss + 0.02), 4)]
+            for val in values:
+                if len(proposals) >= count:
+                    break
+                p = _make_proposal(("training", "positive_rate_loss_weight"), val, f"promotion action {action_id}: adjust positive_rate_loss_weight to {val}")
+                if p:
+                    proposals.append(p)
+        pos_weight = float(_get_nested(base, ("training", "pos_weight"), 2.0))
+        if len(proposals) < count:
+            p = _make_proposal(("training", "pos_weight"), round(max(0.25, pos_weight * 0.8), 4), f"promotion action {action_id}: reduce pos_weight to tighten positive rate")
+            if p:
+                proposals.append(p)
+
+    elif action_id == "improve_ranking_signal":
+        if is_torch:
+            epochs = int(_get_nested(base, ("training", "epochs"), 5))
+            if len(proposals) < count:
+                p = _make_proposal(("training", "epochs"), min(8, epochs + 1), f"promotion action {action_id}: extra epoch to improve AP/ranking")
+                if p:
+                    proposals.append(p)
+            lr = float(_get_nested(base, ("training", "learning_rate"), 0.001))
+            if len(proposals) < count:
+                p = _make_proposal(("training", "learning_rate"), round(max(0.0002, lr * 0.6), 6), f"promotion action {action_id}: lower lr to improve ranking calibration")
+                if p:
+                    proposals.append(p)
+
+    elif action_id == "mine_hard_negatives":
+        if is_torch and len(proposals) < count:
+            p = _make_proposal(("training", "sampling_strategy"), "hard_mining", f"promotion action {action_id}: hard-negative mining")
+            if p:
+                proposals.append(p)
+
+    elif action_id == "repair_precision_recall":
+        pos_weight = float(_get_nested(base, ("training", "pos_weight"), 2.0))
+        if len(proposals) < count:
+            p = _make_proposal(("training", "pos_weight"), round(max(0.25, pos_weight * 0.75), 4), f"promotion action {action_id}: reduce pos_weight to repair precision/recall balance")
+            if p:
+                proposals.append(p)
+        dice = float(_get_nested(base, ("training", "dice_loss_weight"), 0.0) or 0.0)
+        if is_torch and len(proposals) < count:
+            p = _make_proposal(("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), f"promotion action {action_id}: increase dice weight to improve recall")
+            if p:
+                proposals.append(p)
+
+    return proposals
+
+
 def _promotion_ready_payload() -> dict[str, Any] | None:
     if os.environ.get("AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY", "1") != "1":
         return None
@@ -684,7 +802,7 @@ def main() -> int:
             print(json.dumps({"status": "needs_baseline", "proposals": []}, indent=2 if args.json else None))
             return 0
         ready_payload = _promotion_ready_payload()
-        if ready_payload:
+        if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
             payload = ready_payload
             if args.json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
@@ -693,6 +811,18 @@ def main() -> int:
                 if payload.get("command"):
                     print(f"Command: {payload['command']}")
             return 0
+        # Auto-execute promotion actions by generating targeted proposals
+        if ready_payload and ready_payload.get("action_id") in _AUTO_ACTIONS:
+            action_proposals = _generate_promotion_action_proposals(runs, ready_payload, count=int(os.environ.get("AUTORESEARCH_PROPOSALS", "3")))
+            if action_proposals:
+                payload = {"status": "promotion_action", "action_id": ready_payload.get("action_id"), "proposal_count": len(action_proposals), "proposals": _proposal_plan(action_proposals)}
+                if args.json:
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                else:
+                    print(f"Promotion gate ready with auto-executable action={ready_payload.get('action_id')}; generating targeted proposals:")
+                    for item in payload["proposals"]:
+                        print(f"  {item['name']}: {item['reason']} [{item.get('strategy_phase')}/{item.get('mutation_family')}]")
+                return 0
         base = _best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         if args.json:
@@ -737,14 +867,24 @@ def main() -> int:
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
         ready_payload = _promotion_ready_payload()
-        if ready_payload:
+        if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
             print(f"Promotion gate is ready; pausing exploration. Next action: {ready_payload.get('next_action')}", flush=True)
             if ready_payload.get("command"):
                 print(f"Command: {ready_payload['command']}", flush=True)
             return 0
-        proposals = _propose_best_path(base, runs, count=proposal_count)
+        # Auto-execute promotion actions by generating targeted proposals instead of pausing
+        if ready_payload and ready_payload.get("action_id") in _AUTO_ACTIONS:
+            action_proposals = _generate_promotion_action_proposals(runs, ready_payload, count=proposal_count)
+            if action_proposals:
+                print(f"Promotion gate ready with auto-executable action={ready_payload.get('action_id')}; generating targeted proposals", flush=True)
+                proposals = action_proposals
+            else:
+                print(f"Promotion gate ready but could not generate proposals for action={ready_payload.get('action_id')}; pausing", flush=True)
+                return 0
+        else:
+            proposals = _propose_best_path(base, runs, count=proposal_count)
         if not proposals:
-            print("No novel one-change proposals remain across the robust best path and focused fallback; pause instead of repeating runs")
+            print("No novel one-change proposals remain across the robust best path, focused fallback, and promotion actions; pause instead of repeating runs")
             return 0
         deadline_seconds = int(os.environ.get("AUTORESEARCH_DEADLINE_SECONDS", "0") or 0)
         deadline = time.monotonic() + deadline_seconds if deadline_seconds > 0 else None
