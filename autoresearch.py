@@ -29,6 +29,10 @@ CONFIGS = ROOT / "configs"
 LOGS = ROOT / "logs"
 LOCK_PATH = ROOT / "logs" / "autoresearch.lock"
 BASELINE = CONFIGS / "baseline.yaml"
+LINKED_LOO_SUMMARY_CACHE_TTL_SECONDS = 300.0
+_LINKED_LOO_SUMMARY_CACHE_AT = 0.0
+_LINKED_LOO_SUMMARY_CACHE: list[Dict[str, Any]] | None = None
+_LINKED_LOO_SUMMARY_CACHE_ROOT: Path | None = None
 SCOPE_KEYS = ("train_npz", "val_npz", "validation_mode", "research_scope")
 SEARCH_PATHS = (
     ("model", "name"),
@@ -326,6 +330,22 @@ def _reserved_signatures(runs: List[Dict[str, Any]]) -> set[Tuple[Any, ...]]:
         except Exception:
             continue
     return signatures
+
+
+def _prune_stale_configs(max_age_hours: float = 48) -> int:
+    """Delete stale generated `auto_*.yaml` configs older than the given age."""
+    if max_age_hours <= 0:
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    deleted = 0
+    for path in CONFIGS.glob("auto_*.yaml"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                deleted += 1
+        except FileNotFoundError:
+            continue
+    return deleted
 
 
 def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], Any, str]]:
@@ -681,16 +701,31 @@ def _same_path_tail(left: Any, right: Any) -> bool:
     return bool(left_tail and right_tail and (left_tail.endswith(right_tail) or right_tail.endswith(left_tail)))
 
 
-def _linked_loo_summary_ready(run: Dict[str, Any]) -> bool:
-    run_id = str(run.get("run_id") or "")
-    artifact_config = Path(str(run.get("artifact_dir") or "")) / "config.json" if run.get("artifact_dir") else None
+def _cached_loo_summaries(now: float | None = None) -> list[Dict[str, Any]]:
+    """Return promotion-ready LOO summaries, caching filesystem scans for five minutes."""
+    global _LINKED_LOO_SUMMARY_CACHE_AT, _LINKED_LOO_SUMMARY_CACHE, _LINKED_LOO_SUMMARY_CACHE_ROOT
+    current = time.time() if now is None else now
+    cache_root = LOGS.resolve()
+    if _LINKED_LOO_SUMMARY_CACHE is not None and _LINKED_LOO_SUMMARY_CACHE_ROOT == cache_root and current - _LINKED_LOO_SUMMARY_CACHE_AT < LINKED_LOO_SUMMARY_CACHE_TTL_SECONDS:
+        return _LINKED_LOO_SUMMARY_CACHE
+    summaries: list[Dict[str, Any]] = []
     for path in sorted(LOGS.glob("*summary.json"), key=lambda item: item.stat().st_mtime, reverse=True):
         try:
             summary = json.loads(path.read_text())
         except Exception:
             continue
-        if not summary.get("promotion_ready"):
-            continue
+        if summary.get("promotion_ready"):
+            summaries.append(summary)
+    _LINKED_LOO_SUMMARY_CACHE = summaries
+    _LINKED_LOO_SUMMARY_CACHE_AT = current
+    _LINKED_LOO_SUMMARY_CACHE_ROOT = cache_root
+    return summaries
+
+
+def _linked_loo_summary_ready(run: Dict[str, Any]) -> bool:
+    run_id = str(run.get("run_id") or "")
+    artifact_config = Path(str(run.get("artifact_dir") or "")) / "config.json" if run.get("artifact_dir") else None
+    for summary in _cached_loo_summaries():
         run_ids = {str(item) for item in summary.get("run_ids") or []}
         if run_id and run_id in run_ids:
             return True
@@ -1121,6 +1156,19 @@ def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> N
     path.write_text(header + body)
 
 
+def _acquire_autoresearch_lock(lock: Any) -> None:
+    """Acquire the process lock or fail closed when no lock backend is available."""
+    if fcntl is not None:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    try:
+        import msvcrt
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError("autoresearch locking requires fcntl or msvcrt; no safe fallback is available") from exc
+    lock.seek(0)
+    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run or plan the local AutoResearch cycle")
     parser.add_argument("--plan", action="store_true", help="Print planned proposals without writing configs or launching experiments")
@@ -1128,6 +1176,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.json and not args.plan:
         parser.error("--json requires --plan")
+
+    LOGS.mkdir(parents=True, exist_ok=True)
+    CONFIGS.mkdir(parents=True, exist_ok=True)
+    pruned = _prune_stale_configs()
+    if pruned:
+        print(f"Pruned {pruned} stale generated config(s)", flush=True)
 
     if args.plan:
         runs = _recent_runs()
@@ -1182,20 +1236,9 @@ def main() -> int:
                 print("No novel one-change proposals remain.")
         return 0
 
-    LOGS.mkdir(parents=True, exist_ok=True)
-    CONFIGS.mkdir(parents=True, exist_ok=True)
     with open(LOCK_PATH, "w") as lock:
         try:
-            if fcntl is not None:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            else:
-                try:
-                    import msvcrt
-                    lock.seek(0)
-                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-                except (ImportError, AttributeError, OSError):
-                    # Basic fallback if msvcrt isn't available or fails
-                    pass
+            _acquire_autoresearch_lock(lock)
         except (BlockingIOError, PermissionError, OSError):
             print(f"{datetime.now(timezone.utc).isoformat()} another autoresearch run is active; exiting safely")
             return 0

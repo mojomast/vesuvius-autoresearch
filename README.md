@@ -95,6 +95,8 @@ python3 scripts/evaluate_leave_one_out.py \
 
 `fold-major` schedules all seed repeats for a held-out fold together, reducing repeated setup while preserving the row schema and summary behavior. Keep `--jobs` matched to `training.num_threads` on CPU hosts because each worker writes independent run artifacts and shares the experiment DB. Pending generated `configs/auto_*` signatures expire after `AUTORESEARCH_PENDING_CONFIG_TTL_HOURS=24` by default so crashed proposal files do not block future search forever; set it to `0` to reserve all generated configs indefinitely.
 
+AutoResearch prunes stale generated `configs/auto_*.yaml` files older than 48 hours at process startup. This keeps cron proposal accumulation bounded while preserving manual configs, baseline configs, and curated robust pivot configs.
+
 For distributed-lite execution, enqueue existing config paths through `experiments.jobs.enqueue_experiment_config(...)` and run workers with the same core experiment runner:
 
 ```bash
