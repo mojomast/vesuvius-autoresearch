@@ -520,6 +520,43 @@ def _shell_command(args: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in args)
 
 
+def _path_tail(value: Any) -> str:
+    return str(value or "").replace("\\", "/").lstrip("./")
+
+
+def _same_path_tail(left: Any, right: Any) -> bool:
+    left_tail = _path_tail(left)
+    right_tail = _path_tail(right)
+    return bool(left_tail and right_tail and (left_tail.endswith(right_tail) or right_tail.endswith(left_tail)))
+
+
+def _linked_loo_summary_ready(run: Dict[str, Any]) -> bool:
+    run_id = str(run.get("run_id") or "")
+    artifact_config = Path(str(run.get("artifact_dir") or "")) / "config.json" if run.get("artifact_dir") else None
+    for path in sorted(LOGS.glob("*summary.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            summary = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not summary.get("promotion_ready"):
+            continue
+        run_ids = {str(item) for item in summary.get("run_ids") or []}
+        if run_id and run_id in run_ids:
+            return True
+        if artifact_config and _same_path_tail(summary.get("base_config"), artifact_config):
+            return True
+    return False
+
+
+def _promotion_next_action_with_evidence(run: Dict[str, Any]) -> str:
+    if _linked_loo_summary_ready(run):
+        metrics = run.setdefault("metrics", {})
+        if isinstance(metrics, dict):
+            metrics = {**metrics, "loo_promotion_ready": True}
+            run = {**run, "metrics": metrics}
+    return _promotion_next_action(run)
+
+
 def _manual_promotion_candidate(runs: List[Dict[str, Any]]) -> Dict[str, Any] | None:
     candidates: list[Dict[str, Any]] = []
     for run in runs:
@@ -543,7 +580,7 @@ def _manual_promotion_candidate(runs: List[Dict[str, Any]]) -> Dict[str, Any] | 
             ratio = float(pred_rate) / max(float(val_rate), 1e-6)
             if ratio > 3.5 or ratio < 0.1:
                 continue
-        action = _promotion_next_action(run)
+        action = _promotion_next_action_with_evidence(run)
         if action in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
             candidates.append(run)
     if not candidates:
@@ -561,7 +598,7 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
     candidate = _manual_promotion_candidate(runs)
     if not candidate:
         return None
-    action = _promotion_next_action(candidate)
+    action = _promotion_next_action_with_evidence(candidate)
     if action not in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
         return None
     candidate_run_id = str(candidate.get("run_id") or "")
