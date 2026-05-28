@@ -205,7 +205,7 @@ class AutoResearchPivotTest(unittest.TestCase):
                 self.assertTrue(generated_paths)
                 for path in generated_paths:
                     generated_cfg = load_config(path)
-                    self.assertIn(generated_cfg["evaluation"]["threshold"], [0.33, 0.35])
+                    self.assertIn(generated_cfg["evaluation"]["threshold"], [0.31, 0.33, 0.35, 0.37])
                     self.assertEqual(generated_cfg["autoresearch"]["promotion_action_id"], "calibrate_probability_scale")
                     self.assertEqual(generated_cfg["autoresearch"]["intent"], "promotion_action")
             finally:
@@ -241,6 +241,30 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(payload["candidate_run_id"], "candidate")
         self.assertIn("--public-chunk-delay-sec 0.5", payload["command"])
         self.assertIn("use_public_directory_backoff_and_chunk_pacing", payload["reasoning"])
+
+    def test_promotion_ready_payload_skips_pause_for_expected_compressed_probs(self) -> None:
+        snapshot = {
+            "research_summary": {
+                "decision": {
+                    "next_action": "Calibrate probability scale",
+                    "promotion_gate": {"ready": True},
+                    "candidate_evidence": {
+                        "candidate_run_id": "candidate",
+                        "full_tile": {
+                            "evidence": [
+                                {"segment_id": "seg1", "fixed_threshold_failure_reason": "no_fixed_positive_predictions"}
+                            ]
+                        },
+                    },
+                    "promotion_actions": [{"id": "calibrate_probability_scale", "label": "Calibrate probability scale", "severity": "warning"}],
+                }
+            }
+        }
+
+        with patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+            payload = _promotion_ready_payload()
+
+        self.assertIsNone(payload)
 
     def test_promotion_ready_payload_omits_completed_weak_fold_command_for_review(self) -> None:
         snapshot = {

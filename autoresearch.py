@@ -893,6 +893,9 @@ def main() -> int:
             if action_proposals:
                 print(f"Promotion gate ready with auto-executable action={ready_payload.get('action_id')}; generating targeted proposals", flush=True)
                 proposals = action_proposals
+            elif ready_payload.get("action_id") == "calibrate_probability_scale":
+                print(f"Promotion gate action={ready_payload.get('action_id')} proposals exhausted; falling back to normal exploration", flush=True)
+                proposals = _propose_best_path(base, runs, count=proposal_count)
             else:
                 print(f"Promotion gate ready but could not generate proposals for action={ready_payload.get('action_id')}; pausing", flush=True)
                 return 0
