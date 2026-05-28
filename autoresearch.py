@@ -413,6 +413,8 @@ def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
         ratio = float(pred_rate) / max(float(val_rate), 1e-6)
         if ratio > 3.5 or ratio < 0.1:
             warnings.append("pred_positive_rate_ratio_suspicious")
+    if "fixed_threshold_status" not in metrics:
+        warnings.append("missing_fixed_threshold_status")
     fixed_threshold_status = str(metrics.get("fixed_threshold_status") or "").lower()
     if fixed_threshold_status and fixed_threshold_status != "ok":
         warnings.append("fixed_threshold_status_weak")
@@ -440,7 +442,9 @@ def _run_quality_score(run: Dict[str, Any]) -> float:
             score -= min(0.25, 0.03 * (ratio - 3.0))
         elif ratio < 0.25:
             score -= min(0.25, 0.03 * (0.25 / max(ratio, 1e-6)))
-    if str(metrics.get("fixed_threshold_status") or "").lower() not in {"", "ok"}:
+    if "fixed_threshold_status" not in metrics:
+        score -= 0.03
+    elif str(metrics.get("fixed_threshold_status") or "").lower() != "ok":
         score -= 0.05
     eligible, warnings = _promotion_gate(run)
     if eligible:
@@ -459,6 +463,8 @@ def _promotion_next_action(run: Dict[str, Any]) -> str:
         return "run_full_tile_validation"
     if "pred_positive_rate_ratio_suspicious" in warnings:
         return "calibrate_prediction_rate"
+    if "missing_fixed_threshold_status" in warnings:
+        return "calibrate_probability_scale"
     if "fixed_threshold_status_weak" in warnings:
         return "calibrate_probability_scale"
     if "zero_precision_or_recall" in warnings:
@@ -514,24 +520,55 @@ def _shell_command(args: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in args)
 
 
+def _manual_promotion_candidate(runs: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    candidates: list[Dict[str, Any]] = []
+    for run in runs:
+        cfg = run.get("config", {})
+        metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+        model_name = str(_get_nested(cfg, ("model", "name"), ""))
+        if "torch" not in model_name:
+            continue
+        scope = str(cfg.get("dataset", {}).get("research_scope") or cfg.get("autoresearch", {}).get("scope_policy") or "")
+        if "multi_segment" not in scope and "leave_one_out" not in scope:
+            continue
+        if str(metrics.get("fixed_threshold_status") or "").lower() != "ok":
+            continue
+        if _run_metric_value(run) is None or metrics.get("average_precision") is None:
+            continue
+        if float(metrics.get("precision") or 0.0) <= 0.0 or float(metrics.get("recall") or 0.0) <= 0.0:
+            continue
+        pred_rate = metrics.get("pred_positive_rate")
+        val_rate = metrics.get("val_positive_rate")
+        if pred_rate is not None and val_rate is not None:
+            ratio = float(pred_rate) / max(float(val_rate), 1e-6)
+            if ratio > 3.5 or ratio < 0.1:
+                continue
+        action = _promotion_next_action(run)
+        if action in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
+            candidates.append(run)
+    if not candidates:
+        return None
+    return max(candidates, key=_run_quality_score)
+
+
 def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any] | None:
     """Return a candidate-linked promotion action when local sweeps should stop."""
     if os.environ.get("AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION", "0") == "1":
         return None
     strategy = _strategy_phase(runs)
-    action = str(strategy.get("next_action") or "")
-    if not strategy.get("plateau") or strategy.get("phase") != "promote":
+    if not strategy.get("plateau"):
         return None
-    if action not in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
-        return None
-    candidate_run_id = str(strategy.get("candidate_run_id") or "")
-    candidate = next((run for run in runs if str(run.get("run_id") or "") == candidate_run_id), None)
+    candidate = _manual_promotion_candidate(runs)
     if not candidate:
         return None
+    action = _promotion_next_action(candidate)
+    if action not in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
+        return None
+    candidate_run_id = str(candidate.get("run_id") or "")
 
     reasoning = [
-        "strategy_phase_promote",
         "plateau_detected",
+        "promotion_candidate_available",
         "stop_local_sampled_sweeps",
         "candidate_linked_evidence_required",
     ]

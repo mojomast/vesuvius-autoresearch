@@ -140,7 +140,7 @@ class AutoResearchPivotTest(unittest.TestCase):
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
         run = {
             "config": cfg,
-            "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.3, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+            "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.3, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"},
         }
 
         self.assertEqual(_promotion_next_action(run), "run_seed_repeat_leave_one_out")
@@ -182,8 +182,8 @@ class AutoResearchPivotTest(unittest.TestCase):
     def test_plateau_promotion_phase_emits_loo_action_instead_of_proposals(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
         runs = [
-            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
-            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
+            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
         ]
 
         with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2"}, clear=False):
@@ -201,18 +201,34 @@ class AutoResearchPivotTest(unittest.TestCase):
     def test_promotion_phase_action_has_explicit_override(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
         runs = [
-            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
-            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
+            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
         ]
 
         with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2", "AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION": "1"}, clear=False):
             self.assertIsNone(_promotion_phase_manual_action(runs))
 
+    def test_promotion_phase_action_uses_calibrated_candidate_when_recent_runs_are_stale(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        runs = [
+            {"run_id": "new_stale", "artifact_dir": str(Path("experiments/runs/new_stale")), "config": cfg, "main_metric": 0.41, "metrics": {"val_f1": 0.41, "average_precision": 0.25, "precision": 0.25, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "older_stale", "artifact_dir": str(Path("experiments/runs/older_stale")), "config": cfg, "main_metric": 0.40, "metrics": {"val_f1": 0.40, "average_precision": 0.24, "precision": 0.25, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "calibrated", "artifact_dir": str(Path("experiments/runs/calibrated")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
+        ]
+
+        with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2"}, clear=False):
+            payload = _promotion_phase_manual_action(runs)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["candidate_run_id"], "calibrated")
+        self.assertEqual(payload["next_action"], "run_seed_repeat_leave_one_out")
+
     def test_main_plan_json_returns_manual_promotion_action_without_writes(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
         runs = [
-            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
-            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
+            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             old_configs = autoresearch.CONFIGS
@@ -430,6 +446,16 @@ class AutoResearchPivotTest(unittest.TestCase):
 
         self.assertFalse(eligible)
         self.assertIn("fixed_threshold_status_weak", warnings)
+        self.assertEqual(_promotion_next_action(run), "calibrate_probability_scale")
+
+    def test_promotion_gate_blocks_missing_fixed_threshold_status(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        run = {"config": cfg, "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}}
+
+        eligible, warnings = _promotion_gate(run)
+
+        self.assertFalse(eligible)
+        self.assertIn("missing_fixed_threshold_status", warnings)
         self.assertEqual(_promotion_next_action(run), "calibrate_probability_scale")
 
     def test_signature_distinguishes_seed_ensemble_and_threshold(self) -> None:

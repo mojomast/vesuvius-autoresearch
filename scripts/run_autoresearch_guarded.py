@@ -81,6 +81,12 @@ def active_autoresearch_processes() -> list[str]:
 
 
 def choose_proposals(load1: float, mem_gib: float) -> int:
+    explicit = os.environ.get("AUTORESEARCH_PROPOSALS")
+    if explicit is not None:
+        try:
+            return max(0, int(explicit))
+        except ValueError:
+            return 0
     # Idle machine: exploit the slack.  Moderate machine: still useful.  Busy: tiny pulse.
     if load1 <= MAX_LOAD_SOFT and mem_gib >= 64:
         return int(os.environ.get("SCROLL_RESEARCH_PROPOSALS_IDLE", "4"))
@@ -117,7 +123,6 @@ def main() -> int:
 
     env = os.environ.copy()
     env.update({
-        "AUTORESEARCH_PROPOSALS": str(proposals),
         "AUTORESEARCH_RECENT_LIMIT": env.get("AUTORESEARCH_RECENT_LIMIT", "1000"),
         # Keep BLAS/NumPy from bursting across all cores during MLP matrix ops.
         "OMP_NUM_THREADS": env.get("OMP_NUM_THREADS", "2"),
@@ -126,6 +131,10 @@ def main() -> int:
         "NUMEXPR_NUM_THREADS": env.get("NUMEXPR_NUM_THREADS", "2"),
         "AUTORESEARCH_DEADLINE_SECONDS": env.get("AUTORESEARCH_DEADLINE_SECONDS", str(max(60, TIMEOUT_SECONDS - 30))),
     })
+    env.setdefault("AUTORESEARCH_PROPOSALS", str(proposals))
+    if env.get("SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE") != "1":
+        env["AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY"] = "1"
+        env["AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION"] = "0"
 
     cmd = ["nice", "-n", "15"]
     if shutil.which("ionice"):

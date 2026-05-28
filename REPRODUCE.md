@@ -113,6 +113,8 @@ The optional SQLite job queue dispatches existing config paths through the same 
 
 Queue databases are local generated artifacts and must not be committed.
 
+The guarded AutoResearch launcher honors explicit `AUTORESEARCH_PROPOSALS`, but keeps promotion-action pauses enabled for unattended safety. To intentionally bypass the promotion pause through the guard for diagnostics, set both `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1` and `SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1`.
+
 ## Expected Generated Paths
 
 - `data/**`: prepared NPZs and metadata.
