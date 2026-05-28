@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.evaluate_leave_one_out import _run_fold_job, _summarize, main
+from scripts.evaluate_leave_one_out import THREAD_LIMIT_ENV_VARS, _limit_worker_threads, _run_fold_job, _summarize, main
+
+
+def _metrics(val_f1: float = 0.2) -> dict[str, float]:
+    return {
+        "val_f1": val_f1,
+        "val_f05": 0.1,
+        "average_precision": 0.3,
+        "precision": 0.4,
+        "recall": 0.5,
+        "best_threshold": 0.6,
+        "val_positive_rate": 0.07,
+        "pred_positive_rate": 0.08,
+    }
 
 
 class LeaveOneOutSummaryTest(unittest.TestCase):
@@ -26,6 +40,7 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertAlmostEqual(summary["per_seed_median_val_f1"]["2"], 0.6)
         self.assertEqual(summary["per_seed_min_val_f1"], {"1": 0.2, "2": 0.4})
         self.assertEqual(summary["per_seed_mean_average_precision"], {"1": 0.4, "2": 0.8})
+        self.assertEqual(summary["per_fold_successful_seeds"], {"a": 2, "b": 2})
         self.assertAlmostEqual(summary["median_over_seeds_median_val_f1"], 0.5)
         self.assertAlmostEqual(summary["worst_seed_median_val_f1"], 0.4)
         self.assertAlmostEqual(summary["worst_fold_val_f1"], 0.3)
@@ -34,6 +49,35 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertAlmostEqual(summary["median_average_precision"], 0.6)
         self.assertEqual(summary["folds_with_zero_precision_or_recall"], [])
         self.assertEqual(summary["folds_with_positive_rate_alarm"], [])
+        self.assertEqual(summary["folds_with_fixed_threshold_not_ok"], [])
+        self.assertEqual(summary["folds_with_threshold_edge_case"], [])
+        self.assertEqual(summary["folds_with_weak_ap_prevalence_lift"], [])
+        self.assertEqual(summary["promotion_warnings"], [])
+        self.assertTrue(summary["promotion_ready"])
+
+    def test_fixed_threshold_not_ok_is_summary_only(self) -> None:
+        rows = [
+            {"returncode": 0, "heldout_segment": "a", "seed": 1, "val_f1": 0.5, "average_precision": 0.3, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"},
+            {"returncode": 0, "heldout_segment": "b", "seed": 1, "val_f1": 0.6, "average_precision": 0.5, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "weak"},
+        ]
+
+        summary = _summarize(rows, min_seeds_for_promotion=1)
+
+        self.assertEqual(summary["folds_with_fixed_threshold_not_ok"], ["b:seed=1"])
+        self.assertEqual(summary["promotion_warnings"], [])
+        self.assertTrue(summary["promotion_ready"])
+
+    def test_threshold_edge_and_weak_ap_lift_are_summary_only(self) -> None:
+        rows = [
+            {"returncode": 0, "heldout_segment": "edge_low", "seed": 1, "val_f1": 0.5, "average_precision": 0.2, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "best_threshold": 0.01, "ap_prevalence_lift": 1.2},
+            {"returncode": 0, "heldout_segment": "edge_high", "seed": 1, "val_f1": 0.6, "average_precision": 0.12, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "best_threshold": 0.99},
+            {"returncode": 0, "heldout_segment": "ok", "seed": 1, "val_f1": 0.7, "average_precision": 0.4, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "best_threshold": 0.5, "ap_prevalence_lift": 4.0},
+        ]
+
+        summary = _summarize(rows, min_seeds_for_promotion=1)
+
+        self.assertEqual(summary["folds_with_threshold_edge_case"], ["edge_low:seed=1", "edge_high:seed=1"])
+        self.assertEqual(summary["folds_with_weak_ap_prevalence_lift"], ["edge_low:seed=1", "edge_high:seed=1"])
         self.assertEqual(summary["promotion_warnings"], [])
         self.assertTrue(summary["promotion_ready"])
 
@@ -47,7 +91,25 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
 
         self.assertEqual(summary["min_seeds_for_promotion"], 3)
         self.assertEqual(summary["distinct_successful_seeds"], 1)
+        self.assertEqual(summary["per_fold_successful_seeds"], {"a": 1, "b": 1})
         self.assertIn("insufficient_seed_repeats:1/3", summary["promotion_warnings"])
+        self.assertIn("insufficient_fold_seed_repeats:a:1/3", summary["promotion_warnings"])
+        self.assertIn("insufficient_fold_seed_repeats:b:1/3", summary["promotion_warnings"])
+        self.assertFalse(summary["promotion_ready"])
+
+    def test_partial_fold_seed_coverage_is_not_promotion_ready(self) -> None:
+        rows = [
+            {"returncode": 0, "heldout_segment": "a", "seed": 1, "val_f1": 0.2, "average_precision": 0.3, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+            {"returncode": 0, "heldout_segment": "a", "seed": 2, "val_f1": 0.4, "average_precision": 0.5, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+            {"returncode": 0, "heldout_segment": "b", "seed": 1, "val_f1": 0.6, "average_precision": 0.7, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+        ]
+
+        summary = _summarize(rows, min_seeds_for_promotion=2)
+
+        self.assertEqual(summary["distinct_successful_seeds"], 2)
+        self.assertEqual(summary["per_fold_successful_seeds"], {"a": 2, "b": 1})
+        self.assertNotIn("insufficient_seed_repeats:2/2", summary["promotion_warnings"])
+        self.assertIn("insufficient_fold_seed_repeats:b:1/2", summary["promotion_warnings"])
         self.assertFalse(summary["promotion_ready"])
 
     def test_warnings_include_failed_rows_and_metric_alarms(self) -> None:
@@ -64,6 +126,9 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertEqual(summary["folds_failed"], 1)
         self.assertEqual(summary["folds_with_zero_precision_or_recall"], ["high:seed=3", "low:seed=3"])
         self.assertEqual(summary["folds_with_positive_rate_alarm"], ["high:seed=3", "low:seed=3"])
+        self.assertEqual(summary["folds_with_fixed_threshold_not_ok"], [])
+        self.assertEqual(summary["folds_with_threshold_edge_case"], [])
+        self.assertEqual(summary["folds_with_weak_ap_prevalence_lift"], [])
         self.assertIn("failed_fold:failed:seed=3:RuntimeError('boom')", summary["promotion_warnings"])
         self.assertIn("zero_precision_or_recall:high:seed=3", summary["promotion_warnings"])
         self.assertIn("positive_rate_alarm:low:seed=3", summary["promotion_warnings"])
@@ -88,6 +153,9 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertEqual(summary["folds_failed"], 1)
         self.assertEqual(summary["folds_with_zero_precision_or_recall"], [])
         self.assertEqual(summary["folds_with_positive_rate_alarm"], [])
+        self.assertEqual(summary["folds_with_fixed_threshold_not_ok"], [])
+        self.assertEqual(summary["folds_with_threshold_edge_case"], [])
+        self.assertEqual(summary["folds_with_weak_ap_prevalence_lift"], [])
         self.assertIn("failed_fold:x:bad", summary["promotion_warnings"])
         self.assertIn("no_successful_folds", summary["promotion_warnings"])
         self.assertFalse(summary["promotion_ready"])
@@ -109,6 +177,9 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertTrue(summary["dry_run"])
         self.assertEqual(summary["folds_with_zero_precision_or_recall"], [])
         self.assertEqual(summary["folds_with_positive_rate_alarm"], [])
+        self.assertEqual(summary["folds_with_fixed_threshold_not_ok"], [])
+        self.assertEqual(summary["folds_with_threshold_edge_case"], [])
+        self.assertEqual(summary["folds_with_weak_ap_prevalence_lift"], [])
         self.assertEqual(summary["promotion_warnings"], ["dry_run_no_promotion_metrics"])
         self.assertFalse(summary["promotion_ready"])
 
@@ -131,6 +202,60 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
             rows = [json.loads(line) for line in output.read_text().splitlines()]
 
         self.assertEqual([(row["heldout_segment"], row["seed"]) for row in rows], [("a", 2), ("a", 1), ("b", 2), ("b", 1)])
+
+    def test_fold_major_mode_groups_all_seeds_for_heldout_fold(self) -> None:
+        executor_instances = []
+
+        class FakeExecutor:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+                self.groups = []
+                executor_instances.append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def map(self, fn, *iterables):
+                if len(iterables) == 1:
+                    self.groups = list(iterables[0])
+                    return [fn(group) for group in self.groups]
+                return [fn(*args) for args in zip(*iterables)]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = root / "base.yaml"
+            config.write_text("dataset:\n  patch_size: 64\nmodel:\n  name: tiny_torch_unet\ntraining:\n  seed: 7\n")
+            fold_map = root / "fold_map.json"
+            fold_map.write_text(json.dumps({
+                "b": {"train_npz": "train_b.npz", "val_npz": "val_b.npz"},
+                "a": {"train_npz": "train_a.npz", "val_npz": "val_a.npz"},
+            }))
+            output = root / "loo.jsonl"
+            summary = root / "loo.summary.json"
+
+            with patch("scripts.evaluate_leave_one_out.ProcessPoolExecutor", FakeExecutor):
+                with patch("scripts.evaluate_leave_one_out.run_experiment", return_value={"run_id": "run1", "artifact_dir": "artifact", "metrics": _metrics()}):
+                    with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", str(config), "--fold-map", str(fold_map), "--output-jsonl", str(output), "--summary-json", str(summary), "--seeds", "2,1", "--jobs", "2", "--execution-mode", "fold-major", "--min-seeds-for-promotion", "2"]):
+                        self.assertEqual(main(), 0)
+
+            rows = [json.loads(line) for line in output.read_text().splitlines()]
+
+        self.assertEqual([(row["heldout_segment"], row["seed"]) for row in rows], [("a", 2), ("a", 1), ("b", 2), ("b", 1)])
+        self.assertEqual([[row["heldout_segment"] for _, row in group] for group in executor_instances[0].groups], [["a", "a"], ["b", "b"]])
+        self.assertEqual([[row["seed"] for _, row in group] for group in executor_instances[0].groups], [[2, 1], [2, 1]])
+        self.assertEqual(executor_instances[0].kwargs, {"max_workers": 2})
+
+    def test_limit_worker_threads_sets_only_unset_thread_env_vars(self) -> None:
+        preserved_key = THREAD_LIMIT_ENV_VARS[0]
+        with patch.dict(os.environ, {preserved_key: "4"}, clear=True):
+            _limit_worker_threads()
+
+            self.assertEqual(os.environ[preserved_key], "4")
+            for key in THREAD_LIMIT_ENV_VARS[1:]:
+                self.assertEqual(os.environ[key], "1")
 
     def test_jobs_must_be_positive(self) -> None:
         with self.assertRaises(SystemExit):

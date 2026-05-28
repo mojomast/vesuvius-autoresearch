@@ -25,6 +25,21 @@ class JobsTest(unittest.TestCase):
             self.assertEqual(first["payload"]["experiment_config"], "configs/a.yaml")
             self.assertEqual(first["status"], "queued")
 
+    def test_enqueue_uses_config_signature_as_default_dedupe_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "jobs.db"
+            first_config = root / "first.json"
+            second_config = root / "second.json"
+            first_config.write_text(json.dumps({"model": {"name": "tiny_numpy_ink_logreg"}, "artifact_dir": "runs/a"}))
+            second_config.write_text(json.dumps({"artifact_dir": "runs/b", "model": {"name": "tiny_numpy_ink_logreg"}}))
+
+            first = enqueue_experiment_config(first_config, db_path)
+            second = enqueue_experiment_config(second_config, db_path)
+
+            self.assertEqual(first["id"], second["id"])
+            self.assertTrue(first["dedupe_key"].startswith("experiment_config:"))
+
     def test_leases_one_job_and_recovers_stale_lease(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "jobs.db"

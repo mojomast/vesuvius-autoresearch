@@ -138,6 +138,7 @@ class AutoResearchPivotTest(unittest.TestCase):
 
     def test_promotion_next_action_prefers_loo_then_full_tile(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         run = {
             "config": cfg,
             "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.3, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"},
@@ -181,6 +182,7 @@ class AutoResearchPivotTest(unittest.TestCase):
 
     def test_plateau_promotion_phase_emits_loo_action_instead_of_proposals(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         runs = [
             {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
             {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
@@ -210,6 +212,7 @@ class AutoResearchPivotTest(unittest.TestCase):
 
     def test_promotion_phase_action_uses_calibrated_candidate_when_recent_runs_are_stale(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         runs = [
             {"run_id": "new_stale", "artifact_dir": str(Path("experiments/runs/new_stale")), "config": cfg, "main_metric": 0.41, "metrics": {"val_f1": 0.41, "average_precision": 0.25, "precision": 0.25, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
             {"run_id": "older_stale", "artifact_dir": str(Path("experiments/runs/older_stale")), "config": cfg, "main_metric": 0.40, "metrics": {"val_f1": 0.40, "average_precision": 0.24, "precision": 0.25, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
@@ -226,6 +229,7 @@ class AutoResearchPivotTest(unittest.TestCase):
 
     def test_promotion_phase_action_advances_after_linked_loo_summary(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         run = {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}}
         other = {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}}
 
@@ -247,6 +251,7 @@ class AutoResearchPivotTest(unittest.TestCase):
 
     def test_main_plan_json_returns_manual_promotion_action_without_writes(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         runs = [
             {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
             {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
@@ -454,13 +459,102 @@ class AutoResearchPivotTest(unittest.TestCase):
 
     def test_promotion_gate_flags_bad_positive_rate(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         eligible, warnings = _promotion_gate({"config": cfg, "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.1, "recall": 0.9, "pred_positive_rate": 0.8, "val_positive_rate": 0.1}})
 
         self.assertFalse(eligible)
         self.assertIn("pred_positive_rate_ratio_suspicious", warnings)
 
+    def test_promotion_gate_allows_held_out_validation_modes(self) -> None:
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}
+        for mode in ("cross-segment", "cross-scroll", "leave-one-segment-out"):
+            cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+            cfg["validation_setup"] = {"mode": mode}
+
+            eligible, warnings = _promotion_gate({"config": cfg, "metrics": metrics})
+
+            self.assertTrue(eligible, mode)
+            self.assertNotIn("validation_not_held_out", warnings)
+
+    def test_promotion_gate_allows_good_calibrated_held_out_candidate(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok", "best_threshold": 0.5, "ap_prevalence_lift": 2.0}
+
+        eligible, warnings = _promotion_gate({"config": cfg, "metrics": metrics})
+
+        self.assertTrue(eligible)
+        self.assertNotIn("best_threshold_at_sweep_edge", warnings)
+        self.assertNotIn("weak_ap_lift", warnings)
+
+    def test_promotion_gate_blocks_best_threshold_at_sweep_edge(self) -> None:
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok", "ap_prevalence_lift": 2.0}
+        for best_threshold in (0.03, 0.94):
+            cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+            cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+
+            eligible, warnings = _promotion_gate({"config": cfg, "metrics": {**metrics, "best_threshold": best_threshold}})
+
+            self.assertFalse(eligible, best_threshold)
+            self.assertIn("best_threshold_at_sweep_edge", warnings)
+
+    def test_promotion_gate_blocks_weak_ap_lift_when_present(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok", "best_threshold": 0.5, "ap_prevalence_lift": 1.24}
+
+        eligible, warnings = _promotion_gate({"config": cfg, "metrics": metrics})
+
+        self.assertFalse(eligible)
+        self.assertIn("weak_ap_lift", warnings)
+
+    def test_promotion_gate_allows_patch_size_at_scroll_prize_guidance(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        cfg.setdefault("dataset", {})["patch_size"] = 64
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}
+
+        eligible, warnings = _promotion_gate({"config": cfg, "metrics": metrics})
+
+        self.assertTrue(eligible)
+        self.assertNotIn("patch_size_exceeds_scroll_prize_guidance", warnings)
+
+    def test_promotion_gate_blocks_patch_size_above_scroll_prize_guidance(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        cfg.setdefault("dataset", {})["patch_size"] = 65
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}
+
+        eligible, warnings = _promotion_gate({"config": cfg, "metrics": metrics})
+
+        self.assertFalse(eligible)
+        self.assertIn("patch_size_exceeds_scroll_prize_guidance", warnings)
+
+    def test_promotion_gate_blocks_nested_window_size_above_scroll_prize_guidance(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        cfg.setdefault("model", {})["window_size"] = [64, 80]
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}
+
+        eligible, warnings = _promotion_gate({"config": cfg, "metrics": metrics})
+
+        self.assertFalse(eligible)
+        self.assertIn("patch_size_exceeds_scroll_prize_guidance", warnings)
+
+    def test_promotion_gate_blocks_same_segment_and_unknown_validation(self) -> None:
+        metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}
+        for mode in ("spatial-same-segment", "unknown"):
+            cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+            cfg["validation_setup"] = {"mode": mode}
+
+            eligible, warnings = _promotion_gate({"config": cfg, "metrics": metrics})
+
+            self.assertFalse(eligible, mode)
+            self.assertIn("validation_not_held_out", warnings)
+
     def test_promotion_gate_blocks_weak_fixed_threshold_status(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         run = {"config": cfg, "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "weak"}}
 
         eligible, warnings = _promotion_gate(run)
@@ -471,6 +565,7 @@ class AutoResearchPivotTest(unittest.TestCase):
 
     def test_promotion_gate_blocks_missing_fixed_threshold_status(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         run = {"config": cfg, "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}}
 
         eligible, warnings = _promotion_gate(run)

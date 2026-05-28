@@ -1,15 +1,57 @@
 from __future__ import annotations
 
-import unittest
+import json
+import sqlite3
 import tempfile
+import unittest
 from pathlib import Path
 
 import numpy as np
 
-from experiments.runner import _check_extra_train_fold_safety, _load_training_arrays, _pixel_metrics_from_probs, _positive_rate_excess, _resolve_positive_rate_target, _sample_patch_indices, _validation_setup
+from experiments.runner import (
+    _check_extra_train_fold_safety,
+    _load_training_arrays,
+    _pixel_metrics_from_probs,
+    _positive_rate_excess,
+    _resolve_positive_rate_target,
+    _sample_patch_indices,
+    _validation_setup,
+    canonical_experiment_config_signature,
+    init_db,
+    run_experiment,
+)
 
 
 class RunnerValidationTest(unittest.TestCase):
+    def test_canonical_config_signature_ignores_run_artifacts_and_metadata(self) -> None:
+        base = {"model": {"name": "tiny_numpy_ink_logreg"}, "dataset": {"patch_size": 32}, "artifact_dir": "runs/a", "timestamp": "a"}
+        same = {"timestamp": "b", "artifact_dir": "runs/b", "dataset": {"patch_size": 32}, "model": {"name": "tiny_numpy_ink_logreg"}}
+        different = {"model": {"name": "tiny_numpy_ink_logreg"}, "dataset": {"patch_size": 64}}
+
+        self.assertEqual(canonical_experiment_config_signature(base), canonical_experiment_config_signature(same))
+        self.assertNotEqual(canonical_experiment_config_signature(base), canonical_experiment_config_signature(different))
+
+    def test_run_experiment_returns_existing_run_for_same_config_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "experiments.db"
+            cfg = {"model": {"name": "tiny_numpy_ink_logreg"}, "artifact_dir": "runs/a"}
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({"model": {"name": "tiny_numpy_ink_logreg"}, "artifact_dir": "runs/b"}))
+            signature = canonical_experiment_config_signature(cfg)
+            init_db(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO experiments(run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir,config_signature) VALUES(?,?,?,?,?,?,?)",
+                    ("existing", "2026-05-28T00:00:00+00:00", json.dumps(cfg), 0.25, json.dumps({"val_loss": 0.25}), str(root / "runs" / "existing"), signature),
+                )
+
+            result = run_experiment(config_path, db_path=db_path)
+
+        self.assertEqual(result["run_id"], "existing")
+        self.assertTrue(result["deduped"])
+        self.assertEqual(result["main_metric"], 0.25)
+
     def test_extra_train_npzs_are_concatenated_and_counted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -602,10 +602,15 @@ def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
     train_meta = resolved.get("train", {}).get("metadata", {}) if isinstance(resolved.get("train"), dict) else {}
     val_meta = resolved.get("val", {}).get("metadata", {}) if isinstance(resolved.get("val"), dict) else {}
     train_segment = str(setup.get("train_segment_id") or train_meta.get("segment_id") or "")
+    train_segments_raw = setup.get("train_segments") or train_meta.get("train_segments") or []
+    if isinstance(train_segments_raw, (list, tuple, set)):
+        train_segments = {str(segment) for segment in train_segments_raw if segment is not None}
+    else:
+        train_segments = {str(train_segments_raw)} if train_segments_raw else set()
     val_segment = str(setup.get("val_segment_id") or val_meta.get("segment_id") or "")
     mode = str(setup.get("mode") or cfg.get("dataset", {}).get("validation_mode") or "unknown")
     warnings = []
-    if train_segment and train_segment == str(segment_id):
+    if (train_segment and train_segment == str(segment_id)) or str(segment_id) in train_segments:
         warnings.append("inference segment matches training segment; treat as diagnostic-only")
     if mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
         warnings.append(f"validation mode is {mode}; promotion requires held-out segment evidence")
@@ -616,6 +621,7 @@ def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
         "warnings": warnings,
         "validation_mode": mode,
         "train_segment_id": train_segment or None,
+        "train_segments": sorted(train_segments),
         "val_segment_id": val_segment or None,
         "inference_segment_id": str(segment_id),
         "validation_setup": setup,

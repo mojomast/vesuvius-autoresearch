@@ -25,7 +25,9 @@ For rare-positive ink detection, AP must be read against prevalence. If a segmen
 - `prratio3p5`: balanced current operating candidate; recovers much of the `4x` F1 while reducing flooding risk.
 - `4x`: recall/F1 reference and stress test; do not treat as the default promotion target when predictions ride the cap.
 
-Use `threshold_risk_summary.best_under_prratio2p0`, `best_under_prratio3p0`, and `best_under_prratio3p5` to decide the next cap before retraining. If `2.0x` keeps most of the selected F1/F0.5, tighten the cap. If only `3.5x` keeps recall and `cap_binding` is true, prefer calibration or fold-safe hard-negative mining before another threshold sweep.
+Use `threshold_risk_summary.best_under_prratio2p0`, `best_under_prratio3p0`, and `best_under_prratio3p5` to decide the next cap before retraining. If `2.0x` keeps at least about 90% of selected F1/F0.5, tighten the cap to `max_pred_positive_rate_ratio: 2.0` before mining. If only `3.5x` keeps recall and `cap_binding` is true, prefer calibration or fold-safe hard-negative mining before another threshold sweep.
+
+Tune `training.positive_rate_loss_weight` only after cap evidence shows whether overprediction is threshold-only or requires loss-level pressure. A bounded follow-up should keep the fold, seed, model, patch size, and data fixed while changing the positive-rate loss weight/tolerance.
 
 The hard-negative planner consumes this summary. It emits `calibration_mining_decisions` so a full-tile output can recommend `tighten_positive_rate_cap`, `mine_hard_negatives`, or `review_threshold_risk` before any mined data is generated. Explicit quality actions to mine hard negatives can still surface a secondary mining command when cap tightening is the primary threshold-risk decision.
 
@@ -49,3 +51,5 @@ Important fields:
 - `config_preview`: optional preview-only YAML when `--base-config` is provided; unsafe held-out/train-val mismatches set `valid: false` and omit YAML.
 
 Do not use a mined NPZ in a fold whose held-out segment appears in that NPZ's provenance or forbidden segment list.
+
+Do not mine just because a `2.0x` cap is available. Prefer cap tightening when lower caps retain signal; mine hard negatives when lower caps collapse F1 or dashboard quality actions explicitly identify flooding, speckles, or false-positive structure.

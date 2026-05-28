@@ -41,6 +41,7 @@ For public Vesuvius data ingestion, install optional dependencies and accept off
 ```
 
 Outputs are written to `experiments/runs/<run_id>/` and should not be committed.
+Identical resolved configs are deduped by `config_signature`; inspect the returned `deduped` field before assuming a new run directory was created.
 
 ## Dry-Run Leave-One-Out Configs
 
@@ -51,8 +52,11 @@ Outputs are written to `experiments/runs/<run_id>/` and should not be committed.
   --output-jsonl logs/prratio2_followup_loo.jsonl \
   --summary-json logs/prratio2_followup_loo.summary.json \
   --seeds 11001,11018,15050 \
+  --execution-mode fold-major \
   --dry-run
 ```
+
+For non-dry-run seed repeats, prefer `--execution-mode fold-major --limit-worker-threads` so all seeds for one held-out fold run in the same worker and common BLAS/OpenMP thread pools do not oversubscribe CPU cores.
 
 ## Full-Tile Inference And Fold-Safe Mining
 
@@ -112,6 +116,7 @@ The optional SQLite job queue dispatches existing config paths through the same 
 ```
 
 Queue databases are local generated artifacts and must not be committed.
+Queued experiment configs default to config-signature dedupe keys, so duplicate enqueues reuse an existing queued/completed job row when the config can be loaded.
 
 The guarded AutoResearch launcher honors explicit `AUTORESEARCH_PROPOSALS`, but keeps promotion-action pauses enabled for unattended safety. To intentionally bypass the promotion pause through the guard for diagnostics, set both `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1` and `SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1`.
 

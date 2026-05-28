@@ -15,10 +15,10 @@ import numpy as np
 
 from research_dashboard.artifacts import list_artifact_files, preview_artifact
 from research_dashboard.app import HTML, make_handler
-from research_dashboard.experiments import _positive_rate_risk_summary
+from research_dashboard.experiments import _full_tile_ready, _positive_rate_risk_summary
 from research_dashboard.inventory import build_inventory
 from research_dashboard.quality import decoded_output_quality
-from research_dashboard.snapshot import build_snapshot
+from research_dashboard.snapshot import build_snapshot, reset_snapshot_cache
 
 
 class ResearchDashboardTest(unittest.TestCase):
@@ -49,6 +49,9 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(quality["verdict"], "pass")
         self.assertGreaterEqual(quality["score"], 0.70)
         self.assertGreaterEqual(quality["supported_positive_rate"], 0.95)
+        self.assertEqual(quality["component_count"], 1)
+        self.assertEqual(quality["largest_component_positive_fraction"], 1.0)
+        self.assertEqual(quality["small_component_positive_fraction"], 0.0)
         self.assertLess(quality["transition_density"], 0.15)
 
     def test_decoded_output_quality_rejects_noise_failure_modes(self) -> None:
@@ -66,6 +69,9 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("flooding", flood["flags"])
         self.assertEqual(speckle["verdict"], "fail")
         self.assertIn("speckle_or_isolated_positives", speckle["flags"])
+        self.assertGreater(speckle["component_count"], 1)
+        self.assertLess(speckle["largest_component_positive_fraction"], 0.10)
+        self.assertEqual(speckle["small_component_positive_fraction"], 1.0)
         self.assertEqual(noisy["verdict"], "fail")
         self.assertIn("fragmented_threshold_mask", noisy["flags"])
 
@@ -110,6 +116,28 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("inventory", snapshot)
         self.assertIn("progress", snapshot)
         self.assertFalse(snapshot["capabilities"]["enable_runs"])
+
+    def test_snapshot_cache_reuses_and_can_bypass_or_reset(self) -> None:
+        reset_snapshot_cache()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                with mock.patch("research_dashboard.snapshot.build_inventory", side_effect=[{"stamp": 1}, {"stamp": 2}, {"stamp": 3}]) as inventory:
+                    first = build_snapshot(root)
+                    second = build_snapshot(root)
+                    second["inventory"]["stamp"] = 99
+                    third = build_snapshot(root)
+                    bypassed = build_snapshot(root, use_cache=False)
+                    reset_snapshot_cache()
+                    after_reset = build_snapshot(root)
+
+            self.assertEqual(inventory.call_count, 3)
+            self.assertEqual(first["inventory"], {"stamp": 1})
+            self.assertEqual(third["inventory"], {"stamp": 1})
+            self.assertEqual(bypassed["inventory"], {"stamp": 2})
+            self.assertEqual(after_reset["inventory"], {"stamp": 3})
+        finally:
+            reset_snapshot_cache()
 
     def test_snapshot_mining_plan_uses_dataset_fold_maps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -346,7 +374,7 @@ class ResearchDashboardTest(unittest.TestCase):
             run_dir = root / "experiments" / "runs" / "candidate"
             full_tile_dir = run_dir / "full_tile_b"
             full_tile_dir.mkdir(parents=True)
-            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}}))
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "b"}}))
             cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
             conn = sqlite3.connect(db)
             try:
@@ -364,6 +392,51 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertNotIn("missing_seed_repeat_loo", codes)
         self.assertNotIn("missing_full_tile_evidence", codes)
         self.assertEqual(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"], True)
+
+    def test_dashboard_blocks_validation_segment_leakage_despite_heldout_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "leaky.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["leaky"], "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "leaky"
+            full_tile_dir = run_dir / "full_tile_def"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "def"}}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "abc", "train_segments": ["abc", "def"], "val_segment_id": "def"}}
+            metrics = {"val_f1": 0.40, "average_precision": 0.30, "precision": 0.5, "recall": 0.6, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "fixed_threshold_f1": 0.30}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("leaky", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        self.assertEqual(run["validation_setup"]["train_segments"], ["abc", "def"])
+        self.assertEqual(run["promotion_status"], "blocked")
+        self.assertIn("validation_segment_leakage", {blocker["code"] for blocker in run["promotion_blockers"]})
+        self.assertFalse(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"])
+
+    def test_full_tile_ready_rejects_probability_map_artifact_alone(self) -> None:
+        run = {"artifacts": [{"name": "full_tile_abc/probability_map.npy"}]}
+
+        self.assertFalse(_full_tile_ready(run))
+
+    def test_full_tile_ready_accepts_eligible_whole_segment_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir()
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}}))
+
+            self.assertTrue(_full_tile_ready({"artifact_dir": str(run_dir)}))
 
     def test_dashboard_surfaces_weak_fold_full_tile_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -443,6 +516,40 @@ class ResearchDashboardTest(unittest.TestCase):
         evidence = snapshot["research_summary"]["candidate_evidence"]
         self.assertEqual(evidence["weak_fold_full_tile"]["status"], "done")
         self.assertNotEqual(evidence["promotion_actions"][0]["id"], "weak_fold_full_tile")
+
+    def test_dashboard_marks_weak_fold_full_tile_done_from_candidate_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "candidate.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["candidate"], "worst_fold_id": "weakseg", "worst_fold_val_f1": 0.04, "promotion_warnings": []}))
+            (logs / "candidate.jsonl").write_text(json.dumps({"run_id": "loo_weak", "artifact_dir": str(root / "experiments" / "runs" / "loo_weak"), "heldout_segment": "weakseg", "seed": 15050, "val_f1": 0.04, "returncode": 0}) + "\n")
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "candidate"
+            full_tile_dir = run_dir / "full_tile_weakseg"
+            full_tile_dir.mkdir(parents=True)
+            (root / "experiments" / "runs" / "loo_weak").mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"evaluation_region": {"type": "whole_segment", "segment_id": "weakseg"}, "promotion_checks": {"eligible": True}, "val_f1": 0.05, "average_precision": 0.03}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "weakseg"}}
+            metrics = {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        weak = snapshot["research_summary"]["candidate_evidence"]["weak_fold_full_tile"]
+        self.assertEqual(weak["status"], "done")
+        self.assertIn("experiments/runs/candidate/full_tile_weakseg/metrics.json", weak["metrics"]["relative_path"])
+        self.assertIn("experiments/runs/loo_weak", weak["command_text"])
+        action_ids = {item["id"] for item in snapshot["research_summary"]["candidate_evidence"]["promotion_actions"]}
+        self.assertNotIn("weak_fold_full_tile", action_ids)
 
     def test_dashboard_uses_loo_heldout_artifact_for_weak_fold_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

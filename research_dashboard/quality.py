@@ -117,6 +117,46 @@ def decoded_output_quality(probs: np.ndarray, threshold: float = 0.5) -> dict[st
         supported_positive_rate = 0.0
         isolated_positive_rate = 0.0
 
+    component_mask = m
+    component_stats_sampled = False
+    max_component_pixels = 1_000_000
+    if component_mask.size > max_component_pixels:
+        stride = int(np.ceil(np.sqrt(component_mask.size / max_component_pixels)))
+        component_mask = component_mask[::stride, ::stride]
+        component_stats_sampled = True
+
+    ch, cw = component_mask.shape
+    component_positives = int(component_mask.sum())
+    visited = np.zeros_like(component_mask, dtype=bool)
+    component_sizes: list[int] = []
+    for y in range(ch):
+        for x in range(cw):
+            if not component_mask[y, x] or visited[y, x]:
+                continue
+            size = 0
+            stack = [(y, x)]
+            visited[y, x] = True
+            while stack:
+                cy, cx = stack.pop()
+                size += 1
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        if not dy and not dx:
+                            continue
+                        ny = cy + dy
+                        nx = cx + dx
+                        if 0 <= ny < ch and 0 <= nx < cw and component_mask[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+            component_sizes.append(size)
+    component_count = len(component_sizes)
+    if component_positives:
+        largest_component_positive_fraction = float(max(component_sizes) / component_positives) if component_sizes else 0.0
+        small_component_positive_fraction = float(sum(size for size in component_sizes if size <= 4) / component_positives)
+    else:
+        largest_component_positive_fraction = 0.0
+        small_component_positive_fraction = 0.0
+
     transitions = 0
     edges = 0
     if w > 1:
@@ -190,6 +230,10 @@ def decoded_output_quality(probs: np.ndarray, threshold: float = 0.5) -> dict[st
         "neighbor_autocorr": neighbor_autocorr,
         "supported_positive_rate": supported_positive_rate,
         "isolated_positive_rate": isolated_positive_rate,
+        "component_count": component_count,
+        "largest_component_positive_fraction": largest_component_positive_fraction,
+        "small_component_positive_fraction": small_component_positive_fraction,
+        "component_stats_sampled": component_stats_sampled,
         "transition_density": transition_density,
     }
 

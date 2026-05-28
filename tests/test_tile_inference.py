@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import json
 import sys
 import types
 import unittest
@@ -198,7 +199,9 @@ class TileInferenceTest(unittest.TestCase):
     def test_run_full_tile_inference_optionally_writes_mined_npz(self) -> None:
         image = np.zeros((1, 8, 8), dtype=np.float32)
         label = np.zeros((8, 8), dtype=np.float32)
+        label[:4, :4] = 1.0
         prob_map = np.zeros((8, 8), dtype=np.float32)
+        prob_map[:4, :4] = 0.9
         prob_map[4:, 4:] = 0.8
         cfg = {"dataset": {"patch_size": 4}, "evaluation": {"threshold": 0.5}, "model": {"name": "tiny_torch_unet"}}
 
@@ -223,6 +226,10 @@ class TileInferenceTest(unittest.TestCase):
                 self.assertEqual(data["images"].shape, (1, 1, 4, 4))
                 self.assertEqual(data["labels"].shape, (1, 1, 4, 4))
             self.assertIn("mined_npz", result["outputs"])
+            self.assertAlmostEqual(result["metrics"]["ap_prevalence_lift"], 4.0)
+            metrics_json = json.loads(Path(result["outputs"]["metrics_json"]).read_text())
+            self.assertAlmostEqual(metrics_json["ap_prevalence_lift"], 4.0)
+            self.assertEqual(metrics_json["val_positive_rate"], 0.25)
             self.assertEqual(result["metrics"]["mined_hard_negatives"]["samples"], 1)
             self.assertEqual(result["metrics"]["mined_hard_negatives"]["mined_segment_id"], "seg")
             self.assertEqual(result["metrics"]["mined_hard_negatives"]["forbidden_heldout_segments"], ["seg"])
@@ -344,6 +351,17 @@ class TileInferenceTest(unittest.TestCase):
         self.assertFalse(checks["eligible"])
         self.assertIn("training segment", " ".join(checks["warnings"]))
         self.assertEqual(checks["inference_segment_id"], "abc")
+
+    def test_promotion_checks_warn_on_train_segments_leakage(self) -> None:
+        cfg = {
+            "validation_setup": {"mode": "leave-one-segment-out", "train_segments": ["abc", "def"], "val_segment_id": "def"}
+        }
+
+        checks = _promotion_checks(cfg, "def")
+
+        self.assertFalse(checks["eligible"])
+        self.assertIn("training segment", " ".join(checks["warnings"]))
+        self.assertEqual(checks["train_segments"], ["abc", "def"])
 
 
 if __name__ == "__main__":

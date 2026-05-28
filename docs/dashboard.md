@@ -18,6 +18,8 @@ To export the same dashboard contract as JSON without starting a server:
 python3 scripts/export_dashboard_snapshot.py --pretty
 ```
 
+Dashboard snapshots use a short in-process cache by default (`2` seconds) to avoid repeatedly scanning configs, run artifacts, and fold metadata during active experiments. Set `VESUVIUS_DASHBOARD_SNAPSHOT_TTL_SEC=<seconds>` to tune the TTL, or `VESUVIUS_DASHBOARD_DISABLE_SNAPSHOT_CACHE=1` while debugging source changes. Restart the dashboard process after Python source edits; the cache only affects data snapshots.
+
 Use another repo root if needed:
 
 ```bash
@@ -66,7 +68,7 @@ capabilities
 
 Seed-repeat LOO and full-tile evidence are candidate-linked: unrelated global summaries or full-tile artifacts may still be listed for context, but they do not clear the gate for a different robust candidate. LOO summaries should include at least three distinct successful seeds before `promotion_ready` is true.
 
-`research_summary.candidate_evidence` and `research_summary.promotion_actions` expose the candidate-linked evidence used to accelerate review: linked LOO summary, weakest fold, full-tile segments covered, weak-fold full-tile status, quality verdict next actions, and copyable next commands. Weak-fold full-tile commands use the matching LOO held-out artifact when the seed-repeat JSONL is available, not a candidate artifact that held out a different segment. Public-directory full-tile commands include conservative whole-fetch and chunk-level `429` retry/backoff flags. These commands are read-only from the dashboard perspective; they are not executed by the UI and artifact-writing commands remain marked `safe_to_execute_from_dashboard: false`.
+`research_summary.candidate_evidence` and `research_summary.promotion_actions` expose the candidate-linked evidence used to accelerate review: linked LOO summary, weakest fold, full-tile segments covered, weak-fold full-tile status, quality verdict next actions, and copyable next commands. Weak-fold full-tile status is `done` only when an eligible whole-segment full-tile metrics file covers the worst LOO fold; when direct weak-fold artifact evidence is absent, linked candidate full-tile evidence for the same segment may satisfy the status. Weak-fold full-tile commands use the matching LOO held-out artifact when the seed-repeat JSONL is available, not a candidate artifact that held out a different segment. Public-directory full-tile commands include conservative whole-fetch and chunk-level `429` retry/backoff flags. These commands are read-only from the dashboard perspective; they are not executed by the UI and artifact-writing commands remain marked `safe_to_execute_from_dashboard: false`.
 
 When candidate evidence has an unfinished diagnostic or quality action, `research_summary.decision.next_action` should prefer that action over generic promotion text. A ready gate starts review; it does not hide missing weak-fold full-tile diagnostics or quality-review findings. Candidate and linked LOO full-tile `quality_verdict: fail` blocks promotion when quality metrics are present; `review` stays promotable but inserts a quality review before `promotion_review`.
 

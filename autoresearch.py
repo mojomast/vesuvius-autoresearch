@@ -397,10 +397,49 @@ def _scope_priority(scope: str, scope_policy: str) -> int:
     return 5
 
 
+def _has_oversized_ml_patch_or_window(cfg: Dict[str, Any]) -> bool:
+    size_keys = {"patch_size", "window_size", "patch_shape", "window_shape"}
+
+    def _value_exceeds_guidance(value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            return float(value) > 64.0
+        if isinstance(value, (list, tuple)):
+            return any(_value_exceeds_guidance(item) for item in value)
+        return False
+
+    def _walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                key_name = str(key).lower()
+                if key_name in size_keys and _value_exceeds_guidance(nested):
+                    return True
+                if isinstance(nested, (dict, list, tuple)) and _walk(nested):
+                    return True
+        elif isinstance(value, (list, tuple)):
+            return any(_walk(item) for item in value)
+        return False
+
+    return _walk(cfg)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
     cfg = run.get("config", {})
     metrics = run.get("metrics", {})
     warnings: list[str] = []
+    validation_setup = cfg.get("validation_setup") if isinstance(cfg.get("validation_setup"), dict) else {}
+    if validation_setup.get("mode") not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
+        warnings.append("validation_not_held_out")
     if metrics.get("val_f1") is None:
         warnings.append("missing_val_f1")
     if metrics.get("average_precision") is None:
@@ -418,11 +457,19 @@ def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
     fixed_threshold_status = str(metrics.get("fixed_threshold_status") or "").lower()
     if fixed_threshold_status and fixed_threshold_status != "ok":
         warnings.append("fixed_threshold_status_weak")
+    best_threshold = _optional_float(metrics.get("best_threshold"))
+    if best_threshold is not None and (best_threshold <= 0.03 or best_threshold >= 0.94):
+        warnings.append("best_threshold_at_sweep_edge")
+    ap_prevalence_lift = _optional_float(metrics.get("ap_prevalence_lift"))
+    if ap_prevalence_lift is not None and ap_prevalence_lift < 1.25:
+        warnings.append("weak_ap_lift")
     checks = metrics.get("promotion_checks") or {}
     if isinstance(checks, dict) and checks.get("eligible") is False:
         warnings.append("promotion_checks_ineligible")
     if cfg.get("autoresearch", {}).get("cron_safety"):
         warnings.append("cron_safety_run_not_promotable")
+    if _has_oversized_ml_patch_or_window(cfg):
+        warnings.append("patch_size_exceeds_scroll_prize_guidance")
     scope = str(cfg.get("dataset", {}).get("research_scope") or cfg.get("autoresearch", {}).get("scope_policy") or "")
     if "multi_segment" not in scope and "leave_one_out" not in scope:
         warnings.append("not_multisegment_scope")

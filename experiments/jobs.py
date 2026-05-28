@@ -10,8 +10,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .runner import DB_PATH as EXPERIMENTS_DB_PATH
-from .runner import run_experiment
+from .runner import (
+    DB_PATH as EXPERIMENTS_DB_PATH,
+    SQLITE_BUSY_TIMEOUT_MS,
+    SQLITE_TIMEOUT_SECONDS,
+    canonical_experiment_config_signature,
+    load_config,
+    run_experiment,
+)
 
 JOB_DB_PATH = Path(__file__).resolve().parent / "jobs.db"
 
@@ -27,9 +33,18 @@ def _stamp() -> str:
 def _connect(db_path: str | os.PathLike[str] = JOB_DB_PATH) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=SQLITE_TIMEOUT_SECONDS)
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _default_dedupe_key(experiment_config: str | os.PathLike[str]) -> str | None:
+    try:
+        return f"experiment_config:{canonical_experiment_config_signature(load_config(experiment_config))}"
+    except OSError:
+        return None
 
 
 def _row_to_job(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -72,6 +87,8 @@ def enqueue_experiment_config(
 ) -> dict[str, Any]:
     """Enqueue an experiment config path, optionally deduplicated by key."""
     init_db(db_path)
+    if dedupe_key is None:
+        dedupe_key = _default_dedupe_key(experiment_config)
     payload = {"experiment_config": str(experiment_config)}
     payload_json = json.dumps(payload, sort_keys=True)
     now = _stamp()

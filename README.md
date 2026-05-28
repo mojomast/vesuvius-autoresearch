@@ -56,6 +56,8 @@ Each experiment writes:
 - `weights.npy`: tiny NumPy logistic-regression weights.
 - `run_summary.md`: human-readable steering summary.
 
+Resolved experiment configs are deduped by canonical `config_signature` before artifact creation. Re-running an identical config may return the prior run with `deduped: true` instead of writing another `experiments/runs/<run_id>/` directory.
+
 ## Next-Best Move Protocols
 
 The current next moves are documented in `docs/next_best_moves_may2026.md` and sketched in `configs/next_best_moves_robust_template.yaml`. Treat them as promotion protocols, not one-off sweep ideas:
@@ -86,10 +88,12 @@ python3 scripts/evaluate_leave_one_out.py \
   --output-jsonl logs/robust_candidate_seedrepeat.jsonl \
   --summary-json logs/robust_candidate_seedrepeat.summary.json \
   --seeds 11001,11018,15050 \
-  --jobs 2
+  --jobs 6 \
+  --execution-mode fold-major \
+  --limit-worker-threads
 ```
 
-Keep `--jobs` modest on CPU hosts because each worker writes independent run artifacts and shares the experiment DB. Pending generated `configs/auto_*` signatures expire after `AUTORESEARCH_PENDING_CONFIG_TTL_HOURS=24` by default so crashed proposal files do not block future search forever; set it to `0` to reserve all generated configs indefinitely.
+`fold-major` schedules all seed repeats for a held-out fold together, reducing repeated setup while preserving the row schema and summary behavior. Keep `--jobs` matched to `training.num_threads` on CPU hosts because each worker writes independent run artifacts and shares the experiment DB. Pending generated `configs/auto_*` signatures expire after `AUTORESEARCH_PENDING_CONFIG_TTL_HOURS=24` by default so crashed proposal files do not block future search forever; set it to `0` to reserve all generated configs indefinitely.
 
 For distributed-lite execution, enqueue existing config paths through `experiments.jobs.enqueue_experiment_config(...)` and run workers with the same core experiment runner:
 

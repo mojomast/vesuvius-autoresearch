@@ -6,6 +6,7 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor
 import copy
 import json
+import os
 import statistics
 import sys
 import tempfile
@@ -20,6 +21,15 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.vesuvius_data import validate_prepared_npz
 from experiments.runner import ROOT, _check_extra_train_fold_safety, load_config, run_experiment
+
+
+THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
 
 
 def _resolve(path: str | Path) -> Path:
@@ -72,8 +82,12 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
             "dry_run": True,
             "folds_with_zero_precision_or_recall": [],
             "folds_with_positive_rate_alarm": [],
+            "folds_with_fixed_threshold_not_ok": [],
+            "folds_with_threshold_edge_case": [],
+            "folds_with_weak_ap_prevalence_lift": [],
             "min_seeds_for_promotion": min_seeds_for_promotion,
             "distinct_successful_seeds": 0,
+            "per_fold_successful_seeds": {},
             "promotion_ready": False,
             "promotion_warnings": ["dry_run_no_promotion_metrics"],
         }
@@ -94,8 +108,14 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
         "run_ids": [row["run_id"] for row in successful if row.get("run_id")],
     }
     distinct_successful_seeds = {row.get("seed") for row in successful if row.get("seed") is not None}
+    requested_folds = sorted({str(row["heldout_segment"]) for row in rows if "heldout_segment" in row})
+    successful_seeds_by_fold: dict[str, set[Any]] = {fold: set() for fold in requested_folds}
+    for row in successful:
+        if row.get("seed") is not None:
+            successful_seeds_by_fold.setdefault(str(row["heldout_segment"]), set()).add(row.get("seed"))
     summary["min_seeds_for_promotion"] = min_seeds_for_promotion
     summary["distinct_successful_seeds"] = len(distinct_successful_seeds)
+    summary["per_fold_successful_seeds"] = {fold: len(seeds) for fold, seeds in successful_seeds_by_fold.items()}
     if successful:
         by_fold: dict[str, list[float]] = {}
         ap_by_fold: dict[str, list[float]] = {}
@@ -104,6 +124,9 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
         all_ap: list[float] = []
         zero_precision_or_recall: list[str] = []
         positive_rate_alarm: list[str] = []
+        fixed_threshold_not_ok: list[str] = []
+        threshold_edge_case: list[str] = []
+        weak_ap_prevalence_lift: list[str] = []
         for row in successful:
             fold = str(row["heldout_segment"])
             val_f1 = _as_float(row, "val_f1")
@@ -133,6 +156,20 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
                 ratio = pred_positive_rate / val_positive_rate
                 if ratio > 3.5 or ratio < 0.1:
                     positive_rate_alarm.append(_row_id(row))
+
+            fixed_threshold_status = row.get("fixed_threshold_status")
+            if fixed_threshold_status is not None and fixed_threshold_status != "ok":
+                fixed_threshold_not_ok.append(_row_id(row))
+
+            best_threshold = _as_float(row, "best_threshold")
+            if best_threshold is not None and (best_threshold <= 0.01 or best_threshold >= 0.99):
+                threshold_edge_case.append(_row_id(row))
+
+            ap_prevalence_lift = _as_float(row, "ap_prevalence_lift")
+            if ap_prevalence_lift is None and val_positive_rate is not None and val_positive_rate > 0:
+                ap_prevalence_lift = average_precision / val_positive_rate
+            if ap_prevalence_lift is not None and ap_prevalence_lift < 1.25:
+                weak_ap_prevalence_lift.append(_row_id(row))
         per_fold_f1 = {fold: float(statistics.mean(values)) for fold, values in by_fold.items()}
         per_fold_ap = {fold: float(statistics.mean(values)) for fold, values in ap_by_fold.items()}
         worst_fold_id = min(per_fold_f1, key=per_fold_f1.get)
@@ -149,6 +186,9 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
             "per_fold_average_precision": per_fold_ap,
             "folds_with_zero_precision_or_recall": zero_precision_or_recall,
             "folds_with_positive_rate_alarm": positive_rate_alarm,
+            "folds_with_fixed_threshold_not_ok": fixed_threshold_not_ok,
+            "folds_with_threshold_edge_case": threshold_edge_case,
+            "folds_with_weak_ap_prevalence_lift": weak_ap_prevalence_lift,
         })
         if by_seed:
             summary["per_seed_mean_val_f1"] = {seed: float(statistics.mean(values)) for seed, values in by_seed.items()}
@@ -165,9 +205,18 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
             promotion_warnings.append(f"positive_rate_alarm:{row_id}")
         if len(distinct_successful_seeds) < min_seeds_for_promotion:
             promotion_warnings.append(f"insufficient_seed_repeats:{len(distinct_successful_seeds)}/{min_seeds_for_promotion}")
+        for fold, seed_count in summary["per_fold_successful_seeds"].items():
+            if seed_count < min_seeds_for_promotion:
+                promotion_warnings.append(f"insufficient_fold_seed_repeats:{fold}:{seed_count}/{min_seeds_for_promotion}")
     else:
         summary["folds_with_zero_precision_or_recall"] = []
         summary["folds_with_positive_rate_alarm"] = []
+        summary["folds_with_fixed_threshold_not_ok"] = []
+        summary["folds_with_threshold_edge_case"] = []
+        summary["folds_with_weak_ap_prevalence_lift"] = []
+        for fold, seed_count in summary["per_fold_successful_seeds"].items():
+            if seed_count < min_seeds_for_promotion:
+                promotion_warnings.append(f"insufficient_fold_seed_repeats:{fold}:{seed_count}/{min_seeds_for_promotion}")
         if rows:
             promotion_warnings.append("no_successful_folds")
 
@@ -183,6 +232,11 @@ def _parse_seeds(raw: str | None, default_seed: int | None) -> list[int | None]:
     if not seeds:
         raise ValueError("--seeds must contain at least one integer seed")
     return seeds
+
+
+def _limit_worker_threads() -> None:
+    for key in THREAD_LIMIT_ENV_VARS:
+        os.environ.setdefault(key, "1")
 
 
 def _run_fold_job(fold_config: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -222,6 +276,10 @@ def _run_fold_job(fold_config: str, row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _run_fold_jobs_for_heldout_fold(tasks: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    return [_run_fold_job(config_path, row) for config_path, row in tasks]
+
+
 def _write_rows_jsonl(output_jsonl: Path, rows: list[dict[str, Any]]) -> None:
     with output_jsonl.open("a") as fh:
         for row in rows:
@@ -239,6 +297,8 @@ def main() -> int:
     parser.add_argument("--seeds", default=None, help="Comma-separated training.seed values to repeat for each held-out segment")
     parser.add_argument("--min-seeds-for-promotion", type=int, default=3, help="Distinct successful seeds required before setting promotion_ready")
     parser.add_argument("--jobs", type=int, default=1, help="Parallel fold jobs for non-dry-run execution; default 1")
+    parser.add_argument("--execution-mode", choices=("task", "fold-major"), default="task", help="Schedule one worker job per seed task, or group all seeds for a held-out fold in one worker")
+    parser.add_argument("--limit-worker-threads", action="store_true", help="Set common BLAS/OpenMP thread env vars to 1 inside worker processes when unset")
     parser.add_argument("--dry-run", action="store_true", help="Write planned fold configs without running experiments")
     args = parser.parse_args()
     if args.jobs < 1:
@@ -261,6 +321,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="vesuvius_loo_") as tmpdir:
         tmp = Path(tmpdir)
         tasks: list[tuple[str, dict[str, Any]]] = []
+        tasks_by_fold: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         for heldout_segment, fold in sorted(fold_map.items()):
             for seed in seeds:
                 cfg = copy.deepcopy(base_cfg)
@@ -287,11 +348,22 @@ def main() -> int:
                     rows.append(row)
                 else:
                     tasks.append((str(fold_config), row))
+                    tasks_by_fold.setdefault(str(heldout_segment), []).append((str(fold_config), row))
         if tasks and args.jobs == 1:
+            if args.limit_worker_threads:
+                _limit_worker_threads()
             rows.extend(_run_fold_job(config_path, row) for config_path, row in tasks)
         elif tasks:
-            with ProcessPoolExecutor(max_workers=args.jobs) as executor:
-                rows.extend(executor.map(_run_fold_job, [task[0] for task in tasks], [task[1] for task in tasks]))
+            executor_kwargs: dict[str, Any] = {"max_workers": args.jobs}
+            if args.limit_worker_threads:
+                executor_kwargs["initializer"] = _limit_worker_threads
+            with ProcessPoolExecutor(**executor_kwargs) as executor:
+                if args.execution_mode == "fold-major":
+                    fold_task_groups = [tasks_by_fold[fold] for fold in sorted(tasks_by_fold)]
+                    for fold_rows in executor.map(_run_fold_jobs_for_heldout_fold, fold_task_groups):
+                        rows.extend(fold_rows)
+                else:
+                    rows.extend(executor.map(_run_fold_job, [task[0] for task in tasks], [task[1] for task in tasks]))
         _write_rows_jsonl(output_jsonl, rows)
 
     summary = _summarize(rows, min_seeds_for_promotion=args.min_seeds_for_promotion)

@@ -23,6 +23,30 @@ from data.vesuvius_data import prepare_training_subset, validate_prepared_npz
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "experiments" / "experiments.db"
 RUNS_DIR = ROOT / "experiments" / "runs"
+SQLITE_TIMEOUT_SECONDS = 30.0
+SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_TIMEOUT_SECONDS * 1000)
+CONFIG_SIGNATURE_EXCLUDED_KEYS = {
+    "artifact_dir",
+    "artifact_path",
+    "artifacts_dir",
+    "config_signature",
+    "created_at",
+    "db_path",
+    "dedupe_key",
+    "log_dir",
+    "metrics",
+    "output",
+    "output_dir",
+    "outputs",
+    "resolved_data",
+    "result_json",
+    "run_dir",
+    "run_id",
+    "secondary_metrics_json",
+    "timestamp",
+    "updated_at",
+    "validation_setup",
+}
 
 
 def _jsonable(obj: Any) -> Any:
@@ -39,6 +63,27 @@ def load_config(path: str | os.PathLike[str]) -> Dict[str, Any]:
         if str(path).endswith(".json"):
             return json.load(f)
         return yaml.safe_load(f)
+
+
+def canonical_experiment_config_signature(cfg: Dict[str, Any]) -> str:
+    """Stable hash of training config, excluding run artifacts and volatile metadata."""
+    def clean(value: Any) -> Any:
+        value = _jsonable(value)
+        if isinstance(value, dict):
+            return {str(k): clean(v) for k, v in sorted(value.items()) if str(k) not in CONFIG_SIGNATURE_EXCLUDED_KEYS}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+
+    canonical = json.dumps(clean(cfg), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _connect_experiments_db(db_path: Path | str = DB_PATH) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=SQLITE_TIMEOUT_SECONDS)
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
 
 
 def _resolve_repo_path(raw: str | os.PathLike[str]) -> Path:
@@ -95,9 +140,10 @@ def _load_training_arrays(train_npz: str, cfg: Dict[str, Any]) -> tuple[np.ndarr
     }
 
 
-def init_db(db_path: Path = DB_PATH) -> None:
+def init_db(db_path: Path | str = DB_PATH) -> None:
+    db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    with _connect_experiments_db(db_path) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS experiments (
                 run_id TEXT PRIMARY KEY,
@@ -108,8 +154,39 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 artifact_dir TEXT NOT NULL
             )
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(experiments)")}
+        if "config_signature" not in columns:
+            conn.execute("ALTER TABLE experiments ADD COLUMN config_signature TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_metric ON experiments(main_metric)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_timestamp ON experiments(timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_config_signature ON experiments(config_signature)")
+
+
+def _existing_run_for_signature(config_signature: str, db_path: Path | str = DB_PATH) -> Dict[str, Any] | None:
+    init_db(db_path)
+    with _connect_experiments_db(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT run_id, main_metric, secondary_metrics_json, artifact_dir
+            FROM experiments
+            WHERE config_signature = ?
+            ORDER BY timestamp DESC, run_id DESC
+            LIMIT 1
+            """,
+            (config_signature,),
+        ).fetchone()
+    if row is None:
+        return None
+    metrics = json.loads(row[2])
+    return {
+        "run_id": row[0],
+        "main_metric": float(row[1]),
+        "metrics": metrics,
+        "artifact_dir": row[3],
+        "db_path": str(db_path),
+        "config_signature": config_signature,
+        "deduped": True,
+    }
 
 
 def _features(images: np.ndarray, depth: int) -> np.ndarray:
@@ -909,6 +986,10 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
 
 def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH) -> Dict[str, Any]:
     cfg = load_config(config_path)
+    config_signature = canonical_experiment_config_signature(cfg)
+    existing = _existing_run_for_signature(config_signature, db_path)
+    if existing is not None:
+        return existing
     dataset = cfg.setdefault("dataset", {})
     data_root = Path(dataset.get("prepared_root", ROOT / "data" / "prepared")).expanduser()
     patch_size = int(dataset.get("patch_size", 32))
@@ -951,9 +1032,9 @@ def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH)
     main_name = cfg.get("evaluation", {}).get("main_metric", "val_loss")
     main_metric = float(metrics[main_name])
     init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _connect_experiments_db(db_path) as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO experiments(run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir) VALUES(?,?,?,?,?,?)",
-            (run_id, datetime.now(timezone.utc).isoformat(), raw, main_metric, json.dumps(metrics, sort_keys=True), str(artifact_dir)),
+            "INSERT OR REPLACE INTO experiments(run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir,config_signature) VALUES(?,?,?,?,?,?,?)",
+            (run_id, datetime.now(timezone.utc).isoformat(), raw, main_metric, json.dumps(metrics, sort_keys=True), str(artifact_dir), config_signature),
         )
-    return {"run_id": run_id, "main_metric": main_metric, "metrics": metrics, "artifact_dir": str(artifact_dir), "db_path": str(db_path)}
+    return {"run_id": run_id, "main_metric": main_metric, "metrics": metrics, "artifact_dir": str(artifact_dir), "db_path": str(db_path), "config_signature": config_signature, "deduped": False}

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,11 @@ from .operations import operations_snapshot
 from .progress import build_progress
 
 
+_SNAPSHOT_CACHE_TTL_SEC = 2.0
+_snapshot_cache_lock = threading.RLock()
+_snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
 def resolve_project_root(raw: str | os.PathLike[str] | None = None) -> Path:
     if raw:
         return Path(raw).expanduser().resolve()
@@ -26,8 +34,22 @@ def resolve_project_root(raw: str | os.PathLike[str] | None = None) -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    root = resolve_project_root(project_root)
+def reset_snapshot_cache() -> None:
+    with _snapshot_cache_lock:
+        _snapshot_cache.clear()
+
+
+def _snapshot_cache_ttl_sec() -> float:
+    raw = os.getenv("VESUVIUS_DASHBOARD_SNAPSHOT_TTL_SEC")
+    if raw is None:
+        return _SNAPSHOT_CACHE_TTL_SEC
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return _SNAPSHOT_CACHE_TTL_SEC
+
+
+def _build_snapshot_uncached(root: Path) -> dict[str, Any]:
     experiments = load_experiments(root)
     datasets = {"summary": dataset_summary(), "prepared": prepared_datasets(root), "fold_maps": fold_maps(root)}
     operations = operations_snapshot(root)
@@ -60,6 +82,26 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None) -> dict[s
         "operations": operations,
         "capabilities": {"enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1", "artifact_preview": True, "standalone": True},
     }
+
+
+def build_snapshot(project_root: str | os.PathLike[str] | None = None, *, use_cache: bool = True) -> dict[str, Any]:
+    root = resolve_project_root(project_root)
+    ttl_sec = _snapshot_cache_ttl_sec()
+    cache_enabled = use_cache and ttl_sec > 0 and os.getenv("VESUVIUS_DASHBOARD_DISABLE_SNAPSHOT_CACHE") != "1"
+    cache_key = f"{root}\0enable_runs={os.getenv('VESUVIUS_DASHBOARD_ENABLE_RUNS') == '1'}"
+    now = time.monotonic()
+
+    if cache_enabled:
+        with _snapshot_cache_lock:
+            cached = _snapshot_cache.get(cache_key)
+            if cached and now - cached[0] < ttl_sec:
+                return copy.deepcopy(cached[1])
+
+    snapshot = _build_snapshot_uncached(root)
+    if cache_enabled:
+        with _snapshot_cache_lock:
+            _snapshot_cache[cache_key] = (time.monotonic(), copy.deepcopy(snapshot))
+    return snapshot
 
 
 def main(argv: list[str] | None = None) -> int:

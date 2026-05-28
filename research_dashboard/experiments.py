@@ -95,6 +95,12 @@ def _loo_ready(metrics: dict[str, Any]) -> bool:
     return bool(metrics.get("loo_promotion_ready") or summary.get("promotion_ready"))
 
 
+def _eligible_full_tile_metrics(metrics: dict[str, Any]) -> bool:
+    checks = metrics.get("promotion_checks") if isinstance(metrics.get("promotion_checks"), dict) else {}
+    region = metrics.get("evaluation_region") if isinstance(metrics.get("evaluation_region"), dict) else {}
+    return checks.get("eligible") is True and region.get("type") == "whole_segment"
+
+
 def _path_tail(value: Any) -> str:
     return str(value or "").replace("\\", "/").lstrip("./")
 
@@ -103,6 +109,16 @@ def _same_path_tail(left: Any, right: Any) -> bool:
     left_tail = _path_tail(left)
     right_tail = _path_tail(right)
     return bool(left_tail and right_tail and (left_tail.endswith(right_tail) or right_tail.endswith(left_tail)))
+
+
+def _normalized_segments(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw = value
+    elif value:
+        raw = [value]
+    else:
+        raw = []
+    return sorted({str(segment) for segment in raw if segment is not None and str(segment) not in {"", "?"}})
 
 
 def _normalize_loo_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -157,8 +173,7 @@ def _linked_loo_ready(run: dict[str, Any], loo_summaries: list[dict[str, Any]], 
 
 def _full_tile_ready(run: dict[str, Any]) -> bool:
     metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
-    checks = metrics.get("promotion_checks") if isinstance(metrics.get("promotion_checks"), dict) else {}
-    if metrics.get("full_tile_promotion_ready") or checks.get("full_tile_evidence"):
+    if metrics.get("full_tile_promotion_ready") or _eligible_full_tile_metrics(metrics):
         return True
     artifact_dir = run.get("artifact_dir")
     if artifact_dir:
@@ -167,11 +182,9 @@ def _full_tile_ready(run: dict[str, Any]) -> bool:
                 full_tile_metrics = json.loads(path.read_text())
             except Exception:
                 continue
-            full_tile_checks = full_tile_metrics.get("promotion_checks") if isinstance(full_tile_metrics, dict) else {}
-            if isinstance(full_tile_checks, dict) and full_tile_checks.get("eligible") is True:
+            if isinstance(full_tile_metrics, dict) and _eligible_full_tile_metrics(full_tile_metrics):
                 return True
-    names = {str(item.get("name") or "") for item in run.get("artifacts") or [] if isinstance(item, dict)}
-    return any("full_tile" in name or "probability_map" in name for name in names)
+    return False
 
 
 def _rel_path(path: Path, project_root: Path | None = None) -> str:
@@ -426,6 +439,8 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
     weak_run = {"artifact_dir": str(weak_artifact_dir)} if weak_artifact_dir else run
     weak_tiles = _full_tile_metrics(weak_run, project_root) if weak_fold_id else []
     weak_tile = next((item for item in weak_tiles if item.get("segment_id") == weak_fold_id), None) if weak_fold_id else None
+    if weak_fold_id and not weak_tile:
+        weak_tile = next((item for item in full_tiles if item.get("segment_id") == weak_fold_id), None)
     weak_status = "not_applicable"
     if weak_fold_id:
         if not weak_tile:
@@ -544,6 +559,12 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
     mode = str(run.get("validation_setup", {}).get("mode") or "unknown")
     if mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
         add("validation_not_held_out", "validation")
+    setup = run.get("validation_setup", {}) if isinstance(run.get("validation_setup"), dict) else {}
+    train_segment = str(setup.get("train_segment_id") or "")
+    val_segment = str(setup.get("val_segment_id") or "")
+    train_segments = set(_normalized_segments(setup.get("train_segments")))
+    if val_segment and val_segment != "?" and ((train_segment and train_segment == val_segment) or val_segment in train_segments):
+        add("validation_segment_leakage", "validation")
     if _is_robust_candidate(run):
         if not _linked_loo_ready(run, loo_summaries or [], project_root):
             add("missing_seed_repeat_loo", "validation")
@@ -670,14 +691,17 @@ def _validation_setup(run: dict[str, Any]) -> dict[str, Any]:
     train_meta = resolved.get("train", {}).get("metadata", {}) if isinstance(resolved.get("train"), dict) else {}
     val_meta = resolved.get("val", {}).get("metadata", {}) if isinstance(resolved.get("val"), dict) else {}
     train_segment = str(setup.get("train_segment_id") or train_meta.get("segment_id") or "?")
+    train_segments = _normalized_segments(setup.get("train_segments") or train_meta.get("train_segments"))
     val_segment = str(setup.get("val_segment_id") or val_meta.get("segment_id") or "?")
     mode = str(setup.get("mode") or _get_nested(cfg, ("dataset", "validation_mode"), "unknown"))
     if mode == "unknown" and train_segment != "?" and val_segment != "?":
         mode = "cross-segment" if train_segment != val_segment else "spatial-same-segment"
     warning = setup.get("warning")
+    if not warning and val_segment != "?" and (train_segment == val_segment or val_segment in set(train_segments)):
+        warning = "Validation segment overlaps training segments; this is not held-out validation."
     if not warning and mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
         warning = "Validation is not cross-segment/cross-scroll/leave-one-segment-out."
-    return {"mode": mode, "warning": warning, "train_segment_id": train_segment, "val_segment_id": val_segment}
+    return {"mode": mode, "warning": warning, "train_segment_id": train_segment, "train_segments": train_segments, "val_segment_id": val_segment}
 
 
 def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, Any]]:
