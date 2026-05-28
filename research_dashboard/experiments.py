@@ -242,6 +242,9 @@ def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) ->
 
 
 def _quality_blocks_promotion(item: dict[str, Any]) -> bool:
+    fixed_threshold_status = str(item.get("fixed_threshold_status") or "").lower()
+    if fixed_threshold_status and fixed_threshold_status != "ok":
+        return True
     quality = item.get("quality_verdict") if isinstance(item.get("quality_verdict"), dict) else {}
     has_quality_metrics = any(item.get(key) is not None for key in ("val_f1", "average_precision", "pred_positive_rate", "val_positive_rate", "fixed_threshold_f1"))
     return quality.get("verdict") == "fail" and has_quality_metrics
@@ -525,8 +528,11 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
     val_rate = metrics.get("val_positive_rate")
     if pred_rate is not None and val_rate is not None:
         ratio = float(pred_rate) / max(float(val_rate), 1e-6)
-        if ratio > 4.0 or ratio < 0.1:
+        if ratio > 3.5 or ratio < 0.1:
             add("pred_positive_rate_ratio_suspicious", "calibration")
+    fixed_threshold_status = str(metrics.get("fixed_threshold_status") or "").lower()
+    if fixed_threshold_status and fixed_threshold_status != "ok":
+        add("fixed_threshold_status_weak", "calibration")
     checks = metrics.get("promotion_checks") or {}
     if isinstance(checks, dict) and checks.get("eligible") is False:
         add("promotion_checks_ineligible", "promotion_checks")
@@ -545,6 +551,9 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
             add("missing_full_tile_evidence", "inference")
         elif any(_quality_blocks_promotion(item) for item in _full_tile_metrics(run, project_root)):
             add("full_tile_quality_fail", "quality")
+        summary = _linked_loo_summary(run, loo_summaries or [], project_root)
+        if any(_quality_blocks_promotion(item) for item in _loo_full_tile_diagnostics(summary, project_root).get("evidence", [])):
+            add("loo_full_tile_quality_fail", "quality")
     best_threshold = metrics.get("best_threshold")
     if best_threshold is not None:
         threshold = float(best_threshold)

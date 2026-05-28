@@ -651,6 +651,103 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(actions[0]["id"], "calibrate_positive_rate")
         self.assertNotIn("promotion_review", {action["id"] for action in actions})
 
+    def test_positive_rate_ratio_above_3p5_blocks_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "ratio.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["ratio"], "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "ratio"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.40, "average_precision": 0.30, "precision": 0.5, "recall": 0.6, "pred_positive_rate": 0.351, "val_positive_rate": 0.10, "loo_promotion_ready": True, "fixed_threshold_f1": 0.30}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("ratio", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        self.assertEqual(run["promotion_status"], "blocked")
+        self.assertIn("pred_positive_rate_ratio_suspicious", {blocker["code"] for blocker in run["promotion_blockers"]})
+        self.assertFalse(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"])
+
+    def test_fixed_threshold_status_weak_blocks_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "fixed_status.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["fixed_status"], "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "fixed_status"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.40, "average_precision": 0.30, "precision": 0.5, "recall": 0.6, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "loo_promotion_ready": True, "fixed_threshold_f1": 0.30, "fixed_threshold_status": "weak"}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("fixed_status", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        self.assertEqual(run["promotion_status"], "blocked")
+        self.assertIn("fixed_threshold_status_weak", {blocker["code"] for blocker in run["promotion_blockers"]})
+
+    def test_loo_full_tile_quality_fail_blocks_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "loo_quality.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["loo_quality"], "promotion_warnings": []}))
+            (logs / "loo_quality.jsonl").write_text(json.dumps({"run_id": "loo_bad", "artifact_dir": str(root / "experiments" / "runs" / "loo_bad"), "heldout_segment": "abc", "seed": 1, "val_f1": 0.30, "average_precision": 0.20, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "returncode": 0}) + "\n")
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "loo_quality"
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}}))
+            loo_tile_dir = root / "experiments" / "runs" / "loo_bad" / "full_tile_abc"
+            loo_tile_dir.mkdir(parents=True)
+            (loo_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}, "val_f1": 0.02, "average_precision": 0.02, "pred_positive_rate": 0.90, "val_positive_rate": 0.10, "fixed_threshold_f1": 0.0}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.40, "average_precision": 0.30, "precision": 0.5, "recall": 0.6, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "fixed_threshold_f1": 0.30}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("loo_quality", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        evidence = snapshot["research_summary"]["candidate_evidence"]
+        self.assertEqual(run["promotion_status"], "blocked")
+        self.assertIn("loo_full_tile_quality_fail", {blocker["code"] for blocker in run["promotion_blockers"]})
+        self.assertEqual(evidence["loo_full_tile"]["coverage_count"], 1)
+        self.assertEqual(evidence["loo_full_tile"]["evidence"][0]["quality_verdict"]["verdict"], "fail")
+        self.assertFalse(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"])
+        self.assertNotIn("promotion_review", {action["id"] for action in evidence["promotion_actions"]})
+
     def test_artifact_preview_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

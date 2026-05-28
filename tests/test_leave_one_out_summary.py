@@ -69,6 +69,18 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertIn("positive_rate_alarm:low:seed=3", summary["promotion_warnings"])
         self.assertFalse(summary["promotion_ready"])
 
+    def test_positive_rate_alarm_uses_prize_warning_ratio(self) -> None:
+        rows = [
+            {"returncode": 0, "heldout_segment": "ok", "seed": 1, "val_f1": 0.5, "average_precision": 0.4, "precision": 0.3, "recall": 0.5, "pred_positive_rate": 0.35, "val_positive_rate": 0.1},
+            {"returncode": 0, "heldout_segment": "high", "seed": 1, "val_f1": 0.5, "average_precision": 0.4, "precision": 0.3, "recall": 0.5, "pred_positive_rate": 0.36, "val_positive_rate": 0.1},
+        ]
+
+        summary = _summarize(rows, min_seeds_for_promotion=1)
+
+        self.assertEqual(summary["folds_with_positive_rate_alarm"], ["high:seed=1"])
+        self.assertIn("positive_rate_alarm:high:seed=1", summary["promotion_warnings"])
+        self.assertFalse(summary["promotion_ready"])
+
     def test_failed_only_rows_do_not_crash(self) -> None:
         summary = _summarize([{"returncode": 1, "heldout_segment": "x", "error": "bad"}])
 

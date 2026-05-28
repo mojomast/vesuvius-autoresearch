@@ -10,6 +10,7 @@ except ImportError:
     fcntl = None
 import json
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -410,8 +411,11 @@ def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
     val_rate = metrics.get("val_positive_rate")
     if pred_rate is not None and val_rate is not None:
         ratio = float(pred_rate) / max(float(val_rate), 1e-6)
-        if ratio > 4.0 or ratio < 0.1:
+        if ratio > 3.5 or ratio < 0.1:
             warnings.append("pred_positive_rate_ratio_suspicious")
+    fixed_threshold_status = str(metrics.get("fixed_threshold_status") or "").lower()
+    if fixed_threshold_status and fixed_threshold_status != "ok":
+        warnings.append("fixed_threshold_status_weak")
     checks = metrics.get("promotion_checks") or {}
     if isinstance(checks, dict) and checks.get("eligible") is False:
         warnings.append("promotion_checks_ineligible")
@@ -436,6 +440,8 @@ def _run_quality_score(run: Dict[str, Any]) -> float:
             score -= min(0.25, 0.03 * (ratio - 3.0))
         elif ratio < 0.25:
             score -= min(0.25, 0.03 * (0.25 / max(ratio, 1e-6)))
+    if str(metrics.get("fixed_threshold_status") or "").lower() not in {"", "ok"}:
+        score -= 0.05
     eligible, warnings = _promotion_gate(run)
     if eligible:
         score += 0.05
@@ -453,6 +459,8 @@ def _promotion_next_action(run: Dict[str, Any]) -> str:
         return "run_full_tile_validation"
     if "pred_positive_rate_ratio_suspicious" in warnings:
         return "calibrate_prediction_rate"
+    if "fixed_threshold_status_weak" in warnings:
+        return "calibrate_probability_scale"
     if "zero_precision_or_recall" in warnings:
         return "repair_precision_recall"
     if eligible:
@@ -486,7 +494,82 @@ def _strategy_phase(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     else:
         phase = "exploit"
         families = set()
-    return {"plateau": plateau, "phase": phase, "required_families": families, "next_action": next_action}
+    return {
+        "plateau": plateau,
+        "phase": phase,
+        "required_families": families,
+        "next_action": next_action,
+        "candidate_run_id": best_recent.get("run_id"),
+    }
+
+
+def _repo_arg(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _shell_command(args: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in args)
+
+
+def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any] | None:
+    """Return a candidate-linked promotion action when local sweeps should stop."""
+    if os.environ.get("AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION", "0") == "1":
+        return None
+    strategy = _strategy_phase(runs)
+    action = str(strategy.get("next_action") or "")
+    if not strategy.get("plateau") or strategy.get("phase") != "promote":
+        return None
+    if action not in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
+        return None
+    candidate_run_id = str(strategy.get("candidate_run_id") or "")
+    candidate = next((run for run in runs if str(run.get("run_id") or "") == candidate_run_id), None)
+    if not candidate:
+        return None
+
+    reasoning = [
+        "strategy_phase_promote",
+        "plateau_detected",
+        "stop_local_sampled_sweeps",
+        "candidate_linked_evidence_required",
+    ]
+    command = None
+    if action == "run_seed_repeat_leave_one_out":
+        artifact_dir = Path(str(candidate.get("artifact_dir") or ROOT / "experiments" / "runs" / candidate_run_id))
+        base_config = artifact_dir / "config.json"
+        output_stem = f"{candidate_run_id}_seedrepeat_loo"
+        command = _shell_command([
+            ".venv/bin/python",
+            "scripts/evaluate_leave_one_out.py",
+            "--base-config",
+            _repo_arg(base_config),
+            "--fold-map",
+            "data/real_cross_folds_expanded_combined/fold_map.json",
+            "--output-jsonl",
+            f"logs/{output_stem}.jsonl",
+            "--summary-json",
+            f"logs/{output_stem}.summary.json",
+            "--seeds",
+            "11001,11018,15050",
+            "--jobs",
+            os.environ.get("AUTORESEARCH_LOO_JOBS", "2"),
+        ])
+        reasoning.append("median_over_seeds_and_folds_required")
+    else:
+        reasoning.append("full_tile_command_should_come_from_dashboard_candidate_evidence")
+
+    return {
+        "status": "manual_promotion_action",
+        "next_action": action,
+        "candidate_run_id": candidate_run_id,
+        "command": command,
+        "reasoning": reasoning,
+        "strategy_phase": strategy.get("phase"),
+        "promotion_required": ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"],
+        "proposals": [],
+    }
 
 
 def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:
@@ -726,6 +809,16 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
     return proposals
 
 
+def _promotion_or_fallback_proposals(runs: List[Dict[str, Any]], base: Dict[str, Any], ready_payload: dict[str, Any] | None, count: int) -> tuple[List[Tuple[str, Dict[str, Any], str]], str | None]:
+    """Return auto-action proposals, falling back to normal exploration if exhausted."""
+    if ready_payload and ready_payload.get("action_id") in _AUTO_ACTIONS:
+        action_proposals = _generate_promotion_action_proposals(runs, ready_payload, count=count)
+        if action_proposals:
+            return action_proposals, str(ready_payload.get("action_id"))
+        print(f"Promotion gate action={ready_payload.get('action_id')} proposals exhausted; falling back to normal exploration", flush=True)
+    return _propose_best_path(base, runs, count=count), None
+
+
 def _promotion_ready_payload() -> dict[str, Any] | None:
     if os.environ.get("AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY", "1") != "1":
         return None
@@ -838,14 +931,23 @@ def main() -> int:
                     for item in payload["proposals"]:
                         print(f"  {item['name']}: {item['reason']} [{item.get('strategy_phase')}/{item.get('mutation_family')}]")
                 return 0
+        manual_payload = _promotion_phase_manual_action(runs)
+        if manual_payload:
+            if args.json:
+                print(json.dumps(manual_payload, indent=2, sort_keys=True))
+            else:
+                print(f"AutoResearch promotion action required: {manual_payload.get('next_action')}")
+                if manual_payload.get("command"):
+                    print(f"Command: {manual_payload['command']}")
+            return 0
         base = _best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         if args.json:
             with contextlib.redirect_stdout(sys.stderr):
-                proposals = _propose_best_path(base, runs, count=proposal_count)
+                proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
         else:
-            proposals = _propose_best_path(base, runs, count=proposal_count)
-        payload = {"status": "planned", "proposal_count": len(proposals), "proposals": _proposal_plan(proposals)}
+            proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+        payload = {"status": "planned", "proposal_count": len(proposals), "fallback_from_action": source_action, "proposals": _proposal_plan(proposals)}
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -887,20 +989,15 @@ def main() -> int:
             if ready_payload.get("command"):
                 print(f"Command: {ready_payload['command']}", flush=True)
             return 0
-        # Auto-execute promotion actions by generating targeted proposals instead of pausing
-        if ready_payload and ready_payload.get("action_id") in _AUTO_ACTIONS:
-            action_proposals = _generate_promotion_action_proposals(runs, ready_payload, count=proposal_count)
-            if action_proposals:
-                print(f"Promotion gate ready with auto-executable action={ready_payload.get('action_id')}; generating targeted proposals", flush=True)
-                proposals = action_proposals
-            elif ready_payload.get("action_id") == "calibrate_probability_scale":
-                print(f"Promotion gate action={ready_payload.get('action_id')} proposals exhausted; falling back to normal exploration", flush=True)
-                proposals = _propose_best_path(base, runs, count=proposal_count)
-            else:
-                print(f"Promotion gate ready but could not generate proposals for action={ready_payload.get('action_id')}; pausing", flush=True)
-                return 0
-        else:
-            proposals = _propose_best_path(base, runs, count=proposal_count)
+        manual_payload = _promotion_phase_manual_action(runs)
+        if manual_payload:
+            print(f"AutoResearch promotion action required: {manual_payload.get('next_action')}", flush=True)
+            if manual_payload.get("command"):
+                print(f"Command: {manual_payload['command']}", flush=True)
+            return 0
+        proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+        if ready_payload and source_action:
+            print(f"Promotion gate ready with auto-executable action={source_action}; generating targeted proposals", flush=True)
         if not proposals:
             print("No novel one-change proposals remain across the robust best path, focused fallback, and promotion actions; pause instead of repeating runs")
             return 0

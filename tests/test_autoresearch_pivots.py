@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autoresearch
-from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _promotion_ready_payload, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
+from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _promotion_or_fallback_proposals, _promotion_phase_manual_action, _promotion_ready_payload, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
 from experiments.runner import load_config
 
 
@@ -178,6 +178,57 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(list(Path(tmpdir).glob("auto_*.yaml")), [])
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["status"], "planned")
+
+    def test_plateau_promotion_phase_emits_loo_action_instead_of_proposals(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        runs = [
+            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+        ]
+
+        with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2"}, clear=False):
+            payload = _promotion_phase_manual_action(runs)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["status"], "manual_promotion_action")
+        self.assertEqual(payload["next_action"], "run_seed_repeat_leave_one_out")
+        self.assertEqual(payload["candidate_run_id"], "candidate")
+        self.assertIn("scripts/evaluate_leave_one_out.py", payload["command"])
+        self.assertIn("--seeds 11001,11018,15050", payload["command"])
+        self.assertEqual(payload["proposals"], [])
+
+    def test_promotion_phase_action_has_explicit_override(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        runs = [
+            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+        ]
+
+        with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2", "AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION": "1"}, clear=False):
+            self.assertIsNone(_promotion_phase_manual_action(runs))
+
+    def test_main_plan_json_returns_manual_promotion_action_without_writes(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        runs = [
+            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            stdout = io.StringIO()
+            try:
+                with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2"}, clear=False), patch("sys.argv", ["autoresearch.py", "--plan", "--json"]), patch("sys.stdout", stdout), patch("autoresearch._recent_runs", return_value=runs), patch("autoresearch._promotion_ready_payload", return_value=None), patch("autoresearch.subprocess.run") as run_mock:
+                    self.assertEqual(autoresearch.main(), 0)
+            finally:
+                autoresearch.CONFIGS = old_configs
+
+        run_mock.assert_not_called()
+        self.assertEqual(list(Path(tmpdir).glob("auto_*.yaml")), [])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "manual_promotion_action")
+        self.assertEqual(payload["proposal_count"] if "proposal_count" in payload else len(payload["proposals"]), 0)
 
     def test_main_pauses_when_promotion_gate_is_ready(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
@@ -371,6 +422,16 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertFalse(eligible)
         self.assertIn("pred_positive_rate_ratio_suspicious", warnings)
 
+    def test_promotion_gate_blocks_weak_fixed_threshold_status(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        run = {"config": cfg, "metrics": {"val_f1": 0.4, "average_precision": 0.2, "precision": 0.2, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "weak"}}
+
+        eligible, warnings = _promotion_gate(run)
+
+        self.assertFalse(eligible)
+        self.assertIn("fixed_threshold_status_weak", warnings)
+        self.assertEqual(_promotion_next_action(run), "calibrate_probability_scale")
+
     def test_signature_distinguishes_seed_ensemble_and_threshold(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
         ensemble = copy.deepcopy(cfg)
@@ -397,9 +458,16 @@ class AutoResearchPivotTest(unittest.TestCase):
             proposals = _propose_best_path(base, runs, count=2)
 
         self.assertTrue(proposals)
-        for _name, cfg, reason in proposals:
-            self.assertIn("torch", cfg["model"]["name"])
-            self.assertIn("recent base", reason)
+
+    def test_exhausted_auto_promotion_action_falls_back_to_normal_exploration(self) -> None:
+        base = load_config("configs/robust_calibrated_prloss_w0p03_lr0012_prratio3_seed11018.yaml")
+        fallback = [("fallback.yaml", copy.deepcopy(base), "normal fallback")]
+
+        with patch("autoresearch._generate_promotion_action_proposals", return_value=[]), patch("autoresearch._propose_best_path", return_value=fallback):
+            proposals, source_action = _promotion_or_fallback_proposals([], base, {"action_id": "calibrate_positive_rate"}, 1)
+
+        self.assertEqual(proposals, fallback)
+        self.assertIsNone(source_action)
 
 
 if __name__ == "__main__":

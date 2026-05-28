@@ -27,9 +27,9 @@ Promotion requires more than sampled F1:
 
 - Positive precision and recall.
 - AP above prevalence, reported as `ap_prevalence_lift`.
-- Controlled `pred_positive_rate / val_positive_rate`.
-- Fixed-threshold diagnostics at `0.5`.
-- Full-tile evidence on the candidate or weak fold.
+- Controlled `pred_positive_rate / val_positive_rate`; ratios above `3.5x` block promotion.
+- Fixed-threshold diagnostics at `0.5`; any present `fixed_threshold_status` other than `ok` blocks promotion.
+- Full-tile evidence on the candidate and linked LOO folds, with no quality failures.
 - No fold leakage from held-out segments.
 
 ## Hard-Negative Mining

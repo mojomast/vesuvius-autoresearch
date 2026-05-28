@@ -103,10 +103,21 @@ Only add `data/mined/<name>.npz` to `dataset.extra_train_npzs` for folds whose h
 .venv/bin/python scripts/audit_research_state.py --markdown
 ```
 
+## Queued Worker Smoke Test
+
+The optional SQLite job queue dispatches existing config paths through the same `experiments.runner.run_experiment` code path. To run at most one queued job:
+
+```bash
+.venv/bin/python scripts/run_job_worker.py --once
+```
+
+Queue databases are local generated artifacts and must not be committed.
+
 ## Expected Generated Paths
 
 - `data/**`: prepared NPZs and metadata.
 - `experiments/experiments.db`: local experiment index.
+- `experiments/jobs.db`: local queued-worker state.
 - `experiments/runs/**`: run configs, metrics, weights, full-tile outputs.
 - `logs/**`: LOO summaries and cron logs.
 - `data/mined/**`: hard-negative NPZs.

@@ -131,7 +131,7 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
             val_positive_rate = _as_float(row, "val_positive_rate")
             if pred_positive_rate is not None and val_positive_rate is not None and val_positive_rate > 0:
                 ratio = pred_positive_rate / val_positive_rate
-                if ratio > 4.0 or ratio < 0.1:
+                if ratio > 3.5 or ratio < 0.1:
                     positive_rate_alarm.append(_row_id(row))
         per_fold_f1 = {fold: float(statistics.mean(values)) for fold, values in by_fold.items()}
         per_fold_ap = {fold: float(statistics.mean(values)) for fold, values in ap_by_fold.items()}

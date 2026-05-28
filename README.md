@@ -91,6 +91,15 @@ python3 scripts/evaluate_leave_one_out.py \
 
 Keep `--jobs` modest on CPU hosts because each worker writes independent run artifacts and shares the experiment DB. Pending generated `configs/auto_*` signatures expire after `AUTORESEARCH_PENDING_CONFIG_TTL_HOURS=24` by default so crashed proposal files do not block future search forever; set it to `0` to reserve all generated configs indefinitely.
 
+For distributed-lite execution, enqueue existing config paths through `experiments.jobs.enqueue_experiment_config(...)` and run workers with the same core experiment runner:
+
+```bash
+python3 scripts/run_job_worker.py --once
+python3 scripts/run_job_worker.py --max-jobs 4 --worker-id cpu-worker-1
+```
+
+Workers only dispatch queued config paths to `experiments.runner.run_experiment`; they do not compute alternate metrics or bypass validation/promotion gates.
+
 ## Standalone Dashboard
 
 Launch the read-only Vesuvius dashboard without Hermes:
