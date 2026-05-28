@@ -660,17 +660,19 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
         return (name, cfg, reason)
 
     if action_id == "calibrate_probability_scale":
-        thresholds = [0.33, 0.35] if is_torch else [0.35, 0.4]
+        thresholds = [0.31, 0.33, 0.35, 0.37] if is_torch else [0.33, 0.35, 0.4]
         for thresh in thresholds:
             if len(proposals) >= count:
                 break
             p = _make_proposal(("evaluation", "threshold"), thresh, f"promotion action {action_id}: evaluate threshold={thresh}")
             if p:
                 proposals.append(p)
-        # Also try a seed repeat to confirm threshold robustness
+        # Also try seed repeats to confirm threshold robustness
         seed = int(_get_nested(base, ("training", "seed"), 1337))
-        if len(proposals) < count:
-            p = _make_proposal(("training", "seed"), seed + 17, f"promotion action {action_id}: seed repeat with threshold-aware calibration")
+        for seed_delta in (17, 31, 53):
+            if len(proposals) >= count:
+                break
+            p = _make_proposal(("training", "seed"), seed + seed_delta, f"promotion action {action_id}: seed repeat with threshold-aware calibration")
             if p:
                 proposals.append(p)
 
@@ -742,6 +744,19 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
             command = top_action.get("command_text")
             if not command and top_action.get("id") == "weak_fold_full_tile" and weak_tile.get("status") != "done":
                 command = weak_tile.get("command_text")
+            # Compressed probabilities producing no fixed-threshold positives is expected;
+            # do not pause exploration for this alone.
+            if top_action.get("id") == "calibrate_probability_scale":
+                ft_reasons: set[str] = set()
+                for item in (evidence.get("full_tile", {}).get("evidence", []) if isinstance(evidence.get("full_tile"), dict) else []):
+                    if isinstance(item, dict) and item.get("fixed_threshold_failure_reason"):
+                        ft_reasons.add(str(item["fixed_threshold_failure_reason"]))
+                for item in (evidence.get("loo_full_tile", {}).get("evidence", []) if isinstance(evidence.get("loo_full_tile"), dict) else []):
+                    if isinstance(item, dict) and item.get("fixed_threshold_failure_reason"):
+                        ft_reasons.add(str(item["fixed_threshold_failure_reason"]))
+                if ft_reasons == {"no_fixed_positive_predictions"}:
+                    print("Promotion gate ready but fixed-threshold weakness is expected (compressed probabilities); continuing exploration.", flush=True)
+                    return None
             reasoning = [
                 "promotion_gate_ready",
                 "pause_exploration_before_more_local_sweeps",

@@ -725,5 +725,78 @@ class ResearchDashboardTest(unittest.TestCase):
                 server.server_close()
 
 
+    def test_fixed_threshold_f1_low_detects_zero_value(self) -> None:
+        """Regression: fixed_threshold_f1=0.0 is falsy, so the old 'or' fallback masked it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "fixed_zero.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["fixed_zero"], "promotion_warnings": []}))
+            run_dir = root / "experiments" / "runs" / "fixed_zero"
+            run_dir.mkdir(parents=True)
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.30, "average_precision": 0.20, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "loo_promotion_ready": True, "fixed_threshold_f1": 0.0}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("fixed_zero", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.30, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        blockers = run["promotion_blockers"]
+        codes = {b["code"] for b in blockers}
+        self.assertIn("fixed_threshold_f1_low", codes)
+        # It should be a warning, not a blocker
+        fixed_blocker = next(b for b in blockers if b["code"] == "fixed_threshold_f1_low")
+        self.assertEqual(fixed_blocker["severity"], "warning")
+        # With only warnings, promotion_status should be eligible
+        self.assertEqual(run["promotion_status"], "eligible")
+
+    def test_promotion_status_blocked_only_by_real_blockers(self) -> None:
+        """Warnings should not block promotion_status."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "warning_only.summary.json").write_text(json.dumps({"promotion_ready": True, "run_ids": ["warning_only"], "promotion_warnings": []}))
+            run_dir = root / "experiments" / "runs" / "warning_only"
+            run_dir.mkdir(parents=True)
+            full_tile_dir = run_dir / "full_tile_abc"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "abc"}}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "abc"}}
+            metrics = {"val_f1": 0.30, "average_precision": 0.20, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "loo_promotion_ready": True, "fixed_threshold_f1": 0.0, "best_threshold": 0.94}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("warning_only", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.30, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        # Should have two warnings but no blockers
+        self.assertEqual(run["promotion_status"], "eligible")
+        warnings = [b for b in run["promotion_blockers"] if b.get("severity") == "warning"]
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("fixed_threshold_f1_low", {w["code"] for w in warnings})
+        self.assertIn("best_threshold_at_sweep_edge", {w["code"] for w in warnings})
+
+
 if __name__ == "__main__":
     unittest.main()

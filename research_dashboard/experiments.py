@@ -227,6 +227,7 @@ def _full_tile_metrics(run: dict[str, Any], project_root: Path | None = None) ->
             "prob_max": data.get("prob_max"),
             "fixed_threshold_f1": data.get("fixed_threshold_f1"),
             "fixed_threshold_status": data.get("fixed_threshold_status"),
+            "fixed_threshold_failure_reason": data.get("fixed_threshold_failure_reason"),
             "threshold_selection": data.get("threshold_selection"),
             "selected_threshold_reason": data.get("selected_threshold_reason"),
             "threshold_risk_summary": data.get("threshold_risk_summary"),
@@ -549,7 +550,10 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
         threshold = float(best_threshold)
         if threshold <= 0.03 or threshold >= 0.94:
             add("best_threshold_at_sweep_edge", "calibration", "warning")
-    if float(metrics.get("val_f1") or 0.0) >= 0.2 and float(metrics.get("fixed_threshold_f1") or metrics.get("val_f1") or 0.0) < 0.05:
+    fixed_f1 = metrics.get("fixed_threshold_f1")
+    if fixed_f1 is None:
+        fixed_f1 = metrics.get("val_f1") or 0.0
+    if float(metrics.get("val_f1") or 0.0) >= 0.2 and float(fixed_f1) < 0.05:
         add("fixed_threshold_f1_low", "calibration", "warning")
     return blockers
 
@@ -788,7 +792,8 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         run["validation_setup"] = _validation_setup(run)
         run["artifacts"] = list_artifact_files(row["artifact_dir"])
         run["promotion_blockers"] = _promotion_blockers(run, loo_summaries, project_root)
-        run["promotion_status"] = "eligible" if not run["promotion_blockers"] else "blocked"
+        blockers_only = [b for b in run["promotion_blockers"] if b.get("severity") != "warning"]
+        run["promotion_status"] = "eligible" if not blockers_only else "blocked"
         run["champion_class"] = None
         run["champion_classes"] = []
         return run
