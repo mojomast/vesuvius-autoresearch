@@ -1,4 +1,3 @@
-# CPU-feasible residual 2.5D U-Net option for cross-segment validation.
 dataset:
   research_scope: focused_pair_residual_25d_cpu
   train_npz: data/real_cross/segment_20230827161847_pf0p15_n2048/train.npz
@@ -9,24 +8,20 @@ model:
   name: residual_25d_torch_unet
   base_channels: 8
 training:
-  epochs: 3
+  epochs: 5
   batch_size: 4
-  learning_rate: 0.001
+  learning_rate: 0.0012
   weight_decay: 0.0001
   pos_weight: auto
   max_train_samples: 512
-  num_threads: 4
-  seed: 1337
-  allow_cuda: false
   deterministic: true
-  dice_loss_weight: 0.35
   augment_flips: true
+  allow_cuda: false
 evaluation:
   main_metric: val_f1
-  threshold: 0.50
+  threshold: 0.5
   tta_flips: true
 autoresearch:
-  parent_reason: stronger CPU-feasible residual 2.5D torch model option
   scope_policy: focused_pair_only
 outputs:
   runs_dir: experiments/runs

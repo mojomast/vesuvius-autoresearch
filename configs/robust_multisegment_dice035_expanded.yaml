@@ -1,36 +1,25 @@
-# Robust multi-segment PyTorch config selected by expanded leave-one-segment-out median F1.
-dataset:
-  research_scope: multi_segment_robust_expanded
-  train_npz: data/real_cross_folds_expanded_combined/all_segments/train.npz
-  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
-  patch_size: 64
-  validation_mode: expanded-multi-segment-train_reference-val
 model:
   name: tiny_torch_unet
   base_channels: 8
 training:
   epochs: 5
   batch_size: 8
-  learning_rate: 0.002
+  learning_rate: 0.0012
   weight_decay: 0.0001
   pos_weight: auto
   max_train_samples: 0
-  num_threads: 4
-  seed: 11001
   allow_cuda: false
   dice_loss_weight: 0.35
-  augment_flips: false
 evaluation:
   main_metric: val_f1
-  threshold: 0.50
-autoresearch:
-  parent_reason: expanded robust config from 7-fold leave-one-out sweep; best median F1 profile
-  scope_policy: expanded_multi_segment_leave_one_out
-  selection_log: logs/parallel_torch_expanded_fold_big_results.jsonl
-  expanded_leave_one_out:
-    median_val_f1: 0.19410654190265125
-    mean_val_f1: 0.20279515670192718
-    min_val_f1: 0.05620524657241671
-    mean_average_precision: 0.11340603926352195
+  threshold: 0.5
 outputs:
   runs_dir: experiments/runs
+dataset:
+  research_scope: multi_segment_robust_expanded
+  train_npz: data/real_cross_folds_expanded_combined/all_segments/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  patch_size: 64
+  validation_mode: leave-one-segment-out
+autoresearch:
+  scope_policy: expanded_multi_segment_leave_one_out

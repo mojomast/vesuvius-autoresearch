@@ -1,15 +1,13 @@
-# Baseline real-data experiment.
-# Objective: train on one public labeled real segment and validate on a distinct public labeled real segment.
 dataset:
   research_scope: focused_pair
-  scope_note: "One train segment and one held-out validation segment; add folds only through explicit configs."
+  scope_note: One train segment and one held-out validation segment; add folds only
+    through explicit configs.
   train_npz: data/real_cross/segment_20230827161847/train.npz
   val_npz: data/real_cross/segment_20230520175435/val.npz
   patch_size: 64
   validation_mode: cross-segment
 model:
   name: tiny_numpy_ink_logreg
-  # depth 3 adds gradients/laplacian and multi-slice depth statistics when C>1.
   depth: 3
 training:
   epochs: 5
@@ -17,8 +15,7 @@ training:
   weight_decay: 0.0001
   pos_weight: auto
 evaluation:
-  # Steer by threshold-swept F1 so improved loss that predicts no ink is not promoted.
   main_metric: val_f1
-  threshold: 0.50
+  threshold: 0.5
 outputs:
   runs_dir: experiments/runs
