@@ -130,6 +130,12 @@ def main() -> int:
         "MKL_NUM_THREADS": env.get("MKL_NUM_THREADS", "2"),
         "NUMEXPR_NUM_THREADS": env.get("NUMEXPR_NUM_THREADS", "2"),
         "AUTORESEARCH_DEADLINE_SECONDS": env.get("AUTORESEARCH_DEADLINE_SECONDS", str(max(60, TIMEOUT_SECONDS - 30))),
+        # Let the loop make bounded candidate-linked progress at promotion gates.
+        "AUTORESEARCH_AUTO_PROMOTE": env.get("AUTORESEARCH_AUTO_PROMOTE", "1"),
+        "AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS": env.get(
+            "AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS",
+            str(max(60, TIMEOUT_SECONDS - 30)),
+        ),
     })
     env.setdefault("AUTORESEARCH_PROPOSALS", str(proposals))
     if env.get("SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE") != "1":

@@ -202,6 +202,30 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIn("--seeds 11001,11018,15050", payload["command"])
         self.assertEqual(payload["proposals"], [])
 
+    def test_promotion_phase_auto_promote_runs_bounded_loo_command(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        runs = [
+            {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
+            {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}},
+        ]
+
+        with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2", "AUTORESEARCH_AUTO_PROMOTE": "1", "AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS": "123"}, clear=False), \
+            patch("autoresearch._run_automated_promotion", return_value={"automation_status": "SUCCEEDED"}) as promote_mock:
+            payload = _promotion_phase_manual_action(runs)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["status"], "manual_promotion_action")
+        self.assertEqual(payload["next_action"], "run_seed_repeat_leave_one_out")
+        self.assertEqual(payload["automation_status"], "SUCCEEDED")
+        command_args = promote_mock.call_args.args[0]
+        self.assertIn("scripts/evaluate_leave_one_out.py", command_args)
+        self.assertIn("--seeds", command_args)
+        self.assertIn("11001,11018,15050", command_args)
+        self.assertIn("--jobs", command_args)
+        self.assertEqual(promote_mock.call_args.args[3], 123)
+
     def test_promotion_phase_action_has_explicit_override(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
         runs = [

@@ -36,6 +36,8 @@ class RunAutoresearchGuardedTest(unittest.TestCase):
         self.assertEqual(env["AUTORESEARCH_PROPOSALS"], "1")
         self.assertEqual(env["AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION"], "0")
         self.assertEqual(env["AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY"], "1")
+        self.assertEqual(env["AUTORESEARCH_AUTO_PROMOTE"], "1")
+        self.assertEqual(env["AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS"], "450")
 
     def test_main_allows_guard_specific_promotion_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -55,6 +57,7 @@ class RunAutoresearchGuardedTest(unittest.TestCase):
         env = run_mock.call_args.kwargs["env"]
         self.assertEqual(env["AUTORESEARCH_PROPOSALS"], "1")
         self.assertEqual(env["AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION"], "1")
+        self.assertEqual(env["AUTORESEARCH_AUTO_PROMOTE"], "1")
 
     def test_main_uses_adaptive_proposals_when_no_explicit_value(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
