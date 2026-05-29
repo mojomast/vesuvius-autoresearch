@@ -55,11 +55,25 @@ def test_prepare_metadata_has_required_provenance_keys(tmp_path):
 
 
 def test_same_segment_cross_region_spatial_overlap_is_zero():
-    train_region, val_region = _split_regions(width=200, patch_size=32, mode="cross_region")
+    train_region, val_region = _split_regions(200, patch_size=32, mode="cross_region")
     train_spatial = _spatial_region(train_region, (100, 200))
     val_spatial = _spatial_region(val_region, (100, 200))
 
     assert not _regions_overlap(train_spatial, val_spatial)
+
+
+def test_cross_region_split_avoids_empty_positive_validation_strip():
+    label = np.zeros((96, 220), dtype=np.float32)
+    label[20:60, 28:88] = 1.0
+    label[24:64, 122:182] = 1.0
+
+    train_region, val_region = _split_regions(label, patch_size=32, mode="cross_region", val_stride=32)
+
+    train_score = max(label[yy:yy + 32, xx:xx + 32].mean() for yy in range(0, 96 - 32 + 1, 32) for xx in range(train_region[0], train_region[1] - 32 + 1, 32))
+    val_score = max(label[yy:yy + 32, xx:xx + 32].mean() for yy in range(0, 96 - 32 + 1, 32) for xx in range(val_region[0], val_region[1] - 32 + 1, 32))
+
+    assert train_score > 0.0
+    assert val_score > 0.0
 
 
 def test_cross_segment_source_segments_are_non_overlapping(tmp_path):

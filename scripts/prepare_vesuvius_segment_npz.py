@@ -259,13 +259,40 @@ def _regions_overlap(a: dict[str, list[int]], b: dict[str, list[int]]) -> bool:
     return max(ax0, bx0) < min(ax1, bx1) and max(ay0, by0) < min(ay1, by1)
 
 
-def _split_regions(width: int, patch_size: int, mode: str) -> tuple[tuple[int, int], tuple[int, int]]:
+def _region_positive_score(label: np.ndarray, region: tuple[int, int], patch_size: int, stride: int) -> float:
+    origins = _tiled_origins(label, region, patch_size, stride, 0)
+    if not origins:
+        return 0.0
+    return float(max(_patch_mean(label, yy, xx, patch_size) for yy, xx in origins))
+
+
+def _split_regions(label: np.ndarray | int, patch_size: int, mode: str, val_stride: int | None = None) -> tuple[tuple[int, int], tuple[int, int]]:
     if mode != "cross_region":
         raise ValueError("spatial_separation_mode must be cross_region")
+    if isinstance(label, np.ndarray):
+        width = int(label.shape[1])
+    else:
+        width = int(label)
     gap = max(patch_size, width // 50)
-    split_x = int(width * 0.7)
-    train_region = (0, max(patch_size, split_x - gap // 2))
-    val_region = (min(width - patch_size, split_x + gap // 2), width)
+    stride = patch_size if val_stride is None else int(val_stride)
+    default_split = int(width * 0.7)
+    default_train = (0, max(patch_size, default_split - gap // 2))
+    default_val = (min(width - patch_size, default_split + gap // 2), width)
+    if not isinstance(label, np.ndarray) or float(label.mean()) <= 0.0:
+        return default_train, default_val
+    candidates: list[tuple[float, float, int, tuple[int, int], tuple[int, int]]] = []
+    for split_x in range(max(patch_size + gap // 2, int(width * 0.15)), min(width - patch_size - gap // 2, int(width * 0.85)) + 1, max(patch_size, width // 32)):
+        left = (0, max(patch_size, split_x - gap // 2))
+        right = (min(width - patch_size, split_x + gap // 2), width)
+        for train_region, val_region in ((left, right), (right, left)):
+            train_score = _region_positive_score(label, train_region, patch_size, patch_size)
+            val_score = _region_positive_score(label, val_region, patch_size, stride)
+            balance = min(train_score, val_score)
+            candidates.append((balance, val_score, train_score, train_region, val_region))
+    viable = [item for item in candidates if item[0] > 0.0]
+    if not viable:
+        return default_train, default_val
+    _balance, _val_score, _train_score, train_region, val_region = max(viable, key=lambda item: (item[0], item[1], item[2], item[4][1] - item[4][0]))
     return train_region, val_region
 
 
@@ -313,7 +340,7 @@ def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: 
 
     h, w = label.shape[:2]
     image = image[:, :h, :w]
-    train_region, val_region = _split_regions(w, patch_size, spatial_separation_mode)
+    train_region, val_region = _split_regions(label, patch_size, spatial_separation_mode, val_stride if val_tiled else patch_size)
     train_spatial_region = _spatial_region(train_region, label.shape[:2])
     val_spatial_region = _spatial_region(val_region, label.shape[:2])
     if _regions_overlap(train_spatial_region, val_spatial_region):
