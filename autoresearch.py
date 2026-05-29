@@ -215,7 +215,10 @@ def _recent_runs(limit: int | None = None) -> List[Dict[str, Any]]:
         rows = conn.execute(query, params).fetchall()
     runs = []
     for run_id, ts, cfg_json, metric, sec_json, artifact_dir in rows:
-        runs.append(validate_metric_contract({"run_id": run_id, "timestamp": ts, "config": json.loads(cfg_json), "main_metric": float(metric), "metrics": json.loads(sec_json), "artifact_dir": artifact_dir}))
+        try:
+            runs.append(validate_metric_contract({"run_id": run_id, "timestamp": ts, "config": json.loads(cfg_json), "main_metric": float(metric), "metrics": json.loads(sec_json), "artifact_dir": artifact_dir}))
+        except ValueError as exc:
+            print(f"Skipping run {run_id} with invalid metric contract: {exc}", file=sys.stderr)
     return runs
 
 
