@@ -1,0 +1,46 @@
+1. runner.py residual / 2.5D instantiation
+- runner.py uses model.name, not model.type.
+- Residual path is triggered when model_name in {"residual_25d_torch_unet", "torch_residual_25d_unet"}.
+- It instantiates Residual25DUNet, implemented with 2D Conv2d layers over the input channel dimension.
+- References:
+  - experiments/runner.py:737 reads model_cfg.get("name", "tiny_torch_unet")
+  - experiments/runner.py:828-841 defines Residual25DUNet
+  - experiments/runner.py:855-860 selects residual model for residual_25d_torch_unet or torch_residual_25d_unet
+  - experiments/runner.py:1038-1046 dispatches on model.name
+
+2. Expected input tensor shape / channels / z_offsets
+- Runner expects image tensors shaped [N,C,H,W].
+- C is not fixed by config; runner uses Xtr_img.shape[1] as in_channels.
+- Validation allows C >= 1; labels must be [N,1,H,W].
+- Runner does not use dataset.z_offsets; the channel count comes from the prepared NPZ images.
+- References:
+  - experiments/runner.py:730-733 loads images and labels from NPZ
+  - experiments/runner.py:857-859 passes Xtr_img.shape[1] to the model constructor
+  - data/vesuvius_data.py:158-160 validates [N,C,H,W] with C>=1
+  - experiments/runner.py:204 comments that images are [N,C,H,W]
+
+3. Silent max_train_samples / base_channels validation or clamping in runner.py
+- No clamping/validation of base_channels in runner.py; it is simply int(..., default 8).
+- No silent clamp of max_train_samples in runner.py; if positive and fewer samples are requested than available, it samples that many patches.
+- References:
+  - experiments/runner.py:738 reads base_channels
+  - experiments/runner.py:743 reads max_train_samples
+  - experiments/runner.py:779-784 applies sampling, not clamping
+- Note: autoresearch.py, not runner, may cap torch max_train_samples for cron safety at autoresearch.py:339-346.
+
+4. Missing optional config keys
+- Runner generally handles absent optional keys with defaults.
+- If model.base_channels is absent, runner does not crash; it defaults to 8.
+- References:
+  - experiments/runner.py:734-743
+  - experiments/runner.py:1038
+
+5. residual_25d_torch_unet_cpu.yaml model.type
+- It does not specify model.type.
+- It specifies model.name: residual_25d_torch_unet.
+- References:
+  - configs/residual_25d_torch_unet_cpu.yaml:7-9
+
+Important architecture-ambiguity finding
+- The config name/scope imply residual 25D, but the YAML lacks model.type, dataset.z_offsets, or another explicit channel/z-stack declaration.
+- Actual 2.5D behavior depends entirely on the NPZ images channel dimension, while runner accepts any C>=1.
