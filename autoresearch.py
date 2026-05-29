@@ -944,6 +944,43 @@ def _promotion_output_path(path_text: str) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def _append_promotion_reason(reasons: list[str], reason: str) -> None:
+    if reason and reason not in reasons:
+        reasons.append(reason)
+
+
+def _promotion_payload_reasons(payload: Dict[str, Any], seed_reasons: list[str] | None = None) -> list[str]:
+    reasons = list(seed_reasons or [])
+    error = str(payload.get("error") or "")
+    if payload.get("missing_outputs"):
+        _append_promotion_reason(reasons, "reported_artifact_path_not_found")
+    if payload.get("empty_outputs"):
+        _append_promotion_reason(reasons, "reported_artifact_empty")
+    if payload.get("missing_output_keys"):
+        _append_promotion_reason(reasons, "full_tile_output_set_incomplete")
+    if payload.get("outside_output_dir"):
+        _append_promotion_reason(reasons, "full_tile_output_outside_output_dir")
+    if payload.get("metrics_json_error"):
+        _append_promotion_reason(reasons, "full_tile_metrics_json_invalid")
+    if payload.get("stale_summary_json"):
+        _append_promotion_reason(reasons, "summary_json_stale")
+    if payload.get("returncode") not in (None, 0):
+        _append_promotion_reason(reasons, "promotion_command_nonzero_exit")
+    if payload.get("outputs_verified"):
+        _append_promotion_reason(reasons, "reported_artifacts_verified")
+    if payload.get("summary"):
+        _append_promotion_reason(reasons, "summary_json_verified")
+    if "no current summary_json or validated outputs" in error:
+        _append_promotion_reason(reasons, "summary_json_missing")
+    if "missing promotion checks" in error:
+        _append_promotion_reason(reasons, "full_tile_metrics_missing_promotion_checks")
+    if "timed out" in error:
+        _append_promotion_reason(reasons, "promotion_command_timeout")
+    if error and not reasons:
+        _append_promotion_reason(reasons, "promotion_command_failed")
+    return reasons
+
+
 def _validate_reported_promotion_outputs(command_args: list[str], outputs: dict[str, str]) -> tuple[bool, dict[str, Any]]:
     payload: dict[str, Any] = {"outputs": outputs}
     missing_outputs = [path for path in outputs.values() if not _promotion_output_exists(path)]
@@ -993,7 +1030,7 @@ def _validate_reported_promotion_outputs(command_args: list[str], outputs: dict[
     return True, payload
 
 
-def _run_automated_promotion(command_args: list[str], candidate_run_id: str, summary_json: Path, timeout: int) -> dict[str, Any]:
+def _run_automated_promotion(command_args: list[str], candidate_run_id: str, summary_json: Path, timeout: int, promotion_failure_reasons: list[str] | None = None) -> dict[str, Any]:
     """Run promotion evidence and record summary or artifact-output status."""
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.log"
@@ -1030,6 +1067,19 @@ def _run_automated_promotion(command_args: list[str], candidate_run_id: str, sum
     except Exception as exc:
         log_path.write_text(f"$ {_shell_command(command_args)}\n\nERROR\n{exc}\n")
         payload["error"] = str(exc)
+    payload["promotion_failure_reasons"] = _promotion_payload_reasons(payload, promotion_failure_reasons)
+    payload["diagnostic_summary"] = {
+        "status": status,
+        "summary_json_verified": "summary_json_verified" in payload["promotion_failure_reasons"],
+        "artifacts_verified": bool(payload.get("outputs_verified")),
+        "reasons": payload["promotion_failure_reasons"],
+    }
+    try:
+        with log_path.open("a") as fh:
+            fh.write("\nPROMOTION_DIAGNOSTICS\n")
+            fh.write(json.dumps(payload["diagnostic_summary"], indent=2, sort_keys=True) + "\n")
+    except Exception:
+        pass
     _record_promotion_status(candidate_run_id, status, payload)
     return {"automation_status": status, "promotion_log": str(log_path), "promotion_payload": payload}
 
@@ -1147,6 +1197,7 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHist
     if action not in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
         return None
     candidate_run_id = str(candidate.get("run_id") or "")
+    _eligible, gate_warnings = _promotion_gate(candidate)
 
     reasoning = [
         "plateau_detected",
@@ -1189,13 +1240,14 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHist
         "candidate_run_id": candidate_run_id,
         "command": command,
         "reasoning": reasoning,
+        "promotion_failure_reasons": gate_warnings,
         "strategy_phase": strategy.get("phase"),
         "promotion_required": ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"],
         "proposals": [],
     }
     if command_args and os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1":
         timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
-        payload.update(_run_automated_promotion(command_args, candidate_run_id, summary_json or LOGS / "promotion.summary.json", timeout))
+        payload.update(_run_automated_promotion(command_args, candidate_run_id, summary_json or LOGS / "promotion.summary.json", timeout, promotion_failure_reasons=gate_warnings))
     return payload
 
 
@@ -1503,6 +1555,7 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
                 "safe_to_execute_from_dashboard": top_action.get("safe_to_execute_from_dashboard"),
                 "writes_artifacts": top_action.get("writes_artifacts"),
                 "reasoning": reasoning,
+                "promotion_failure_reasons": [str(item) for item in gate.get("warnings", [])] if isinstance(gate.get("warnings"), list) else [],
                 "promotion_actions": actions,
                 "candidate_evidence": evidence,
                 "proposals": [],
@@ -1537,7 +1590,10 @@ def _auto_execute_ready_payload_command(payload: dict[str, Any]) -> dict[str, An
     candidate_run_id = str(payload.get("candidate_run_id") or payload.get("action_id") or "promotion_ready")
     timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
     summary_json = LOGS / f"{candidate_run_id}_promotion_action.summary.json"
-    return _run_automated_promotion(command_args, candidate_run_id, summary_json, timeout)
+    reasons = [str(item) for item in payload.get("promotion_failure_reasons", [])] if isinstance(payload.get("promotion_failure_reasons"), list) else []
+    if payload.get("action_id"):
+        _append_promotion_reason(reasons, f"promotion_action_{payload.get('action_id')}")
+    return _run_automated_promotion(command_args, candidate_run_id, summary_json, timeout, promotion_failure_reasons=reasons)
 
 
 def _promotion_ready_message() -> str | None:
