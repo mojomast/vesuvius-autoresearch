@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=1.26",
+  "pydantic>=2",
   "PyYAML>=6.0",
   "torch>=2.2",
 ]
@@ -41,6 +42,12 @@ ingestion = [
 ]
 dev = [
   "build",
+  "mypy",
+  "pytest-cov",
+  "pytest-mock",
+]
+search = [
+  "optuna>=3",
 ]
 
 [project.urls]
@@ -57,9 +64,10 @@ vesuvius-audit-state = "scripts.audit_research_state:main"
 vesuvius-infer-full-tile = "scripts.infer_full_tile:main"
 vesuvius-evaluate-loo = "scripts.evaluate_leave_one_out:main"
 vesuvius-plan-hard-negatives = "scripts.plan_hard_negative_retrain:main"
+vesuvius-backtest-quality-score = "scripts.backtest_quality_score:main"
 
 [tool.setuptools]
 py-modules = ["autoresearch", "run_dashboard", "run_experiment"]
 
 [tool.setuptools.packages.find]
-include = ["data*", "experiments*", "harness*", "research_dashboard*", "scripts*"]
+include = ["data*", "experiments*", "harness*", "research_dashboard*", "scripts*", "src*"]

@@ -102,6 +102,17 @@ For continued diagnostic sweeps after promotion review is blocked, use `AUTORESE
 
 ## Architecture
 
+The incremental package layout under `src/autoresearch/` separates the monolithic AutoResearch surface into stable boundaries while preserving the top-level `autoresearch.py` entry point:
+
+- `config_io`: path constants, search paths, bounds, nested config mutation, and config writing helpers.
+- `cache`: per-cycle run-history cache and linked LOO summary cache exports.
+- `proposals`: proposal candidates, cost tiers, mutation families, and proposal-plan helpers.
+- `promotion`: metric contracts, promotion gates, quality scoring, promotion artifact validation, and promotion command helpers.
+- `strategy`: plateau/phase detection, pivot handling, recent-winner follow-up, and promotion-or-fallback orchestration.
+- `schemas`: pydantic v2 `ExperimentConfig` and `load_typed_config()` for incremental typed config adoption.
+- `search_strategy`: heuristic and optional Optuna-backed Bayesian candidate ordering.
+- `cli`: package-level CLI entry point delegating to the backwards-compatible top-level runner.
+
 ```mermaid
 flowchart TD
   A[autoresearch.py] --> B[VesuviusHarness]
@@ -133,6 +144,34 @@ SQLite state is initialized by `experiments.runner.init_db`: `experiments` store
 | `evaluation` | `main_metric`, `threshold`, `max_pred_positive_rate_ratio` | Main scoring metric, fixed-threshold diagnostic, and positive-rate cap; proposal search includes `2.5`, `2.75`, `3.0`, and balanced calibration with tolerance `0.008`. |
 | `autoresearch` | `scope_policy`, `promotable`, `promotion_required` | Search metadata and promotion gating intent. |
 | `outputs` | `runs_dir` | Experiment artifact root. |
+
+## Development
+
+Use `pyproject.toml` as the single dependency source of truth:
+
+```bash
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m mypy src/autoresearch/ --strict --ignore-missing-imports
+.venv/bin/python autoresearch.py --plan --json
+```
+
+For a clean environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e '.[dev]'
+```
+
+## Search Strategy
+
+The default search strategy remains the bounded heuristic one-change proposal flow. Optional Bayesian candidate ordering is documented in [`docs/search_strategy.md`](docs/search_strategy.md):
+
+```bash
+.venv/bin/python -m pip install -e '.[search]'
+AUTORESEARCH_SEARCH_STRATEGY=bayesian .venv/bin/python autoresearch.py --plan --json
+```
 
 ## Harness Extension
 

@@ -18,6 +18,11 @@ experiments/runs/
 logs/
 logs/*.log
 logs/*.lock
+logs/audit_*.md
+audit_*.md
+auto_*.yaml
+auto_*.yml
+auto_*.json
 configs/auto_*.yaml
 configs/auto_*.yml
 configs/auto_*.json

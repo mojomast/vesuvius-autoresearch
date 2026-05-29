@@ -5,34 +5,82 @@ import argparse
 import contextlib
 import copy
 from dataclasses import dataclass, field
+from types import ModuleType
+_fcntl: ModuleType | None
 try:
-    import fcntl
+    import fcntl as _fcntl
 except ImportError:
-    fcntl = None
+    _fcntl = None
 import json
+import logging
 import os
 import shlex
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterator, List, Tuple, cast
 
 import yaml
 
 from experiments.runner import DB_PATH, init_db, load_config
+from src.autoresearch.schemas import ExperimentConfig, load_typed_config
 
-ROOT = Path(__file__).resolve().parent
-CONFIGS = ROOT / "configs"
-LOGS = ROOT / "logs"
-LOCK_PATH = ROOT / "logs" / "autoresearch.lock"
-BASELINE = CONFIGS / "baseline.yaml"
+fcntl: ModuleType | None = _fcntl
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+ROOT = Path(os.environ.get("VESUVIUS_PROJECT_ROOT", Path(__file__).resolve().parent)).resolve()
+CONFIGS = Path(os.environ.get("VESUVIUS_CONFIG_DIR", ROOT / "configs"))
+LOGS = Path(os.environ.get("VESUVIUS_LOG_DIR", ROOT / "logs"))
+LOCK_PATH = LOGS / "autoresearch.lock"
+BASELINE = Path(os.environ.get("VESUVIUS_BASELINE_CONFIG", CONFIGS / "baseline.yaml"))
 LINKED_LOO_SUMMARY_CACHE_TTL_SECONDS = 300.0
+DEFAULT_SEED = _env_int("AUTORESEARCH_DEFAULT_SEED", 1337)
+SEED_REPEAT_DELTAS = tuple(int(part.strip()) for part in os.environ.get("AUTORESEARCH_SEED_REPEAT_DELTAS", "17,31,53").split(",") if part.strip())
+DEFAULT_PROMOTION_SEEDS = os.environ.get("AUTORESEARCH_PROMOTION_SEEDS", "11001,11018,11045")
+DEFAULT_LOO_JOBS = os.environ.get("AUTORESEARCH_LOO_JOBS", "2")
+DEFAULT_FOLD_MAP = os.environ.get("VESUVIUS_FOLD_MAP", "data/real_cross_folds_expanded_combined/fold_map.json")
+DEFAULT_PYTHON = os.environ.get("VESUVIUS_PYTHON", sys.executable)
+DEFAULT_LOO_SCRIPT = os.environ.get("VESUVIUS_LOO_SCRIPT", "scripts/evaluate_leave_one_out.py")
+PROMOTION_POS_RATE_RATIO_HIGH = _env_float("AUTORESEARCH_POS_RATE_RATIO_HIGH", 3.5)
+PROMOTION_POS_RATE_RATIO_LOW = _env_float("AUTORESEARCH_POS_RATE_RATIO_LOW", 0.1)
+PROMOTION_THRESHOLD_EDGE_LOW = _env_float("AUTORESEARCH_THRESHOLD_EDGE_LOW", 0.03)
+PROMOTION_THRESHOLD_EDGE_HIGH = _env_float("AUTORESEARCH_THRESHOLD_EDGE_HIGH", 0.94)
+PROMOTION_WEAK_AP_LIFT = _env_float("AUTORESEARCH_WEAK_AP_LIFT", 1.25)
+QUALITY_AP_WEIGHT = _env_float("AUTORESEARCH_QUALITY_AP_WEIGHT", 0.25)
+QUALITY_F05_WEIGHT = _env_float("AUTORESEARCH_QUALITY_F05_WEIGHT", 0.10)
+QUALITY_RATIO_HIGH = _env_float("AUTORESEARCH_QUALITY_RATIO_HIGH", 3.0)
+QUALITY_RATIO_LOW = _env_float("AUTORESEARCH_QUALITY_RATIO_LOW", 0.25)
+QUALITY_RATIO_PENALTY_CAP = _env_float("AUTORESEARCH_QUALITY_RATIO_PENALTY_CAP", 0.25)
+QUALITY_RATIO_PENALTY_SLOPE = _env_float("AUTORESEARCH_QUALITY_RATIO_PENALTY_SLOPE", 0.03)
+QUALITY_MISSING_FIXED_THRESHOLD_PENALTY = _env_float("AUTORESEARCH_QUALITY_MISSING_FIXED_THRESHOLD_PENALTY", 0.03)
+QUALITY_WEAK_FIXED_THRESHOLD_PENALTY = _env_float("AUTORESEARCH_QUALITY_WEAK_FIXED_THRESHOLD_PENALTY", 0.05)
+QUALITY_PROMOTION_ELIGIBLE_BONUS = _env_float("AUTORESEARCH_QUALITY_PROMOTION_ELIGIBLE_BONUS", 0.05)
+QUALITY_WARNING_PENALTY = _env_float("AUTORESEARCH_QUALITY_WARNING_PENALTY", 0.01)
+COST_TIER_TORCH_SAMPLE_NORMAL_MAX = _env_int("AUTORESEARCH_COST_TIER_TORCH_SAMPLE_NORMAL_MAX", 2048)
+COST_TIER_NUMPY_PIXEL_MAX = _env_int("AUTORESEARCH_COST_TIER_NUMPY_PIXEL_MAX", 600000)
+COST_TIER_EPOCH_NORMAL_MAX = _env_int("AUTORESEARCH_COST_TIER_EPOCH_NORMAL_MAX", 8)
 _LINKED_LOO_SUMMARY_CACHE_AT = 0.0
 _LINKED_LOO_SUMMARY_CACHE: list[Dict[str, Any]] | None = None
 _LINKED_LOO_SUMMARY_CACHE_ROOT: Path | None = None
+_LINKED_LOO_SUMMARY_CACHE_LOCK = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 SCOPE_KEYS = ("train_npz", "val_npz", "validation_mode", "research_scope")
 SEARCH_PATHS = (
     ("model", "name"),
@@ -95,7 +143,7 @@ SIGNATURE_DEFAULTS = {
     ("training", "tversky_beta"): None,
     ("training", "focal_tversky_gamma"): None,
     ("training", "augment_flips"): None,
-    ("training", "seed"): 1337,
+    ("training", "seed"): DEFAULT_SEED,
     ("training", "seeds"): None,
     ("training", "deterministic"): None,
     ("training", "sampling_strategy"): None,
@@ -137,6 +185,21 @@ PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "hard_negative_fraction"): (0.1, 0.9),
     ("evaluation", "max_pred_positive_rate_ratio"): (1.5, 3.5),
 }
+
+
+def _assert_signature_defaults_within_param_bounds() -> None:
+    for path, (low, high) in PARAM_BOUNDS.items():
+        if path not in SIGNATURE_DEFAULTS:
+            continue
+        value = SIGNATURE_DEFAULTS[path]
+        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if not low <= float(value) <= high:
+            dotted = ".".join(path)
+            raise AssertionError(f"SIGNATURE_DEFAULTS[{dotted}]={value!r} outside PARAM_BOUNDS {low}..{high}")
+
+
+_assert_signature_defaults_within_param_bounds()
 
 
 @dataclass(frozen=True)
@@ -241,7 +304,7 @@ class _CycleProfiler:
         self.events: list[tuple[str, float]] = []
 
     @contextlib.contextmanager
-    def measure(self, label: str):
+    def measure(self, label: str) -> Iterator[None]:
         start = time.perf_counter()
         try:
             yield
@@ -258,9 +321,13 @@ class _RunHistory:
     def __init__(self, profiler: _CycleProfiler | None = None) -> None:
         self.profiler = profiler or _CycleProfiler(enabled=False)
         self._recent_by_limit: dict[int | None, list[Dict[str, Any]]] = {}
-        self._strategy_by_runs_id: dict[int, Dict[str, Any]] = {}
-        self._ranked_torch_by_runs_id: dict[int, list[tuple[Dict[str, Any], str]]] = {}
-        self._manual_candidate_by_runs_id: dict[int, Dict[str, Any] | None] = {}
+        self._strategy_by_runs_key: dict[tuple[str, ...], Dict[str, Any]] = {}
+        self._ranked_torch_by_runs_key: dict[tuple[str, ...], list[tuple[Dict[str, Any], str]]] = {}
+        self._manual_candidate_by_runs_key: dict[tuple[str, ...], Dict[str, Any] | None] = {}
+
+    @staticmethod
+    def _runs_cache_key(runs: list[Dict[str, Any]]) -> tuple[str, ...]:
+        return tuple(sorted(str(run.get("run_id") or "") for run in runs))
 
     def recent_runs(self, limit: int | None = None) -> list[Dict[str, Any]]:
         if limit not in self._recent_by_limit:
@@ -270,9 +337,9 @@ class _RunHistory:
 
     def invalidate(self) -> None:
         self._recent_by_limit.clear()
-        self._strategy_by_runs_id.clear()
-        self._ranked_torch_by_runs_id.clear()
-        self._manual_candidate_by_runs_id.clear()
+        self._strategy_by_runs_key.clear()
+        self._ranked_torch_by_runs_key.clear()
+        self._manual_candidate_by_runs_key.clear()
 
     def torch_runs(self, runs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
         return [run for run in runs if "torch" in str(_get_nested(run.get("config", {}), ("model", "name"), ""))]
@@ -281,31 +348,31 @@ class _RunHistory:
         return [run for run in runs if _promotion_gate(run)[0]]
 
     def strategy_phase(self, runs: list[Dict[str, Any]]) -> Dict[str, Any]:
-        key = id(runs)
-        if key not in self._strategy_by_runs_id:
+        key = self._runs_cache_key(runs)
+        if key not in self._strategy_by_runs_key:
             with self.profiler.measure("strategy_phase"):
-                self._strategy_by_runs_id[key] = _strategy_phase(runs)
-        return self._strategy_by_runs_id[key]
+                self._strategy_by_runs_key[key] = _strategy_phase(runs)
+        return self._strategy_by_runs_key[key]
 
     def ranked_recent_torch_bases(self, runs: list[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:
-        key = id(runs)
-        if key not in self._ranked_torch_by_runs_id:
+        key = self._runs_cache_key(runs)
+        if key not in self._ranked_torch_by_runs_key:
             with self.profiler.measure("ranked_recent_torch_bases"):
-                self._ranked_torch_by_runs_id[key] = _ranked_recent_torch_bases(runs)
-        return self._ranked_torch_by_runs_id[key]
+                self._ranked_torch_by_runs_key[key] = _ranked_recent_torch_bases(runs)
+        return self._ranked_torch_by_runs_key[key]
 
     def manual_promotion_candidate(self, runs: list[Dict[str, Any]]) -> Dict[str, Any] | None:
-        key = id(runs)
-        if key not in self._manual_candidate_by_runs_id:
+        key = self._runs_cache_key(runs)
+        if key not in self._manual_candidate_by_runs_key:
             with self.profiler.measure("manual_promotion_candidate"):
-                self._manual_candidate_by_runs_id[key] = _manual_promotion_candidate(runs)
-        return self._manual_candidate_by_runs_id[key]
+                self._manual_candidate_by_runs_key[key] = _manual_promotion_candidate(runs)
+        return self._manual_candidate_by_runs_key[key]
 
 
 def _best_base_config(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not runs:
-        return load_config(BASELINE)
-    baseline = load_config(BASELINE)
+        return cast(Dict[str, Any], load_config(BASELINE))
+    baseline = cast(Dict[str, Any], load_config(BASELINE))
     target_metric = baseline.get("evaluation", {}).get("main_metric", "val_loss")
     baseline_dataset = baseline.get("dataset", {})
     direction = _metric_direction(baseline)
@@ -336,7 +403,7 @@ def _candidate_is_noop(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -
             _get_nested(cfg, BALANCED_CALIBRATION_FIELDS[key], None) == proposed
             for key, proposed in value.items()
         )
-    return _get_nested(cfg, path, None) == value
+    return bool(_get_nested(cfg, path, None) == value)
 
 
 def _apply_candidate(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> None:
@@ -393,20 +460,20 @@ def _cost_tier_rank(tier: str) -> int:
 def _config_cost_tier(cfg: Dict[str, Any]) -> str:
     """Classify expected local runtime cost without changing experiment behavior."""
     model_name = str(_get_nested(cfg, ("model", "name"), "tiny_numpy_ink_logreg"))
-    training = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
-    evaluation = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
-    epochs = int(training.get("epochs") or SIGNATURE_DEFAULTS[("training", "epochs")])
+    training = cast(dict[str, Any], cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {})
+    evaluation = cast(dict[str, Any], cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {})
+    epochs = int(cast(int | float | str, training.get("epochs") or SIGNATURE_DEFAULTS[("training", "epochs")]))
     max_train_samples = int(training.get("max_train_samples") or 0)
-    max_train_pixels = int(training.get("max_train_pixels") or SIGNATURE_DEFAULTS[("training", "max_train_pixels")])
+    max_train_pixels = int(cast(int | float | str, training.get("max_train_pixels") or SIGNATURE_DEFAULTS[("training", "max_train_pixels")]))
     seeds = training.get("seeds")
     ensemble_size = len(seeds) if isinstance(seeds, list) else 1
-    if ensemble_size > 1 or bool(evaluation.get("tta_flips")) or max_train_samples > 2048 or max_train_pixels > 600000 or epochs > 8:
+    if ensemble_size > 1 or bool(evaluation.get("tta_flips")) or max_train_samples > COST_TIER_TORCH_SAMPLE_NORMAL_MAX or max_train_pixels > COST_TIER_NUMPY_PIXEL_MAX or epochs > COST_TIER_EPOCH_NORMAL_MAX:
         return "expensive"
-    if model_name == "tiny_numpy_ink_logreg" and epochs <= 5 and max_train_pixels <= 600000:
+    if model_name == "tiny_numpy_ink_logreg" and epochs <= 5 and max_train_pixels <= COST_TIER_NUMPY_PIXEL_MAX:
         return "cheap"
-    if model_name == "tiny_numpy_mlp" and max_train_pixels <= 600000 and epochs <= 8:
+    if model_name == "tiny_numpy_mlp" and max_train_pixels <= COST_TIER_NUMPY_PIXEL_MAX and epochs <= COST_TIER_EPOCH_NORMAL_MAX:
         return "normal"
-    if "torch" in model_name and (max_train_samples == 0 or max_train_samples <= 2048) and epochs <= 8:
+    if "torch" in model_name and (max_train_samples == 0 or max_train_samples <= COST_TIER_TORCH_SAMPLE_NORMAL_MAX) and epochs <= COST_TIER_EPOCH_NORMAL_MAX:
         return "normal"
     return "expensive"
 
@@ -515,7 +582,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
     lr = float(_get_nested(base, ("training", "learning_rate"), 0.2))
     epochs = int(_get_nested(base, ("training", "epochs"), 5))
     weight_decay = float(_get_nested(base, ("training", "weight_decay"), 0.0))
-    seed = int(_get_nested(base, ("training", "seed"), 1337))
+    seed = int(_get_nested(base, ("training", "seed"), DEFAULT_SEED))
     pos_weight_raw = _get_nested(base, ("training", "pos_weight"), 2.0)
     pos_weight = 2.0 if isinstance(pos_weight_raw, str) and pos_weight_raw.lower() == "auto" else float(pos_weight_raw)
 
@@ -558,7 +625,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "max_train_samples"), bounded_samples, "bound full robust training to a CPU-safe sample budget for cron exploration"),
             (("training", "augment_flips"), not augment_flips, "toggle train-time flip augmentation on this torch base"),
             (("evaluation", "tta_flips"), not tta_flips, "toggle test-time flip TTA to measure ensemble-like lift"),
-            (("training", "seed"), seed + 17, "repeat torch setup with a deterministic seed change"),
+            (("training", "seed"), seed + (SEED_REPEAT_DELTAS[0] if SEED_REPEAT_DELTAS else 17), "repeat torch setup with a deterministic seed change"),
         ]
         if sampling_strategy == "hard_mining":
             candidates.append((("training", "hard_negative_fraction"), 0.85, "raise hard-negative fraction toward recent precision-oriented residual configs"))
@@ -584,7 +651,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         (("training", "epochs"), min(20, epochs + 3), "more epochs to test whether ranking improves with additional convergence"),
         (("model", "depth"), 2 if depth != 2 else 1, "simpler feature depth to test whether cross-segment generalization improves with fewer texture terms"),
         (("model", "depth"), 3 if depth < 3 else 1, "alternate effective feature depth; depth above 3 is avoided because current feature extractor saturates at depth 3"),
-        (("training", "seed"), seed + 17, "repeat the selected setup with a different deterministic sampling/initialization seed"),
+            (("training", "seed"), seed + (SEED_REPEAT_DELTAS[0] if SEED_REPEAT_DELTAS else 17), "repeat the selected setup with a different deterministic sampling/initialization seed"),
     ]
     if model_name != "tiny_numpy_mlp":
         candidates.append((("model", "name"), "tiny_numpy_mlp", "switch to the local NumPy MLP for a nonlinear baseline without using external LLM/API tokens"))
@@ -622,10 +689,15 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
     baseline_dataset = load_config(BASELINE).get("dataset", {})
     tested = _reserved_signatures(runs)
     candidates = _proposal_candidates(base)
+    search_strategy_name = os.environ.get("AUTORESEARCH_SEARCH_STRATEGY", "heuristic")
+    if search_strategy_name.strip().lower() not in {"", "heuristic", "random", "current", "default"}:
+        from src.autoresearch.search_strategy import strategy_from_env
+        candidates = strategy_from_env(search_strategy_name).order_candidates(candidates, runs)
     # Rotate deterministically by minute slot so cron does not emit identical batches forever.
-    slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
-    candidates = candidates[slot:] + candidates[:slot]
-    proposals = []
+    else:
+        slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
+        candidates = candidates[slot:] + candidates[:slot]
+    proposals: List[Tuple[str, Dict[str, Any], str]] = []
     deferred_expensive: list[tuple[str, Dict[str, Any], str, str, Tuple[Any, ...]]] = []
     used_families: set[str] = set()
     seen_batch_signatures: set[Tuple[Any, ...]] = set()
@@ -777,7 +849,7 @@ def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
     val_rate = metrics.get("val_positive_rate")
     if pred_rate is not None and val_rate is not None:
         ratio = float(pred_rate) / max(float(val_rate), 1e-6)
-        if ratio > 3.5 or ratio < 0.1:
+        if ratio > PROMOTION_POS_RATE_RATIO_HIGH or ratio < PROMOTION_POS_RATE_RATIO_LOW:
             warnings.append("pred_positive_rate_ratio_suspicious")
     if "fixed_threshold_status" not in metrics:
         warnings.append("missing_fixed_threshold_status")
@@ -785,10 +857,10 @@ def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
     if fixed_threshold_status and fixed_threshold_status != "ok":
         warnings.append("fixed_threshold_status_weak")
     best_threshold = _optional_float(metrics.get("best_threshold"))
-    if best_threshold is not None and (best_threshold <= 0.03 or best_threshold >= 0.94):
+    if best_threshold is not None and (best_threshold <= PROMOTION_THRESHOLD_EDGE_LOW or best_threshold >= PROMOTION_THRESHOLD_EDGE_HIGH):
         warnings.append("best_threshold_at_sweep_edge")
     ap_prevalence_lift = _optional_float(metrics.get("ap_prevalence_lift"))
-    if ap_prevalence_lift is not None and ap_prevalence_lift < 1.25:
+    if ap_prevalence_lift is not None and ap_prevalence_lift < PROMOTION_WEAK_AP_LIFT:
         warnings.append("weak_ap_lift")
     checks = metrics.get("promotion_checks") or {}
     if isinstance(checks, dict) and checks.get("eligible") is False:
@@ -806,25 +878,25 @@ def _promotion_gate(run: Dict[str, Any]) -> tuple[bool, list[str]]:
 def _run_quality_score(run: Dict[str, Any]) -> float:
     metrics = run.get("metrics", {})
     score = float(metrics.get("val_f1") or run.get("main_metric") or 0.0)
-    score += 0.25 * float(metrics.get("average_precision") or 0.0)
-    score += 0.10 * float(metrics.get("val_f05") or 0.0)
+    score += QUALITY_AP_WEIGHT * float(metrics.get("average_precision") or 0.0)
+    score += QUALITY_F05_WEIGHT * float(metrics.get("val_f05") or 0.0)
     pred_rate = metrics.get("pred_positive_rate")
     val_rate = metrics.get("val_positive_rate")
     if pred_rate is not None and val_rate is not None:
         ratio = float(pred_rate) / max(float(val_rate), 1e-6)
-        if ratio > 3.0:
-            score -= min(0.25, 0.03 * (ratio - 3.0))
-        elif ratio < 0.25:
-            score -= min(0.25, 0.03 * (0.25 / max(ratio, 1e-6)))
+        if ratio > QUALITY_RATIO_HIGH:
+            score -= min(QUALITY_RATIO_PENALTY_CAP, QUALITY_RATIO_PENALTY_SLOPE * (ratio - QUALITY_RATIO_HIGH))
+        elif ratio < QUALITY_RATIO_LOW:
+            score -= min(QUALITY_RATIO_PENALTY_CAP, QUALITY_RATIO_PENALTY_SLOPE * (QUALITY_RATIO_LOW / max(ratio, 1e-6)))
     if "fixed_threshold_status" not in metrics:
-        score -= 0.03
+        score -= QUALITY_MISSING_FIXED_THRESHOLD_PENALTY
     elif str(metrics.get("fixed_threshold_status") or "").lower() != "ok":
-        score -= 0.05
+        score -= QUALITY_WEAK_FIXED_THRESHOLD_PENALTY
     eligible, warnings = _promotion_gate(run)
     if eligible:
-        score += 0.05
+        score += QUALITY_PROMOTION_ELIGIBLE_BONUS
     else:
-        score -= 0.01 * len(warnings)
+        score -= QUALITY_WARNING_PENALTY * len(warnings)
     return score
 
 
@@ -1099,19 +1171,21 @@ def _cached_loo_summaries(now: float | None = None) -> list[Dict[str, Any]]:
     global _LINKED_LOO_SUMMARY_CACHE_AT, _LINKED_LOO_SUMMARY_CACHE, _LINKED_LOO_SUMMARY_CACHE_ROOT
     current = time.time() if now is None else now
     cache_root = LOGS.resolve()
-    if _LINKED_LOO_SUMMARY_CACHE is not None and _LINKED_LOO_SUMMARY_CACHE_ROOT == cache_root and current - _LINKED_LOO_SUMMARY_CACHE_AT < LINKED_LOO_SUMMARY_CACHE_TTL_SECONDS:
-        return _LINKED_LOO_SUMMARY_CACHE
-    summaries: list[Dict[str, Any]] = []
-    for path in sorted(LOGS.glob("*summary.json"), key=lambda item: item.stat().st_mtime, reverse=True):
-        try:
-            summary = json.loads(path.read_text())
-        except Exception:
-            continue
-        summaries.append(summary)
-    _LINKED_LOO_SUMMARY_CACHE = summaries
-    _LINKED_LOO_SUMMARY_CACHE_AT = current
-    _LINKED_LOO_SUMMARY_CACHE_ROOT = cache_root
-    return summaries
+    with _LINKED_LOO_SUMMARY_CACHE_LOCK:
+        if _LINKED_LOO_SUMMARY_CACHE is not None and _LINKED_LOO_SUMMARY_CACHE_ROOT == cache_root and current - _LINKED_LOO_SUMMARY_CACHE_AT < LINKED_LOO_SUMMARY_CACHE_TTL_SECONDS:
+            return list(_LINKED_LOO_SUMMARY_CACHE)
+        summaries: list[Dict[str, Any]] = []
+        for path in sorted(LOGS.glob("*summary.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+            try:
+                summary = json.loads(path.read_text())
+            except Exception as exc:
+                LOGGER.warning("Skipping malformed LOO summary %s: %s", path, exc)
+                continue
+            summaries.append(summary)
+        _LINKED_LOO_SUMMARY_CACHE = summaries
+        _LINKED_LOO_SUMMARY_CACHE_AT = current
+        _LINKED_LOO_SUMMARY_CACHE_ROOT = cache_root
+        return list(summaries)
 
 
 def _linked_loo_summary(run: Dict[str, Any]) -> dict[str, Any] | None:
@@ -1171,7 +1245,7 @@ def _manual_promotion_candidate(runs: List[Dict[str, Any]]) -> Dict[str, Any] | 
         val_rate = metrics.get("val_positive_rate")
         if pred_rate is not None and val_rate is not None:
             ratio = float(pred_rate) / max(float(val_rate), 1e-6)
-            if ratio > 3.5 or ratio < 0.1:
+            if ratio > PROMOTION_POS_RATE_RATIO_HIGH or ratio < PROMOTION_POS_RATE_RATIO_LOW:
                 continue
         if _linked_loo_summary_failed(run):
             continue
@@ -1213,20 +1287,20 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHist
         base_config = artifact_dir / "config.json"
         output_stem = f"{candidate_run_id}_seedrepeat_loo"
         command_args = [
-            ".venv/bin/python",
-            "scripts/evaluate_leave_one_out.py",
+            DEFAULT_PYTHON,
+            DEFAULT_LOO_SCRIPT,
             "--base-config",
             _repo_arg(base_config),
             "--fold-map",
-            "data/real_cross_folds_expanded_combined/fold_map.json",
+            DEFAULT_FOLD_MAP,
             "--output-jsonl",
             f"logs/{output_stem}.jsonl",
             "--summary-json",
             f"logs/{output_stem}.summary.json",
             "--seeds",
-            os.environ.get("AUTORESEARCH_PROMOTION_SEEDS", "11001,11018,11045"),
+            DEFAULT_PROMOTION_SEEDS,
             "--jobs",
-            os.environ.get("AUTORESEARCH_LOO_JOBS", "2"),
+            DEFAULT_LOO_JOBS,
         ]
         summary_json = ROOT / f"logs/{output_stem}.summary.json"
         command = _shell_command(command_args)
@@ -1438,8 +1512,8 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
             if p:
                 proposals.append(p)
         # Also try seed repeats to confirm threshold robustness
-        seed = int(_get_nested(base, ("training", "seed"), 1337))
-        for seed_delta in (17, 31, 53):
+        seed = int(_get_nested(base, ("training", "seed"), DEFAULT_SEED))
+        for seed_delta in SEED_REPEAT_DELTAS:
             if len(proposals) >= count:
                 break
             p = _make_proposal(("training", "seed"), seed + seed_delta, f"promotion action {action_id}: seed repeat with threshold-aware calibration")
@@ -1561,7 +1635,15 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
                 "proposals": [],
             }
     except Exception as exc:
+        LOGGER.exception("Promotion readiness check failed")
         print(f"Promotion readiness check skipped: {exc}", flush=True)
+        if os.environ.get("AUTORESEARCH_FAIL_ON_SNAPSHOT_ERROR", "0") == "1":
+            return {
+                "status": "promotion_readiness_error",
+                "next_action": "Promotion readiness check failed; pause exploration and inspect dashboard snapshot.",
+                "error": str(exc),
+                "proposals": [],
+            }
     return None
 
 
@@ -1613,7 +1695,14 @@ def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> N
         "# Hyperparameter change: " + reason + "\n"
         "# Constraint: only one small hyperparameter change from the selected best recent config.\n"
     )
-    path.write_text(header + body)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(header + body)
+    tmp.replace(path)
+
+
+def _run_experiment_checked(config_path: Path) -> None:
+    subprocess.run([sys.executable, "run_experiment.py", "--config", str(config_path)], cwd=ROOT, check=True)
 
 
 def _acquire_autoresearch_lock(lock: Any) -> None:
@@ -1625,8 +1714,9 @@ def _acquire_autoresearch_lock(lock: Any) -> None:
         import msvcrt
     except (ImportError, AttributeError) as exc:
         raise RuntimeError("autoresearch locking requires fcntl or msvcrt; no safe fallback is available") from exc
+    msvcrt_any = cast(Any, msvcrt)
     lock.seek(0)
-    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    msvcrt_any.locking(lock.fileno(), msvcrt_any.LK_NBLCK, 1)
 
 
 def _research_harness() -> Any:
@@ -1651,10 +1741,6 @@ def main() -> int:
     except ImportError as exc:
         print(f"Failed to initialize research harness: {exc}", file=sys.stderr, flush=True)
         return 1
-
-    pruned = _prune_stale_configs()
-    if pruned:
-        print(f"Pruned {pruned} stale generated config(s)", flush=True)
 
     if args.plan:
         profiler = _CycleProfiler()
@@ -1713,12 +1799,15 @@ def main() -> int:
                 print("No novel one-change proposals remain.")
         return 0
 
-    with open(LOCK_PATH, "w") as lock:
+    with open(LOCK_PATH, "a+") as lock:
         try:
             _acquire_autoresearch_lock(lock)
         except (BlockingIOError, PermissionError, OSError):
             print(f"{datetime.now(timezone.utc).isoformat()} another autoresearch run is active; exiting safely")
             return 0
+        pruned = _prune_stale_configs()
+        if pruned:
+            print(f"Pruned {pruned} stale generated config(s)", flush=True)
         init_db(DB_PATH)
         profiler = _CycleProfiler()
         history = _RunHistory(profiler)
@@ -1726,7 +1815,7 @@ def main() -> int:
         if not runs:
             print("No prior runs found; executing baseline first")
             with profiler.measure("experiment_subprocess"):
-                subprocess.run([sys.executable, "run_experiment.py", "--config", str(BASELINE)], cwd=ROOT, check=True)
+                _run_experiment_checked(BASELINE)
             history.invalidate()
             runs = history.recent_runs()
         base = harness.best_base_config(runs)
@@ -1766,8 +1855,15 @@ def main() -> int:
             with profiler.measure("config_dump"):
                 _dump_config_with_comment(cfg_path, cfg, reason)
             print(f"Running generated experiment {cfg_path.name}: {reason}", flush=True)
-            with profiler.measure("experiment_subprocess"):
-                subprocess.run([sys.executable, "run_experiment.py", "--config", str(cfg_path)], cwd=ROOT, check=True)
+            try:
+                with profiler.measure("experiment_subprocess"):
+                    _run_experiment_checked(cfg_path)
+            except subprocess.CalledProcessError:
+                try:
+                    cfg_path.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
     return 0
 
 if __name__ == "__main__":
