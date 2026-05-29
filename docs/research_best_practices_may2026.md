@@ -31,6 +31,18 @@ This repo should optimize for reproducible cross-segment ink detection, not isol
 
 See `docs/next_best_moves_may2026.md` for command examples and promotion checks for seed-repeat LOO, safe data expansion, full-tile inference, TTA/seed ensembling, and 2.5D residual U-Net work.
 
+## Results To Date
+
+Post-fix positive-rate calibration batch, run on 2026-05-29:
+
+| run_id | val_f1 | AP | pred_pos_rate | LOO median val_f1 | promotion_ready |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `20260529T005748Z_7d9b2b4d` | 0.3447 | 0.2420 | 0.3148 | not run | not assessed |
+| `20260529T005804Z_12a24594` | 0.3887 | 0.2473 | 0.4969 | not run | not assessed |
+| `20260529T005819Z_28af43a2` | 0.3740 | 0.2598 | 0.3839 | 0.1747 | true |
+
+The selected LOO candidate was `20260529T005819Z_28af43a2` because its pred/val positive-rate ratio was below 3.5. Its seed-repeat LOO summary reported mean AP `0.1196` and worst fold `20230522181603` at `val_f1=0.0426`; promotion review should focus on that weak fold before any broad robustness claim.
+
 ## Plateau Policy
 
 When recent robust/torch runs stop improving, AutoResearch should switch out of local exploit mode instead of emitting more near-duplicate micro-sweeps:

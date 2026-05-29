@@ -40,6 +40,38 @@ The script writes `configs/baseline.yaml` plus the four robust pivot configs use
 
 Verify the installation with `python -m pytest tests/ && python autoresearch.py --plan --json && python -c "from harness.vesuvius_harness import VesuviusHarness; print('ok')" && python -c "from autoresearch import METRIC_CONTRACT, PARAM_BOUNDS; print(len(PARAM_BOUNDS), 'bounds')"`.
 
+Current `python3 autoresearch.py --plan --json` state, redacted to omit local absolute paths:
+
+```json
+{
+  "status": "promotion_ready",
+  "candidate_run_id": "20260528T163849Z_17863aaa",
+  "next_action": "Review full-tile quality evidence before promotion for segment 20230522181603",
+  "proposals": [],
+  "reasoning": [
+    "promotion_gate_ready",
+    "pause_exploration_before_more_local_sweeps",
+    "candidate_linked_evidence_available"
+  ],
+  "promotion_actions": [
+    {
+      "id": "quality_review",
+      "kind": "quality",
+      "quality_verdict": "review",
+      "segment_id": "20230522181603",
+      "target": "candidate_full_tile"
+    },
+    {
+      "id": "promotion_review",
+      "kind": "review",
+      "label": "Review promotion candidate 20260528T163849Z_17863aaa"
+    }
+  ]
+}
+```
+
+The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key.
+
 ## Architecture
 
 ```mermaid

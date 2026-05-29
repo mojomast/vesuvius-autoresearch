@@ -4,6 +4,10 @@ These moves are the next promotion path for this repo. They are ordered to reduc
 
 ## 1. Seed-Repeat Leave-One-Out
 
+Status on 2026-05-29: COMPLETE for post-fix candidate `20260529T005819Z_28af43a2` generated from `auto_20260529T005748Z_3_evaluation_threshold_0p35.yaml`. The sampled validation run recorded `val_f1=0.3740`, `average_precision=0.2598`, `pred_positive_rate=0.3839`, and `pred_positive_rate / val_positive_rate=2.99` under `max_pred_positive_rate_ratio=3.0`, `positive_rate_loss_weight=0.03`, `positive_rate_loss_tolerance=0.02`, and `max_train_samples=4096`.
+
+Seed-repeat LOO results from `logs/20260529T005819Z_28af43a2_seedrepeat_loo.summary.json`: `promotion_ready=true`, median-over-seeds median `val_f1=0.1747`, mean AP `0.1196`, and worst fold `20230522181603` with `val_f1=0.0426`. This is measured evidence only; the weak fold remains the main promotion risk and should be inspected before any broader robustness claim.
+
 Run the same committed config through `scripts/evaluate_leave_one_out.py` for at least three seeds before promotion. Keep each seed as a separate config so `config.json`, `metrics.json`, and the LOO JSONL files remain reproducible.
 
 Promotion summary should report:
@@ -116,6 +120,8 @@ Treat a mixed package as diagnostic evidence: promote the specific improved segm
 Seed ensembling and TTA can change probability scale. Re-run threshold calibration and full-tile checks after any ensemble/TTA change; do not assume an ensemble makes threshold `0.5` valid.
 
 ## 5. 2.5D Residual U-Net
+
+Post-fix 2026-05-29 evidence supports keeping 4096-sample, positive-rate-controlled candidates in the search space. The new tiny torch post-fix batch produced `20260529T005748Z_7d9b2b4d` (`prratio2.5`, `val_f1=0.3447`, AP `0.2420`, pred/val ratio `2.45`) and `20260529T005819Z_28af43a2` (`prratio3.0`, `val_f1=0.3740`, AP `0.2598`, pred/val ratio `2.99`). The unconstrained seed-repeat candidate `20260529T005804Z_12a24594` had higher sampled `val_f1=0.3887` but pred/val ratio `3.87`, outside the target safe band.
 
 The current `tiny_torch_unet` already consumes multi-channel NPZs, so 2.5D data can be prepared now with `--z-offsets`. The next model-family change should be a residual U-Net variant that keeps 64 x 64 patches and treats adjacent z slices as channels.
 
