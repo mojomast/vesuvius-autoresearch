@@ -1234,6 +1234,7 @@ def _research_harness() -> Any:
 
 
 def main() -> int:
+    """Run AutoResearch after fail-closed harness initialization, then config pruning."""
     parser = argparse.ArgumentParser(description="Run or plan the local AutoResearch cycle")
     parser.add_argument("--plan", action="store_true", help="Print planned proposals without writing configs or launching experiments")
     parser.add_argument("--json", action="store_true", help="Emit planning output as JSON; only valid with --plan")
@@ -1243,10 +1244,15 @@ def main() -> int:
 
     LOGS.mkdir(parents=True, exist_ok=True)
     CONFIGS.mkdir(parents=True, exist_ok=True)
+    try:
+        harness = _research_harness()
+    except ImportError as exc:
+        print(f"Failed to initialize research harness: {exc}", file=sys.stderr, flush=True)
+        return 1
+
     pruned = _prune_stale_configs()
     if pruned:
         print(f"Pruned {pruned} stale generated config(s)", flush=True)
-    harness = _research_harness()
 
     if args.plan:
         runs = _recent_runs()

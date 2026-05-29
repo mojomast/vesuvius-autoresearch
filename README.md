@@ -53,7 +53,7 @@ flowchart TD
   K --> C
 ```
 
-The core loop is intentionally local and inspectable: it reads experiment rows from SQLite, validates metric keys, checks promotion evidence, proposes one-change configs through bounded mutation logic, and executes the standard experiment runner.
+The core loop is intentionally local and inspectable: it initializes the active harness before pruning generated configs, reads experiment rows from SQLite, validates metric keys, checks promotion evidence, proposes one-change configs through bounded mutation logic, and executes the standard experiment runner. Harness import errors fail closed before pruning so a broken adapter cannot partially run AutoResearch.
 
 ## Configuration Reference
 
