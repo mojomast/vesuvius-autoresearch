@@ -92,4 +92,4 @@ Keep Vesuvius-specific data parsing and command inventory in `research_dashboard
 - Update standalone UI rendering in `research_dashboard/app.py` if the contract changes.
 - Update Hermes or other dashboards as consumers of the same `vesuvius-dashboard/v1` fields.
 - Keep Hermes-specific UI, session state, memory, skills, and self-improvement features outside this repository.
-- Run `python3 -m unittest discover -s tests` before committing.
+- Run `python3 -m pytest tests/` before committing.

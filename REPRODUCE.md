@@ -20,7 +20,7 @@ For public Vesuvius data ingestion, install optional dependencies and accept off
 ## Sanity Tests
 
 ```bash
-.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m pytest tests/
 ```
 
 ## Prepare Public Segment Data

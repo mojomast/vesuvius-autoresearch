@@ -23,7 +23,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
 .venv/bin/python scripts/setup_data.py --data-dir ./data
-.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m pytest tests/
 ```
 
 ## Setup
