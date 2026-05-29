@@ -1,6 +1,32 @@
 # Vesuvius AutoResearch
 
-Minimal continuous experiment pipeline for Vesuvius ScrollPrize ink-detection research.
+[![AutoResearch Tests](https://github.com/mojomast/vesuvius-autoresearch/actions/workflows/autoresearch_test.yml/badge.svg)](https://github.com/mojomast/vesuvius-autoresearch/actions/workflows/autoresearch_test.yml) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+
+Autonomous, evidence-gated experiment search for Vesuvius Challenge ink-detection research.
+
+Prize reviewers should start with [`SUBMISSION.md`](SUBMISSION.md), which summarizes the Progress Prize submission, honest research results, and extension path.
+
+## Quick Start With Synthetic Data
+
+Run the loop without downloading real Vesuvius data first:
+
+```bash
+git clone https://github.com/mojomast/vesuvius-autoresearch.git
+cd vesuvius-autoresearch
+python3 -m pip install -e .
+python3 scripts/generate_synthetic_data.py
+python3 autoresearch.py --plan --json
+```
+
+For a clean local setup that also regenerates configs:
+
+```bash
+python3 scripts/generate_synthetic_data.py --n-train 256 --n-val 64
+python3 scripts/setup_data.py --data-dir ./data
+python3 autoresearch.py --plan --json
+```
+
+The synthetic generator writes runner-compatible NPZs at `data/real_cross/segment_20230827161847/train.npz` and `data/real_cross/segment_20230520175435/val.npz`, plus metadata marked `provenance=synthetic`.
 
 The active workflow uses real Vesuvius data only. If real prepared NPZs or official data access are unavailable, runs fail loudly instead of falling back to fake data.
 
