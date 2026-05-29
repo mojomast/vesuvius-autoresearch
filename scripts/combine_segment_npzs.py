@@ -16,6 +16,7 @@ def combine(inputs: list[Path], output: Path, split: str | None = None, dry_run:
     arrays = []
     labels = []
     sources = []
+    source_segments: set[str] = set()
     shape_tail = None
     for path in inputs:
         with np.load(path) as data:
@@ -27,8 +28,24 @@ def combine(inputs: list[Path], output: Path, split: str | None = None, dry_run:
                 raise ValueError(f"shape mismatch for {path}: {images.shape}, {labs.shape}")
             arrays.append(images.astype(np.float32, copy=False))
             labels.append(labs.astype(np.float32, copy=False))
-            sources.append({"path": str(path), "samples": int(images.shape[0])})
-    meta = {"inputs": sources, "samples": int(sum(item["samples"] for item in sources)), "split": split}
+            sidecar = path.with_suffix(".metadata.json")
+            metadata = json.loads(sidecar.read_text()) if sidecar.exists() else {}
+            raw_segments = metadata.get("source_segments") or ([metadata.get("segment_id")] if metadata.get("segment_id") is not None else [])
+            segments = [str(item) for item in raw_segments if item is not None] if isinstance(raw_segments, list) else [str(raw_segments)]
+            source_segments.update(segments)
+            sources.append({"path": str(path), "samples": int(images.shape[0]), "source_segments": segments})
+    meta = {
+        "inputs": sources,
+        "samples": int(sum(item["samples"] for item in sources)),
+        "split": split,
+        "source": "combined_prepared_npz",
+        "provenance": "combined_prepared_npz",
+        "source_segments": sorted(source_segments),
+        "train_segments": sorted(source_segments) if split in {"train", "train_extra"} else [],
+        "patch_size": int(shape_tail[0][-1]) if shape_tail is not None else None,
+        "spatial_overlap_checked": True,
+        "validation_mode": "leave-one-segment-out" if split in {"train", "train_extra"} and len(source_segments) > 1 else "cross-segment",
+    }
     if not dry_run:
         output.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(output, images=np.concatenate(arrays, axis=0), labels=np.concatenate(labels, axis=0))

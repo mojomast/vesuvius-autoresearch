@@ -542,7 +542,7 @@ def _validation_setup(train_meta: Dict[str, Any], val_meta: Dict[str, Any]) -> D
     val_scroll = str(val_data.get("scroll_id") or val_meta.get("scroll_id") or "?")
     train_segment = str(train_data.get("segment_id") or train_meta.get("segment_id") or "?")
     val_segment = str(val_data.get("segment_id") or val_meta.get("segment_id") or "?")
-    train_segments_raw = train_data.get("train_segments") or train_meta.get("train_segments") or []
+    train_segments_raw = train_data.get("train_segments") or train_meta.get("train_segments") or train_data.get("source_segments") or train_meta.get("source_segments") or []
     train_segments = {str(segment) for segment in train_segments_raw if segment is not None} if isinstance(train_segments_raw, list) else set()
     heldout_segment = str(train_data.get("heldout_segment") or train_meta.get("heldout_segment") or "?")
     if train_scroll != "?" and val_scroll != "?" and train_scroll != val_scroll:

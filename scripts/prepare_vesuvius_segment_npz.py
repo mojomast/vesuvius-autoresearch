@@ -4,6 +4,13 @@
 This script reads the real segment surface-volume Zarr and aligned inklabels PNG,
 then writes train/validation NPZs in the runner schema.  It uses a spatial split
 over the x-axis so validation patches come from a held-out region of the segment.
+
+Promotion eligibility depends on runner/tile provenance, not metrics alone:
+`infer_full_tile` sets `promotion_checks.eligible=false` when the inference
+segment matches the recorded training segment or train segment list, or when the
+resolved validation mode is not cross-segment/cross-scroll/leave-one-segment-out.
+Single-segment NPZs therefore must explicitly record same-segment spatial
+non-overlap, and combined fold NPZs must record non-overlapping source segments.
 """
 from __future__ import annotations
 
@@ -241,6 +248,27 @@ def _tiled_origins(label: np.ndarray, region: tuple[int, int], patch_size: int, 
     return origins
 
 
+def _spatial_region(region: tuple[int, int], image_shape: tuple[int, int]) -> dict[str, list[int]]:
+    h, _w = image_shape
+    return {"bbox_xyxy": [int(region[0]), 0, int(region[1]), int(h)]}
+
+
+def _regions_overlap(a: dict[str, list[int]], b: dict[str, list[int]]) -> bool:
+    ax0, ay0, ax1, ay1 = a["bbox_xyxy"]
+    bx0, by0, bx1, by1 = b["bbox_xyxy"]
+    return max(ax0, bx0) < min(ax1, bx1) and max(ay0, by0) < min(ay1, by1)
+
+
+def _split_regions(width: int, patch_size: int, mode: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    if mode != "cross_region":
+        raise ValueError("spatial_separation_mode must be cross_region")
+    gap = max(patch_size, width // 50)
+    split_x = int(width * 0.7)
+    train_region = (0, max(patch_size, split_x - gap // 2))
+    val_region = (min(width - patch_size, split_x + gap // 2), width)
+    return train_region, val_region
+
+
 def _write_npz(output: Path, image: np.ndarray, label: np.ndarray, region: tuple[int, int], split: str, patch_size: int, samples: int, positive_fraction: float, seed: int, meta: dict, tiled: bool, stride: int, negative_max_positive_rate: float) -> None:
     images = []
     labels = []
@@ -256,7 +284,10 @@ def _write_npz(output: Path, image: np.ndarray, label: np.ndarray, region: tuple
         **meta,
         "split": split,
         "region_x": [int(region[0]), int(region[1])],
+        "spatial_region": _spatial_region(region, label.shape[:2]),
+        "spatial_overlap_checked": True,
         "patch_size": patch_size,
+        "val_stride": stride if split == "val" and tiled else None,
         "requested_samples": samples,
         "samples": int(len(origins)),
         "actual_samples": int(len(origins)),
@@ -271,7 +302,7 @@ def _write_npz(output: Path, image: np.ndarray, label: np.ndarray, region: tuple
     output.with_suffix(".metadata.json").write_text(json.dumps(out_meta, indent=2, sort_keys=True))
 
 
-def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: int, train_samples: int, val_samples: int, train_positive_fraction: float, val_positive_fraction: float, seed: int, source: str, z_offsets: list[int], val_tiled: bool, val_stride: int, negative_max_positive_rate: float, catalog: list[dict] | None = None, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0) -> dict:
+def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: int, train_samples: int, val_samples: int, train_positive_fraction: float, val_positive_fraction: float, seed: int, source: str, z_offsets: list[int], val_tiled: bool, val_stride: int, negative_max_positive_rate: float, catalog: list[dict] | None = None, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0, spatial_separation_mode: str = "cross_region") -> dict:
     meta = _segment_meta(segment_id, source, catalog)
     image, z_indices = _open_layers(meta["zarr_url"], level, z_offsets, public_chunk_delay_sec, public_chunk_retry_count, public_chunk_retry_delay_sec)
     image = _normalize(image)
@@ -282,12 +313,16 @@ def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: 
 
     h, w = label.shape[:2]
     image = image[:, :h, :w]
-    gap = max(patch_size, w // 50)
-    split_x = int(w * 0.7)
-    train_region = (0, max(patch_size, split_x - gap // 2))
-    val_region = (min(w - patch_size, split_x + gap // 2), w)
+    train_region, val_region = _split_regions(w, patch_size, spatial_separation_mode)
+    train_spatial_region = _spatial_region(train_region, label.shape[:2])
+    val_spatial_region = _spatial_region(val_region, label.shape[:2])
+    if _regions_overlap(train_spatial_region, val_spatial_region):
+        raise RuntimeError(f"Train/val spatial regions overlap for segment {segment_id}: {train_spatial_region} vs {val_spatial_region}")
+    provenance = "public-directory" if source == "public-directory" else source
     out_meta = {
         **meta,
+        "provenance": provenance,
+        "source_segments": [str(segment_id)],
         "zarr_level": str(level),
         "image_shape": [int(h), int(w)],
         "image_channels": int(image.shape[0]),
@@ -296,6 +331,10 @@ def _prepare_segment(segment_id: str, output_dir: Path, level: str, patch_size: 
         "raw_label_shape": [int(label_raw.shape[0]), int(label_raw.shape[1])],
         "label_positive_rate": float(label.mean()),
         "validation_mode": "spatial-same-segment",
+        "spatial_separation_mode": spatial_separation_mode,
+        "spatial_overlap_checked": True,
+        "train_spatial_region": train_spatial_region,
+        "val_spatial_region": val_spatial_region,
         "public_chunk_delay_sec": public_chunk_delay_sec,
         "public_chunk_retry_count": public_chunk_retry_count,
         "public_chunk_retry_delay_sec": public_chunk_retry_delay_sec,
@@ -329,6 +368,8 @@ def main() -> None:
     parser.add_argument("--z-offsets", default="0", help="Comma-separated z offsets from the middle layer, e.g. -4,-2,0,2,4")
     parser.add_argument("--val-tiled", action="store_true", help="Use uniform tiled validation sampling instead of positive oversampling")
     parser.add_argument("--val-stride", type=int, default=None)
+    parser.add_argument("--spatial-separation-mode", choices=["cross_region"], default="cross_region", help="How to keep same-segment train and val patches spatially disjoint")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing train/val NPZ outputs")
     parser.add_argument("--negative-max-positive-rate", type=float, default=0.001, help="Prefer negative training patches with at most this ink fraction")
     parser.add_argument("--public-chunk-delay-sec", type=float, default=0.0, help="Opt-in sleep after each public Zarr chunk read; 0 keeps the fast direct layer read")
     parser.add_argument("--public-chunk-retry-count", type=int, default=0, help="Retry individual public Zarr chunk reads after HTTP 429 responses")
@@ -355,12 +396,14 @@ def main() -> None:
             meta = _segment_meta(str(segment_id), args.catalog_source, catalog)
             results.append({"train_npz": str(train_npz.resolve()), "val_npz": str(val_npz.resolve()), "segment_id": str(segment_id), "reused": True, **meta})
             continue
+        if (train_npz.exists() or val_npz.exists()) and not args.overwrite:
+            raise FileExistsError(f"Refusing to overwrite existing outputs under {out}; pass --overwrite")
         if args.max_new_segments is not None and new_segments >= args.max_new_segments:
             results.append({"segment_id": str(segment_id), "skipped": True, "reason": "max-new-segments reached"})
             continue
         if args.request_delay_sec > 0:
             time.sleep(args.request_delay_sec)
-        results.append(_prepare_segment(str(segment_id), out, args.level, args.patch_size, args.train_samples, args.val_samples, train_positive_fraction, val_positive_fraction, args.seed, args.catalog_source, z_offsets, args.val_tiled, val_stride, args.negative_max_positive_rate, catalog, args.public_chunk_delay_sec, args.public_chunk_retry_count, args.public_chunk_retry_delay_sec))
+        results.append(_prepare_segment(str(segment_id), out, args.level, args.patch_size, args.train_samples, args.val_samples, train_positive_fraction, val_positive_fraction, args.seed, args.catalog_source, z_offsets, args.val_tiled, val_stride, args.negative_max_positive_rate, catalog, args.public_chunk_delay_sec, args.public_chunk_retry_count, args.public_chunk_retry_delay_sec, args.spatial_separation_mode))
         new_segments += 1
         if args.segment_delay_sec > 0:
             time.sleep(args.segment_delay_sec)
