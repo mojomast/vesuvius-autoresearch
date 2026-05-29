@@ -73,7 +73,7 @@ The harness layer lives in `harness/`. Implement `ResearchHarness` from `harness
 
 ## Cron And CI
 
-`.github/workflows/autoresearch_test.yml` runs the full unit suite on push and pull request. `.github/workflows/autoresearch_cron.yml` runs every 30 minutes, supports manual `workflow_dispatch`, and uploads `logs/` plus generated configs as artifacts.
+`.github/workflows/autoresearch_test.yml` runs the full unit suite on push and pull request. `.github/workflows/autoresearch_cron.yml` runs every 30 minutes, supports manual `workflow_dispatch`, and uploads `logs/` plus generated configs as artifacts. The cron workflow skips execution and uploads a warning artifact if `configs/baseline.yaml` is absent; run `scripts/setup_data.py` locally and commit `configs/baseline.yaml` to enable live cron runs.
 
 Install optional public-data ingestion support with:
 

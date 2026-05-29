@@ -21,6 +21,11 @@ def test_autoresearch_cron_workflow_has_required_triggers_and_artifacts():
     assert any(step.get("uses") == "actions/checkout@v4" for step in steps)
     assert any("python autoresearch.py" in step.get("run", "") for step in steps)
     assert any(step.get("uses") == "actions/upload-artifact@v4" for step in steps)
+    baseline_check = next(step for step in steps if step.get("name") == "Check baseline config")
+    assert baseline_check["id"] == "baseline_check"
+    run_step = next(step for step in steps if step.get("name") == "Run AutoResearch")
+    assert "baseline_check" in run_step["if"]
+    assert "baseline_missing == 'false'" in run_step["if"]
 
 
 def test_autoresearch_test_workflow_runs_full_suite_on_push_and_pr():

@@ -65,6 +65,8 @@ Research claims should include:
 
 Keep hand-authored configs in `configs/`. Generated `configs/auto_*` files are local search artifacts and should not be added unless intentionally curated into documentation.
 
+CI cron runs require `configs/baseline.yaml` to be present in the repo; regenerate it with `scripts/setup_data.py` before enabling live scheduled runs.
+
 ## Harness Changes
 
 New research loops should implement `harness.ResearchHarness` and include tests that prove proposal, evaluation, promotion decision, and promotion hooks compose without dashboard assumptions.

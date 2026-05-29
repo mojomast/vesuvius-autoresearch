@@ -21,7 +21,17 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e .
+      - name: Check baseline config
+        id: baseline_check
+        run: |
+          if [ ! -f configs/baseline.yaml ]; then
+            echo "baseline_missing=true" >> $GITHUB_OUTPUT
+            echo "WARNING: configs/baseline.yaml not found. Run scripts/setup_data.py locally first."
+          else
+            echo "baseline_missing=false" >> $GITHUB_OUTPUT
+          fi
       - name: Run AutoResearch
+        if: steps.baseline_check.outputs.baseline_missing == 'false'
         env:
           AUTORESEARCH_AUTO_PROMOTE: "0"
           AUTORESEARCH_PROPOSALS: "3"
@@ -32,6 +42,17 @@ jobs:
           else
             python autoresearch.py
           fi
+      - name: Write missing baseline warning
+        if: steps.baseline_check.outputs.baseline_missing == 'true'
+        run: |
+          mkdir -p logs
+          printf '%s\n' 'WARNING: configs/baseline.yaml not found. Run scripts/setup_data.py locally first and commit configs/baseline.yaml to enable live cron runs.' > logs/baseline_missing.txt
+      - name: Upload missing baseline warning
+        if: steps.baseline_check.outputs.baseline_missing == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-missing-warning
+          path: logs/baseline_missing.txt
       - name: Upload logs and configs
         if: always()
         uses: actions/upload-artifact@v4
