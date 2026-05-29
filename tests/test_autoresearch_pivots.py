@@ -199,7 +199,7 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(payload["next_action"], "run_seed_repeat_leave_one_out")
         self.assertEqual(payload["candidate_run_id"], "candidate")
         self.assertIn("scripts/evaluate_leave_one_out.py", payload["command"])
-        self.assertIn("--seeds 11001,11018,15050", payload["command"])
+        self.assertIn("--seeds 11001,11018,11045", payload["command"])
         self.assertEqual(payload["proposals"], [])
 
     def test_promotion_phase_auto_promote_runs_bounded_loo_command(self) -> None:
@@ -222,7 +222,7 @@ class AutoResearchPivotTest(unittest.TestCase):
         command_args = promote_mock.call_args.args[0]
         self.assertIn("scripts/evaluate_leave_one_out.py", command_args)
         self.assertIn("--seeds", command_args)
-        self.assertIn("11001,11018,15050", command_args)
+        self.assertIn("11001,11018,11045", command_args)
         self.assertIn("--jobs", command_args)
         self.assertEqual(promote_mock.call_args.args[3], 123)
 
@@ -274,6 +274,50 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(payload["candidate_run_id"], "candidate")
         self.assertEqual(payload["next_action"], "run_full_tile_validation")
         self.assertIsNone(payload["command"])
+
+    def test_promotion_phase_does_not_repeat_failed_linked_loo_summary(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        run = {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}}
+        other = {"run_id": "other", "artifact_dir": str(Path("experiments/runs/other")), "config": cfg, "main_metric": 0.38, "metrics": {"val_f1": 0.38, "average_precision": 0.23, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_logs = autoresearch.LOGS
+            old_cache = autoresearch._LINKED_LOO_SUMMARY_CACHE
+            old_cache_at = autoresearch._LINKED_LOO_SUMMARY_CACHE_AT
+            old_cache_root = autoresearch._LINKED_LOO_SUMMARY_CACHE_ROOT
+            autoresearch.LOGS = Path(tmpdir)
+            autoresearch._LINKED_LOO_SUMMARY_CACHE = None
+            autoresearch._LINKED_LOO_SUMMARY_CACHE_AT = 0.0
+            autoresearch._LINKED_LOO_SUMMARY_CACHE_ROOT = None
+            try:
+                (autoresearch.LOGS / "candidate_seedrepeat.summary.json").write_text(json.dumps({"promotion_ready": False, "run_ids": ["candidate"]}))
+                with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2"}, clear=False):
+                    payload = _promotion_phase_manual_action([run, other])
+            finally:
+                autoresearch.LOGS = old_logs
+                autoresearch._LINKED_LOO_SUMMARY_CACHE = old_cache
+                autoresearch._LINKED_LOO_SUMMARY_CACHE_AT = old_cache_at
+                autoresearch._LINKED_LOO_SUMMARY_CACHE_ROOT = old_cache_root
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["candidate_run_id"], "other")
+
+    def test_promotion_phase_skips_non_promotable_child_runs(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        child_cfg = json.loads(json.dumps(cfg))
+        child_cfg.setdefault("autoresearch", {})["promotable"] = False
+        child = {"run_id": "child", "artifact_dir": str(Path("experiments/runs/child")), "config": child_cfg, "main_metric": 0.5, "metrics": {"val_f1": 0.5, "average_precision": 0.3, "precision": 0.3, "recall": 0.8, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}}
+        candidate = {"run_id": "candidate", "artifact_dir": str(Path("experiments/runs/candidate")), "config": cfg, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"}}
+
+        with patch.dict("os.environ", {"AUTORESEARCH_PLATEAU_WINDOW": "2"}, clear=False):
+            payload = _promotion_phase_manual_action([child, candidate])
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["candidate_run_id"], "candidate")
 
     def test_main_plan_json_returns_manual_promotion_action_without_writes(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")

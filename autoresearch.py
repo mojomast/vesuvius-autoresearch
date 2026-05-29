@@ -828,7 +828,7 @@ def _same_path_tail(left: Any, right: Any) -> bool:
 
 
 def _cached_loo_summaries(now: float | None = None) -> list[Dict[str, Any]]:
-    """Return promotion-ready LOO summaries, caching filesystem scans for five minutes."""
+    """Return LOO summaries, caching filesystem scans for five minutes."""
     global _LINKED_LOO_SUMMARY_CACHE_AT, _LINKED_LOO_SUMMARY_CACHE, _LINKED_LOO_SUMMARY_CACHE_ROOT
     current = time.time() if now is None else now
     cache_root = LOGS.resolve()
@@ -840,24 +840,35 @@ def _cached_loo_summaries(now: float | None = None) -> list[Dict[str, Any]]:
             summary = json.loads(path.read_text())
         except Exception:
             continue
-        if summary.get("promotion_ready"):
-            summaries.append(summary)
+        summaries.append(summary)
     _LINKED_LOO_SUMMARY_CACHE = summaries
     _LINKED_LOO_SUMMARY_CACHE_AT = current
     _LINKED_LOO_SUMMARY_CACHE_ROOT = cache_root
     return summaries
 
 
-def _linked_loo_summary_ready(run: Dict[str, Any]) -> bool:
+def _linked_loo_summary(run: Dict[str, Any]) -> dict[str, Any] | None:
     run_id = str(run.get("run_id") or "")
     artifact_config = Path(str(run.get("artifact_dir") or "")) / "config.json" if run.get("artifact_dir") else None
     for summary in _cached_loo_summaries():
         run_ids = {str(item) for item in summary.get("run_ids") or []}
         if run_id and run_id in run_ids:
-            return True
+            return summary
         if artifact_config and _same_path_tail(summary.get("base_config"), artifact_config):
-            return True
-    return False
+            return summary
+    return None
+
+
+def _linked_loo_summary_ready(run: Dict[str, Any]) -> bool:
+    summary = _linked_loo_summary(run)
+    return bool(summary and summary.get("promotion_ready"))
+
+
+def _linked_loo_summary_failed(run: Dict[str, Any]) -> bool:
+    summary = _linked_loo_summary(run)
+    if not summary:
+        return False
+    return not bool(summary.get("promotion_ready"))
 
 
 def _promotion_next_action_with_evidence(run: Dict[str, Any]) -> str:
@@ -874,6 +885,9 @@ def _manual_promotion_candidate(runs: List[Dict[str, Any]]) -> Dict[str, Any] | 
     for run in runs:
         cfg = run.get("config", {})
         metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+        autoresearch_meta = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+        if autoresearch_meta.get("promotable") is False:
+            continue
         model_name = str(_get_nested(cfg, ("model", "name"), ""))
         if "torch" not in model_name:
             continue
@@ -892,6 +906,8 @@ def _manual_promotion_candidate(runs: List[Dict[str, Any]]) -> Dict[str, Any] | 
             ratio = float(pred_rate) / max(float(val_rate), 1e-6)
             if ratio > 3.5 or ratio < 0.1:
                 continue
+        if _linked_loo_summary_failed(run):
+            continue
         action = _promotion_next_action_with_evidence(run)
         if action in {"run_seed_repeat_leave_one_out", "run_full_tile_validation"}:
             candidates.append(run)
@@ -940,7 +956,7 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
             "--summary-json",
             f"logs/{output_stem}.summary.json",
             "--seeds",
-            "11001,11018,15050",
+            os.environ.get("AUTORESEARCH_PROMOTION_SEEDS", "11001,11018,11045"),
             "--jobs",
             os.environ.get("AUTORESEARCH_LOO_JOBS", "2"),
         ]
