@@ -40,7 +40,7 @@ Subprocess experiment launches now clean up generated proposal configs on `Calle
 
 ## Test Coverage
 
-Current coverage from `TEST_COVERAGE.md`: `268 passed`, `89%` total coverage for `src/autoresearch`.
+Current coverage from `TEST_COVERAGE.md`: `273 passed`, `89.38%` total coverage for `src/autoresearch`.
 
 ## Bayesian Search Mode
 
@@ -51,11 +51,20 @@ Install the optional search extra and set the strategy variable:
 AUTORESEARCH_SEARCH_STRATEGY=bayesian .venv/bin/python autoresearch.py --plan --json
 ```
 
-Bayesian mode conservatively reorders the existing bounded candidate set. Normal signature dedupe, cost-tier limits, and promotion metadata still apply.
+Bayesian mode now persists Optuna studies in `logs/optuna.db`, backfills historical experiment evidence, and proposes bounded candidates through the same signature dedupe, cost-tier limits, and promotion metadata used by heuristic planning.
+
+## ML Improvements
+
+- Added six read-only ML research reports covering promotion blockers, model gaps, loss/calibration, data sampling, LOO strategy, and Bayesian readiness.
+- Added 10 targeted promotion configs focused on fixed-threshold robustness, predicted-positive-rate control, hard-fold evidence, sparse-ink focal/Combo losses, rotation augmentation, and sampling curriculum ablations.
+- Added optional Torch Focal BCE and Combo BCE+Dice losses while preserving existing Dice, Tversky, and positive-rate loss behavior.
+- Added train-time 90-degree rotation augmentation, epoch-based sampling curriculum support, and bounded z-offset search metadata.
+- Rebalanced quality scoring toward fixed-threshold and calibration reliability with AP/F0.5 weights plus an explicit capped predicted-positive-rate penalty.
+- Kept promotion gates intact: targeted configs still require seed-repeat LOO evidence, full-tile validation, and promotion-check eligibility before release consideration.
 
 ## Remaining Limitations
 
 - The package split is transitional: modules expose legacy implementation boundaries without fully moving all logic out of `autoresearch.py` yet.
 - `schemas.py` is permissive to preserve historical config compatibility.
-- Bayesian mode is candidate-ordering only; it does not yet persist an Optuna trial ledger or perform full ask/tell experiment management.
+- Bayesian mode persists proposal trials and historical backfill, but still uses existing bounded proposal execution instead of a standalone ask/tell worker.
 - Resource warnings from existing SQLite test fixtures remain visible in coverage runs but do not fail tests.

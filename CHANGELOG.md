@@ -35,3 +35,37 @@
 - Added `src/autoresearch/search_strategy.py` with heuristic and optional Optuna-backed Bayesian candidate ordering.
 - Added `AUTORESEARCH_SEARCH_STRATEGY=bayesian` support and an optional `search` dependency extra.
 - Added `scripts/backtest_quality_score.py` and `docs/search_strategy.md`.
+
+## Targeted Promotion Configs
+
+- Added `configs/targeted_promo_fixed_threshold_cap275.yaml` to replicate the strongest residual 2.5D calibrated family at the under-tested 2.75x positive-rate cap.
+- Added `configs/targeted_promo_fixed_threshold_prw006_cap250.yaml` to test whether lower PR loss recovers F1 while keeping fixed-threshold behavior under the strict 2.5x cap.
+- Added `configs/targeted_promo_hardfold_20230530172803_tol005.yaml` to target the low-ink LOO fold that was only 0.0064 F1 below the downstream weak-fold gate.
+- Added `configs/targeted_promo_hardfold_dualheldout_22181603_30172803.yaml` for fold-safe weak-fold/full-tile evidence on the repeated LOO blockers.
+- Added `configs/targeted_promo_prratio_strict_cap250.yaml` to directly suppress suspicious predicted-positive-rate ratios with stricter sampling and tolerance.
+- Added `configs/targeted_promo_light_tversky_precision.yaml` to test a light precision-biased Tversky term on top of the proven Dice+PR-loss backbone.
+
+## Loss Functions
+
+- Added configurable Torch Focal BCE loss with `training.focal_loss_weight`, `training.focal_alpha`, and `training.focal_gamma`.
+- Added configurable Torch Combo BCE+Dice loss with `training.combo_loss_weight`, `training.combo_bce_weight`, and `training.combo_dice_weight`.
+- Added `configs/targeted_promo_focal_bce_sparse_ink.yaml` and `configs/targeted_promo_combo_balanced_loss.yaml` on the calibrated residual 2.5D base.
+
+## Bayesian Search Full Integration
+
+- Added persistent Optuna study storage in `logs/optuna.db` with historical experiment backfill.
+- Added bounded Bayesian proposal asking through `AUTORESEARCH_SEARCH_STRATEGY=bayesian` and `bayesian_multi`.
+- Generated Bayesian proposals now include Optuna study/trial metadata and expose `search_strategy` in plan JSON.
+- Added `scripts/inspect_optuna_study.py` to inspect best trials and Pareto fronts.
+
+## Augmentation & Sampling
+
+- Added Torch train-time `training.augment_rotation` for 90-degree rotation augmentation.
+- Added `training.sampling_curriculum` to transition from uniform sampling to hard mining across epochs.
+- Added bounded `dataset.z_offsets` search metadata and two targeted configs for rotation and sampling-curriculum ablations.
+
+## Quality Score Calibration
+
+- Expanded `scripts/backtest_quality_score.py` to grid AP, F0.5, and calibration-penalty weights.
+- Updated `_run_quality_score` defaults to AP `0.20`, F0.5 `0.10`, and an explicit capped predicted-rate calibration penalty.
+- Added `docs/quality_score_analysis.md` with backtesting rationale.

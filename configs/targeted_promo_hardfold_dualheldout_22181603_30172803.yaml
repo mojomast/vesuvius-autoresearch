@@ -1,0 +1,55 @@
+# Targeted Promotion Config: dual-heldout lineage for the two repeated LOO blockers.
+# Addresses: fold-safe evidence for 20230522181603 and 20230530172803 before full-tile promotion checks.
+# Evidence: RESEARCH_ML_E recommends dual-heldout variants excluding the validation segment plus weak evidence folds.
+autoresearch:
+  changed_path: targeted_promo_hardfold_dualheldout_22181603_30172803
+  heldout_segment: "20230520175435"
+  intent: promotion_candidate
+  mutation_family: weak_fold_repair
+  parent_config: configs/residual25d_cap250_stride32_allval.yaml
+  parent_reason: train fold-safe dual-heldout artifact for weak-fold LOO and full-tile evidence
+  promotable: true
+  promotion_required:
+    - seed_repeat_leave_one_out
+    - full_tile_validation
+    - promotion_checks_eligible
+  scope_policy: expanded_multi_segment_leave_one_out
+dataset:
+  patch_size: 64
+  research_scope: multi_segment_targeted_promo_dualheldout_22181603_30172803
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435_20230530172803/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  validation_mode: leave-one-segment-out
+evaluation:
+  main_metric: val_f1
+  threshold: 0.35
+  tta_flips: true
+  max_pred_positive_rate_ratio: 2.75
+  min_pred_positive_rate_ratio: 0.1
+  target_pred_positive_rate: auto_val
+model:
+  name: residual_25d_torch_unet
+  input_mode: z_offsets_as_channels
+  base_channels: 8
+outputs:
+  runs_dir: experiments/runs
+training:
+  allow_cuda: false
+  augment_flips: true
+  batch_size: 8
+  deterministic: true
+  dice_loss_weight: 0.35
+  epochs: 4
+  hard_negative_fraction: 0.75
+  learning_rate: 0.001
+  max_train_samples: 1024
+  negative_patch_max_ink: 0.0
+  num_threads: 4
+  patch_sampling: hard_mining
+  pos_weight: auto
+  positive_patch_fraction: 0.45
+  positive_rate_loss_target: 0.04
+  positive_rate_loss_tolerance: 0.008
+  positive_rate_loss_weight: 0.08
+  seed: 11018
+  weight_decay: 0.0001

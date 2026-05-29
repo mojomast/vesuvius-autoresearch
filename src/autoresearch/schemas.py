@@ -69,13 +69,21 @@ class TrainingConfig(BaseModel):
     allow_cuda: bool = False
     num_threads: int | None = Field(default=None, ge=1)
     augment_flips: bool = False
+    augment_rotation: bool = False
     sampling_strategy: str | None = None
+    sampling_curriculum: dict[str, Any] | str | None = None
     patch_sampling: str | None = None
     hard_negative_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
     positive_patch_min_ink: float = Field(default=0.001, ge=0.0, le=1.0)
     negative_patch_max_ink: float = Field(default=0.0, ge=0.0, le=1.0)
     positive_patch_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
     dice_loss_weight: float = Field(default=0.0, ge=0.0)
+    focal_loss_weight: float = Field(default=0.0, ge=0.0)
+    focal_alpha: float = Field(default=0.25, ge=0.0, le=1.0)
+    focal_gamma: float = Field(default=2.0, ge=0.0)
+    combo_loss_weight: float = Field(default=0.0, ge=0.0)
+    combo_bce_weight: float = Field(default=0.5, ge=0.0)
+    combo_dice_weight: float = Field(default=0.5, ge=0.0)
     positive_rate_loss_weight: float = Field(default=0.0, ge=0.0)
     positive_rate_loss_tolerance: float = Field(default=0.0, ge=0.0)
     positive_rate_loss_target: float | Literal["auto", "auto_train", "train"] | None = None

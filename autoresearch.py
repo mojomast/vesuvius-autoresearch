@@ -63,8 +63,9 @@ PROMOTION_POS_RATE_RATIO_LOW = _env_float("AUTORESEARCH_POS_RATE_RATIO_LOW", 0.1
 PROMOTION_THRESHOLD_EDGE_LOW = _env_float("AUTORESEARCH_THRESHOLD_EDGE_LOW", 0.03)
 PROMOTION_THRESHOLD_EDGE_HIGH = _env_float("AUTORESEARCH_THRESHOLD_EDGE_HIGH", 0.94)
 PROMOTION_WEAK_AP_LIFT = _env_float("AUTORESEARCH_WEAK_AP_LIFT", 1.25)
-QUALITY_AP_WEIGHT = _env_float("AUTORESEARCH_QUALITY_AP_WEIGHT", 0.25)
+QUALITY_AP_WEIGHT = _env_float("AUTORESEARCH_QUALITY_AP_WEIGHT", 0.20)
 QUALITY_F05_WEIGHT = _env_float("AUTORESEARCH_QUALITY_F05_WEIGHT", 0.10)
+QUALITY_CALIBRATION_PENALTY_WEIGHT = _env_float("AUTORESEARCH_QUALITY_CALIBRATION_PENALTY_WEIGHT", 0.05)
 QUALITY_RATIO_HIGH = _env_float("AUTORESEARCH_QUALITY_RATIO_HIGH", 3.0)
 QUALITY_RATIO_LOW = _env_float("AUTORESEARCH_QUALITY_RATIO_LOW", 0.25)
 QUALITY_RATIO_PENALTY_CAP = _env_float("AUTORESEARCH_QUALITY_RATIO_PENALTY_CAP", 0.25)
@@ -101,6 +102,12 @@ SEARCH_PATHS = (
     ("training", "max_train_pixels"),
     ("training", "sample_positive_fraction"),
     ("training", "dice_loss_weight"),
+    ("training", "focal_loss_weight"),
+    ("training", "focal_alpha"),
+    ("training", "focal_gamma"),
+    ("training", "combo_loss_weight"),
+    ("training", "combo_bce_weight"),
+    ("training", "combo_dice_weight"),
     ("training", "positive_rate_loss_weight"),
     ("training", "positive_rate_loss_tolerance"),
     ("training", "tversky_loss_weight"),
@@ -108,10 +115,12 @@ SEARCH_PATHS = (
     ("training", "tversky_beta"),
     ("training", "focal_tversky_gamma"),
     ("training", "augment_flips"),
+    ("training", "augment_rotation"),
     ("training", "seed"),
     ("training", "seeds"),
     ("training", "deterministic"),
     ("training", "sampling_strategy"),
+    ("training", "sampling_curriculum"),
     ("training", "hard_negative_fraction"),
     ("evaluation", "threshold"),
     ("evaluation", "max_pred_positive_rate_ratio"),
@@ -136,6 +145,12 @@ SIGNATURE_DEFAULTS = {
     ("training", "max_train_pixels"): 600000,
     ("training", "sample_positive_fraction"): None,
     ("training", "dice_loss_weight"): None,
+    ("training", "focal_loss_weight"): None,
+    ("training", "focal_alpha"): None,
+    ("training", "focal_gamma"): None,
+    ("training", "combo_loss_weight"): None,
+    ("training", "combo_bce_weight"): None,
+    ("training", "combo_dice_weight"): None,
     ("training", "positive_rate_loss_weight"): None,
     ("training", "positive_rate_loss_tolerance"): None,
     ("training", "tversky_loss_weight"): None,
@@ -143,10 +158,12 @@ SIGNATURE_DEFAULTS = {
     ("training", "tversky_beta"): None,
     ("training", "focal_tversky_gamma"): None,
     ("training", "augment_flips"): None,
+    ("training", "augment_rotation"): None,
     ("training", "seed"): DEFAULT_SEED,
     ("training", "seeds"): None,
     ("training", "deterministic"): None,
     ("training", "sampling_strategy"): None,
+    ("training", "sampling_curriculum"): None,
     ("training", "hard_negative_fraction"): None,
     ("evaluation", "threshold"): 0.5,
     ("evaluation", "max_pred_positive_rate_ratio"): None,
@@ -157,6 +174,12 @@ PIVOT_CONFIGS = (
     "robust_calibrated_prloss_w0p03_lr0012_prratio3_seed11018.yaml",
     "robust_tta_seed_ensemble.yaml",
     "residual_25d_torch_unet_cpu.yaml",
+    "targeted_promo_fixed_threshold_cap275.yaml",
+    "targeted_promo_fixed_threshold_prw006_cap250.yaml",
+    "targeted_promo_hardfold_20230530172803_tol005.yaml",
+    "targeted_promo_hardfold_dualheldout_22181603_30172803.yaml",
+    "targeted_promo_prratio_strict_cap250.yaml",
+    "targeted_promo_light_tversky_precision.yaml",
 )
 BALANCED_CALIBRATION_PATH = ("balanced_calibration",)
 BALANCED_CALIBRATION_FIELDS = {
@@ -171,6 +194,12 @@ PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("evaluation", "threshold"): (0.05, 0.95),
     ("training", "epochs"): (2.0, 20.0),
     ("training", "dice_loss_weight"): (0.0, 0.8),
+    ("training", "focal_loss_weight"): (0.0, 0.5),
+    ("training", "focal_alpha"): (0.05, 0.95),
+    ("training", "focal_gamma"): (0.5, 4.0),
+    ("training", "combo_loss_weight"): (0.0, 0.8),
+    ("training", "combo_bce_weight"): (0.0, 1.0),
+    ("training", "combo_dice_weight"): (0.0, 1.0),
     ("training", "positive_rate_loss_weight"): (0.0, 0.1),
     ("training", "positive_rate_loss_tolerance"): (0.001, 0.02),
     ("training", "tversky_loss_weight"): (0.0, 0.5),
@@ -180,6 +209,7 @@ PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "max_train_samples"): (1.0, 4096.0),
     ("model", "depth"): (1.0, 3.0),
     ("model", "hidden_units"): (8.0, 96.0),
+    ("dataset", "z_offsets"): (-8.0, 8.0),
     ("training", "max_train_pixels"): (100000.0, 1200000.0),
     ("training", "sample_positive_fraction"): (0.05, 0.95),
     ("training", "hard_negative_fraction"): (0.1, 0.9),
@@ -690,9 +720,33 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
     tested = _reserved_signatures(runs)
     candidates = _proposal_candidates(base)
     search_strategy_name = os.environ.get("AUTORESEARCH_SEARCH_STRATEGY", "heuristic")
+    search_strategy_metadata: dict[str, Any] = {}
+    search_strategy_candidate: Tuple[str, ...] | None = None
+    search_strategy_label: str | None = None
     if search_strategy_name.strip().lower() not in {"", "heuristic", "random", "current", "default"}:
-        from src.autoresearch.search_strategy import strategy_from_env
-        candidates = strategy_from_env(search_strategy_name).order_candidates(candidates, runs)
+        from src.autoresearch.search_strategy import SearchContext, strategy_from_env
+        strategy = strategy_from_env(search_strategy_name)
+        search_strategy_label = getattr(strategy, "name", search_strategy_name)
+        context = SearchContext(
+            proposal_count=count,
+            strategy_phase=strategy_phase,
+            required_families=required_families,
+            allow_expensive=allow_expensive,
+            scope_policy=scope_policy,
+            lock_to_baseline_scope=lock_to_baseline_scope,
+            name_index_offset=name_index_offset,
+        )
+        propose_candidate = getattr(strategy, "propose_candidate", None)
+        if callable(propose_candidate):
+            asked = propose_candidate(base, candidates, runs, context, PARAM_BOUNDS)
+            if asked is not None:
+                candidates = [asked] + [candidate for candidate in candidates if candidate[0] != asked[0]]
+                search_strategy_metadata = dict(getattr(strategy, "last_trial_metadata", {}) or {})
+                search_strategy_candidate = asked[0]
+            else:
+                candidates = strategy.order_candidates(candidates, runs)
+        else:
+            candidates = strategy.order_candidates(candidates, runs)
     # Rotate deterministically by minute slot so cron does not emit identical batches forever.
     else:
         slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
@@ -744,6 +798,10 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         autoresearch["changed_path"] = ".".join(path)
         autoresearch["mutation_family"] = family
         autoresearch["cost_tier"] = cost_tier
+        if search_strategy_label:
+            autoresearch.setdefault("search_strategy", search_strategy_label)
+        if search_strategy_candidate == path:
+            autoresearch.update(search_strategy_metadata)
         if strategy_phase:
             autoresearch["strategy_phase"] = strategy_phase
         autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
@@ -884,6 +942,7 @@ def _run_quality_score(run: Dict[str, Any]) -> float:
     val_rate = metrics.get("val_positive_rate")
     if pred_rate is not None and val_rate is not None:
         ratio = float(pred_rate) / max(float(val_rate), 1e-6)
+        score -= QUALITY_CALIBRATION_PENALTY_WEIGHT * min(abs(ratio - 1.0), 0.5)
         if ratio > QUALITY_RATIO_HIGH:
             score -= min(QUALITY_RATIO_PENALTY_CAP, QUALITY_RATIO_PENALTY_SLOPE * (ratio - QUALITY_RATIO_HIGH))
         elif ratio < QUALITY_RATIO_LOW:
@@ -1435,6 +1494,7 @@ def _proposal_plan(proposals: List[Tuple[str, Dict[str, Any], str]]) -> list[Dic
             "reason": reason,
             "changed_path": autoresearch.get("changed_path"),
             "mutation_family": autoresearch.get("mutation_family"),
+            "search_strategy": autoresearch.get("search_strategy"),
             "strategy_phase": autoresearch.get("strategy_phase"),
             "scope_policy": autoresearch.get("scope_policy"),
             "cost_tier": autoresearch.get("cost_tier"),
@@ -1799,7 +1859,9 @@ def main() -> int:
                 print("No novel one-change proposals remain.")
         return 0
 
-    with open(LOCK_PATH, "a+") as lock:
+    lock_path = Path(os.environ.get("AUTORESEARCH_LOCK_PATH", "/tmp/vesuvius_autoresearch_pytest.lock" if os.environ.get("PYTEST_CURRENT_TEST") else str(LOCK_PATH)))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+") as lock:
         try:
             _acquire_autoresearch_lock(lock)
         except (BlockingIOError, PermissionError, OSError):

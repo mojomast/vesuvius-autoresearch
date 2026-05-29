@@ -430,6 +430,37 @@ def _resolve_positive_rate_target(raw: Any, train_labels: np.ndarray) -> float |
     return target
 
 
+def _torch_dice_loss(logits: Any, target: Any) -> Any:
+    import torch
+
+    probs = torch.sigmoid(logits)
+    dims = (1, 2, 3)
+    intersection = (probs * target).sum(dim=dims)
+    denom = probs.sum(dim=dims) + target.sum(dim=dims)
+    return (1.0 - ((2.0 * intersection + 1.0) / (denom + 1.0))).mean()
+
+
+def _torch_focal_bce_loss(logits: Any, target: Any, *, alpha: float = 0.25, gamma: float = 2.0) -> Any:
+    import torch
+    import torch.nn.functional as F
+
+    bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    probs = torch.sigmoid(logits)
+    pt = torch.where(target > 0.5, probs, 1.0 - probs)
+    alpha_pos = torch.as_tensor(alpha, dtype=logits.dtype, device=logits.device)
+    alpha_neg = torch.as_tensor(1.0 - alpha, dtype=logits.dtype, device=logits.device)
+    alpha_t = torch.where(target > 0.5, alpha_pos, alpha_neg)
+    return (alpha_t * (1.0 - pt).pow(gamma) * bce).mean()
+
+
+def _torch_combo_loss(logits: Any, target: Any, *, bce_weight: float = 0.5, dice_weight: float = 0.5) -> Any:
+    import torch.nn.functional as F
+
+    bce = F.binary_cross_entropy_with_logits(logits, target)
+    dice = _torch_dice_loss(logits, target)
+    return bce_weight * bce + dice_weight * dice
+
+
 def _sample_patch_indices(images: np.ndarray, labels: np.ndarray, max_samples: int, seed: int, train_cfg: Dict[str, Any]) -> tuple[np.ndarray, Dict[str, Any]]:
     rng = np.random.default_rng(seed)
     count = images.shape[0]
@@ -484,6 +515,33 @@ def _sample_patch_indices(images: np.ndarray, labels: np.ndarray, max_samples: i
         "positive_patches_selected": int(sum(ink_fraction[chosen] > 0.001)),
         "selected_patch_positive_rate": float((labels[chosen].reshape(len(chosen), -1).mean(axis=1) > 0.001).mean()) if len(chosen) else 0.0,
     }
+
+
+def _apply_training_augmentation(images: np.ndarray, labels: np.ndarray, *, augment_flips: bool = False, augment_rotation: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    image_parts = [images]
+    label_parts = [labels]
+    if augment_flips:
+        image_parts.extend([images[:, :, :, ::-1], images[:, :, ::-1, :]])
+        label_parts.extend([labels[:, :, :, ::-1], labels[:, :, ::-1, :]])
+    if augment_rotation:
+        image_parts.extend([np.rot90(images, k=k, axes=(-2, -1)) for k in (1, 2, 3)])
+        label_parts.extend([np.rot90(labels, k=k, axes=(-2, -1)) for k in (1, 2, 3)])
+    if len(image_parts) == 1:
+        return images, labels
+    return np.concatenate(image_parts, axis=0).copy(), np.concatenate(label_parts, axis=0).copy()
+
+
+def _curriculum_sampling_strategy(curriculum: Any, epoch: int) -> str | None:
+    if not curriculum:
+        return None
+    if isinstance(curriculum, str):
+        if curriculum == "uniform_to_hard_mining":
+            return "random" if epoch == 0 else "hard_mining"
+        return curriculum
+    if isinstance(curriculum, dict):
+        switch_epoch = int(curriculum.get("switch_epoch", curriculum.get("hard_mining_after_epoch", 1)))
+        return str(curriculum.get("initial", "random")) if epoch < switch_epoch else str(curriculum.get("final", "hard_mining"))
+    raise ValueError("training.sampling_curriculum must be a string or mapping")
 
 
 def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_labels: np.ndarray, threshold: float, artifact_dir: Path, extra: Dict[str, Any], eval_cfg: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -791,6 +849,12 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     seed = int(train_cfg.get("seed", 1337))
     num_threads = int(train_cfg.get("num_threads", min(4, os.cpu_count() or 1)))
     dice_loss_weight = float(train_cfg.get("dice_loss_weight", 0.0))
+    focal_loss_weight = float(train_cfg.get("focal_loss_weight", 0.0))
+    focal_alpha = float(train_cfg.get("focal_alpha", 0.25))
+    focal_gamma = float(train_cfg.get("focal_gamma", 2.0))
+    combo_loss_weight = float(train_cfg.get("combo_loss_weight", 0.0))
+    combo_bce_weight = float(train_cfg.get("combo_bce_weight", 0.5))
+    combo_dice_weight = float(train_cfg.get("combo_dice_weight", 0.5))
     tversky_loss_weight = float(train_cfg.get("tversky_loss_weight", 0.0))
     tversky_alpha = float(train_cfg.get("tversky_alpha", 0.3))
     tversky_beta = float(train_cfg.get("tversky_beta", 0.7))
@@ -801,8 +865,13 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         raise ValueError("training.positive_rate_loss_weight must be non-negative")
     if positive_rate_loss_tolerance < 0.0:
         raise ValueError("training.positive_rate_loss_tolerance must be non-negative")
+    if min(focal_loss_weight, focal_alpha, focal_gamma, combo_loss_weight, combo_bce_weight, combo_dice_weight) < 0.0:
+        raise ValueError("training focal/combo loss parameters must be non-negative")
     positive_rate_loss_target = _resolve_positive_rate_target(train_cfg.get("positive_rate_loss_target"), ytr_img)
     augment_flips = bool(train_cfg.get("augment_flips", False))
+    augment_rotation = bool(train_cfg.get("augment_rotation", False))
+    sampling_curriculum = train_cfg.get("sampling_curriculum")
+    use_sampling_curriculum = bool(sampling_curriculum) and max_train_samples > 0
     tta_flips = bool(eval_cfg.get("tta_flips", eval_cfg.get("test_time_flips", False)))
     raw_seeds = train_cfg.get("seeds", None)
     ensemble_seeds = [int(s) for s in raw_seeds] if raw_seeds is not None else [seed]
@@ -823,15 +892,17 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
             torch.backends.cudnn.benchmark = False
             torch.backends.cudnn.deterministic = True
 
-    if max_train_samples > 0 and Xtr_img.shape[0] > max_train_samples:
+    Xtr_source, ytr_source = Xtr_img, ytr_img
+    if not use_sampling_curriculum and max_train_samples > 0 and Xtr_img.shape[0] > max_train_samples:
         idx, sampling_metrics = _sample_patch_indices(Xtr_img, ytr_img, max_train_samples, seed, train_cfg)
         Xtr_img = Xtr_img[idx]
         ytr_img = ytr_img[idx]
+    elif use_sampling_curriculum:
+        sampling_metrics = {"patch_sampling": "curriculum", "selected_patches": int(min(max_train_samples, Xtr_img.shape[0])), "sampling_curriculum": sampling_curriculum}
     else:
         sampling_metrics = {"patch_sampling": "all", "selected_patches": int(Xtr_img.shape[0])}
-    if augment_flips:
-        Xtr_img = np.concatenate([Xtr_img, Xtr_img[:, :, :, ::-1], Xtr_img[:, :, ::-1, :]], axis=0).copy()
-        ytr_img = np.concatenate([ytr_img, ytr_img[:, :, :, ::-1], ytr_img[:, :, ::-1, :]], axis=0).copy()
+    if not use_sampling_curriculum:
+        Xtr_img, ytr_img = _apply_training_augmentation(Xtr_img, ytr_img, augment_flips=augment_flips, augment_rotation=augment_rotation)
 
     class ConvBlock(nn.Module):
         def __init__(self, cin: int, cout: int):
@@ -906,7 +977,7 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
             return Residual25DUNet(Xtr_img.shape[1], base).to(device)
         raise ValueError(f"Unknown torch model.name: {model_name}")
 
-    ds = TensorDataset(torch.from_numpy(Xtr_img), torch.from_numpy(ytr_img))
+    ds = TensorDataset(torch.from_numpy(Xtr_img), torch.from_numpy(ytr_img)) if not use_sampling_curriculum else None
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], dtype=torch.float32, device=device))
 
     def predict(model):
@@ -931,13 +1002,6 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     losses_by_seed = []
     prior_losses_by_seed = []
     soft_rates_by_seed = []
-    def dice_loss(logits, target):
-        probs = torch.sigmoid(logits)
-        dims = (1, 2, 3)
-        intersection = (probs * target).sum(dim=dims)
-        denom = probs.sum(dim=dims) + target.sum(dim=dims)
-        return (1.0 - ((2.0 * intersection + 1.0) / (denom + 1.0))).mean()
-
     def tversky_loss(logits, target):
         probs = torch.sigmoid(logits)
         dims = (1, 2, 3)
@@ -955,12 +1019,25 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         model = build_model()
         loader_generator = torch.Generator()
         loader_generator.manual_seed(run_seed)
-        loader = DataLoader(ds, batch_size=batch_size, shuffle=True, generator=loader_generator, num_workers=0)
         opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         losses = []
         prior_losses = []
         soft_rates = []
         for _epoch in range(epochs):
+            if use_sampling_curriculum:
+                epoch_cfg = dict(train_cfg)
+                epoch_strategy = _curriculum_sampling_strategy(sampling_curriculum, _epoch)
+                if epoch_strategy:
+                    epoch_cfg["patch_sampling"] = epoch_strategy
+                    epoch_cfg["sampling_strategy"] = epoch_strategy
+                idx, epoch_sampling_metrics = _sample_patch_indices(Xtr_source, ytr_source, max_train_samples, run_seed + _epoch, epoch_cfg)
+                if ensemble_idx == 0 and _epoch == epochs - 1:
+                    sampling_metrics.update({f"curriculum_last_{key}": value for key, value in epoch_sampling_metrics.items()})
+                X_epoch, y_epoch = _apply_training_augmentation(Xtr_source[idx], ytr_source[idx], augment_flips=augment_flips, augment_rotation=augment_rotation)
+                epoch_ds = TensorDataset(torch.from_numpy(X_epoch), torch.from_numpy(y_epoch))
+                loader = DataLoader(epoch_ds, batch_size=batch_size, shuffle=True, generator=loader_generator, num_workers=0)
+            else:
+                loader = DataLoader(ds, batch_size=batch_size, shuffle=True, generator=loader_generator, num_workers=0)
             model.train()
             epoch_losses = []
             epoch_prior_losses = []
@@ -978,7 +1055,11 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
                     epoch_prior_losses.append(float(prior_loss.detach().cpu()))
                     epoch_soft_rates.append(float(pred_rate.detach().cpu()))
                 if dice_loss_weight:
-                    loss = loss + dice_loss_weight * dice_loss(logits, yb)
+                    loss = loss + dice_loss_weight * _torch_dice_loss(logits, yb)
+                if focal_loss_weight:
+                    loss = loss + focal_loss_weight * _torch_focal_bce_loss(logits, yb, alpha=focal_alpha, gamma=focal_gamma)
+                if combo_loss_weight:
+                    loss = loss + combo_loss_weight * _torch_combo_loss(logits, yb, bce_weight=combo_bce_weight, dice_weight=combo_dice_weight)
                 if tversky_loss_weight:
                     loss = loss + tversky_loss_weight * tversky_loss(logits, yb)
                 loss.backward()
@@ -1014,6 +1095,15 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "positive_rate_loss_weight": positive_rate_loss_weight,
         "positive_rate_loss_target": positive_rate_loss_target,
         "positive_rate_loss_tolerance": positive_rate_loss_tolerance,
+        "focal_loss_weight": focal_loss_weight,
+        "focal_alpha": focal_alpha,
+        "focal_gamma": focal_gamma,
+        "combo_loss_weight": combo_loss_weight,
+        "combo_bce_weight": combo_bce_weight,
+        "combo_dice_weight": combo_dice_weight,
+        "augment_flips": augment_flips,
+        "augment_rotation": augment_rotation,
+        "sampling_curriculum": sampling_curriculum,
     }, indent=2, sort_keys=True))
     metrics_eval_cfg = {**eval_cfg}
     if positive_rate_loss_target is not None:
@@ -1028,6 +1118,12 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "ensemble_size": len(ensemble_seeds),
         "ensemble_seeds": ensemble_seeds,
         "dice_loss_weight": dice_loss_weight,
+        "focal_loss_weight": focal_loss_weight,
+        "focal_alpha": focal_alpha,
+        "focal_gamma": focal_gamma,
+        "combo_loss_weight": combo_loss_weight,
+        "combo_bce_weight": combo_bce_weight,
+        "combo_dice_weight": combo_dice_weight,
         "tversky_loss_weight": tversky_loss_weight,
         "tversky_alpha": tversky_alpha,
         "tversky_beta": tversky_beta,
@@ -1039,6 +1135,8 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "train_soft_positive_rate_last": soft_rates_by_seed[-1][-1] if soft_rates_by_seed and soft_rates_by_seed[-1] else None,
         "train_soft_positive_rate_error_last": abs(soft_rates_by_seed[-1][-1] - positive_rate_loss_target) if positive_rate_loss_target is not None and soft_rates_by_seed and soft_rates_by_seed[-1] and soft_rates_by_seed[-1][-1] is not None else None,
         "augment_flips": augment_flips,
+        "augment_rotation": augment_rotation,
+        "sampling_curriculum": sampling_curriculum,
         "tta_flips": tta_flips,
         **sampling_metrics,
         **extra_train_metrics,
