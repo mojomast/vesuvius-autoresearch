@@ -18,6 +18,8 @@ Positive-rate alarm follow-up on 2026-05-29: BLOCKED for tightened retrain `2026
 
 Seed-analysis follow-up on 2026-05-29: BLOCKED for diagnostic candidate `20260529T024258Z_8b44032d`. Full-tile on `20230520175435` was eligible and improved to `val_f1=0.2363`, AP `0.1508`, pred/val `3.44`, but LOO with replacement seed set `11001,11018,15073` failed with median-over-seeds median `val_f1=0.0681`, zero precision/recall on two folds, and `promotion_ready=false`. See `logs/promotion_evidence_20260529T024258Z_8b44032d.md`.
 
+Balanced-calibration follow-up on 2026-05-29: DO NOT PROMOTE for `20260529T050630Z_c3d8317a`. The sampled run looked competitive (`val_f1=0.3991`, AP `0.3041`, pred/val `2.75`), but three-seed LOO from `logs/20260529T050630Z_c3d8317a_3seed_loo.summary.json` has `promotion_ready=false`, median-over-seeds median `val_f1=0.1243`, worst fold `20230522181603` at `val_f1=0.0216`, and one positive-rate alarm on `20230522215721:seed=11045`. The paired strict-tolerance run `20260529T051459Z_112aebf1` is also diagnostic-only: sampled `val_f1=0.3911`, AP `0.2933`, pred/val `2.48`, but two-seed LOO from `logs/20260529T051459Z_112aebf1_2seed_loo.summary.json` already failed with worst fold `20230522181603=0.0158`, `20230530172803=0.0326`, one positive-rate alarm on `20230530212931:seed=11018`, and insufficient seed repeats. These results confirm that the `20230522181603` threshold/ranking cliff can worsen even when sampled F1 and positive-rate caps look safe.
+
 Run the same committed config through `scripts/evaluate_leave_one_out.py` for at least three seeds before promotion. Keep each seed as a separate config so `config.json`, `metrics.json`, and the LOO JSONL files remain reproducible.
 
 Promotion summary should report:
@@ -100,6 +102,10 @@ Diagnostic full-tile decision table after seed analysis:
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | `20260529T024258Z_8b44032d` prratio3.5 | 0.4110 | 0.2363 | 0.1508 | 3.44 | true | yes, failed LOO |
 | `20260529T024350Z_caa81174` prratio3.0 | 0.3971 | 0.2266 | 0.1511 | 2.97 | true | no, weaker tiled F1 |
+| `20260529T050630Z_c3d8317a` prratio2.75 | 0.3991 | 0.2237 | 0.1504 | 2.74 | true | yes, failed 3-seed LOO |
+| `20260529T051459Z_112aebf1` prratio2.5 strict | 0.3911 | 0.2113 | 0.1492 | 2.43 | true | no, failed 2-seed worst-fold gate |
+
+Targeted full-tile checks on eligible `20230522181603` reinforce the LOO rejection. `c3d8317a` reached only `val_f1=0.1183`, AP `0.0870`, pred/val `2.66`; `112aebf1` reached `val_f1=0.1123`, AP `0.0855`, pred/val `2.43`. Both trail the older `570f6775` eligible full-tile result on the same segment (`val_f1=0.1226`, AP `0.0860`, pred/val `2.89`) and neither offsets the much weaker LOO worst-fold evidence.
 
 Patch-sampled F1 can overstate segment utility when validation patches are positive-biased. Promotion runs should use validation NPZs prepared with `--val-tiled --val-stride 64` so every candidate sees a uniform tile grid over the held-out validation region.
 
@@ -143,7 +149,7 @@ Metric interpretation:
 - After validation-strip regeneration, `20260529T021416Z_570f6775` is the clearest non-promoted diagnostic candidate: three-seed LOO has no zero precision/recall folds and median-over-seeds median `val_f1=0.1109`, but promotion remains blocked by positive-rate alarms. The follow-up autoresearch sweep found sampled `val_f1=0.4161` for `20260529T022151Z_93da433a`; keep it diagnostic until it passes the same LOO/full-tile gates.
 - Positive-rate alarm diagnosis showed the hard cases have threshold cliffs: under-cap thresholds often collapse to near-zero recall, while the next threshold floods. A tighter retrain `20260529T023543Z_021a01b0` reduced alarms and kept three-seed median-over-seeds median `val_f1=0.1045`, but still failed promotion with alarms on `20230530212931:seed=15050` and `20230531121653:seed=15050`, plus worst-fold `val_f1=0.0179`.
 - The next forced autoresearch batch produced diagnostic sampled runs `20260529T024242Z_db5b5a83` (`val_f1=0.4132`, unconstrained pred/val `3.84`), `20260529T024258Z_8b44032d` (`prratio3.5`, `val_f1=0.4110`, pred/val `3.49`), `20260529T024316Z_ca39892d` (`positive_rate_loss_weight=0.01`, `val_f1=0.3915`, pred/val `2.97`), `20260529T024333Z_2e660bae` (`prratio3.5`, `val_f1=0.4067`, pred/val `3.46`), and `20260529T024350Z_caa81174` (`seed=11035`, `val_f1=0.3971`, pred/val `2.97`). Treat all as diagnostic until LOO/full-tile evidence exists.
-- `20260529T024258Z_8b44032d` is not promotion-safe despite the best eligible full-tile F1 so far: replacement-seed LOO with `11001,11018,15073` produced `promotion_ready=false`, median-over-seeds median `0.0681`, two zero precision/recall folds, and many weak fixed-threshold rows. Balanced calibration proposals now include `max_pred_positive_rate_ratio=2.75`, `positive_rate_loss_tolerance=0.008`, and a combined `balanced_calibration` candidate to target the gap between over-tight `2.5x` and flood-prone `3.5x`.
+- `20260529T024258Z_8b44032d` is not promotion-safe despite the best eligible full-tile F1 so far: replacement-seed LOO with `11001,11018,15073` produced `promotion_ready=false`, median-over-seeds median `0.0681`, two zero precision/recall folds, and many weak fixed-threshold rows. The follow-up balanced calibration candidates tested `max_pred_positive_rate_ratio=2.75` with `positive_rate_loss_tolerance=0.008` and stricter `2.5x` with tolerance `0.004`; both preserved full-tile eligibility, but neither fixed `20230522181603`, and both still hit positive-rate threshold cliffs on at least one fold/seed.
 
 ## 4. TTA And Seed Ensembling
 

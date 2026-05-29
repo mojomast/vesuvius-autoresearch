@@ -49,9 +49,22 @@ Selected analyzer rows:
 | 20260529T043342Z_478e28aa_3seed_loo.summary.json | 20230530172803 | 11045 | 0.0386 | 0.0351 | 0.0449 | 0.0180 | 2.49 | 2.50 | ok | low_f1 |
 | 20260529T043342Z_478e28aa_3seed_loo.summary.json | 20230530212931 | 11045 | 0.2992 | 0.2481 | 0.0261 | 0.0489 | 0.53 | 2.50 | weak | fixed_threshold_not_ok |
 
+## Later Balanced-Calibration Diagnostics
+
+Generated analyzer logs:
+
+- `logs/diagnostics/loo_c3d8317a.md`
+- `logs/diagnostics/loo_112aebf1.md`
+
+`20260529T050630Z_c3d8317a` tested the `2.75x` positive-rate cap with tolerance `0.008`. It completed three-seed LOO with `promotion_ready=false`, median-over-seeds median `val_f1=0.1243`, mean AP `0.1163`, worst fold `20230522181603=0.0216`, and one positive-rate alarm on `20230522215721:seed=11045` where pred/val jumped to `6.00`. Eligible full-tile evidence remained weak: `20230520175435` reached `val_f1=0.2237`, AP `0.1504`, pred/val `2.74`; `20230522181603` reached `val_f1=0.1183`, AP `0.0870`, pred/val `2.66`.
+
+`20260529T051459Z_112aebf1` tightened the same family to a `2.5x` cap and tolerance `0.004`. It was stopped after the two-seed LOO gate because `promotion_ready=false`, median-over-seeds median `val_f1=0.1393`, mean AP `0.1144`, worst fold `20230522181603=0.0158`, and `20230530172803=0.0326`; it also triggered a positive-rate alarm on `20230530212931:seed=11018` with pred/val `4.52`. Its eligible full-tile checks were lower than the `2.75x` run: `20230520175435` reached `val_f1=0.2113`, AP `0.1492`, pred/val `2.43`; `20230522181603` reached `val_f1=0.1123`, AP `0.0855`, pred/val `2.43`.
+
 ## Summary
 
 - Dense stride-32 validation fixed the most severe artifact: `20230530172803` no longer produces zero precision/recall folds, and its validation prevalence now appears as `0.0180` instead of `0.0088`.
 - The remaining `20230530172803` issue is low ranking strength, not flooding: all three post-fix seeds sit near the cap (`pred/val=2.49`) but remain below the strict `0.04` worst-fold gate.
 - The earlier positive-rate alarms on `20230522181603`, `20230522215721`, and `20230530212931` were high-ratio threshold cliffs under the `3.0` cap; the `2.5` cap removed those alarms but left some fixed-threshold weakness.
+- Balanced `2.75x` and strict `2.5x` follow-ups preserved full-tile eligibility but worsened `20230522181603` LOO robustness relative to the post-fix `478e28aa` reference, so sampled F1 remains insufficient evidence for promotion.
+- The cap band is still brittle: under-cap thresholds can suppress recall on `20230522181603`, while nearby threshold plateaus still overrun the cap on `20230522215721` or `20230530212931`.
 - Future tiny-torch configs should target smoother cap behavior in the `2.5-3.0` range without relaxing the worst-fold gate or claiming promotion from sampled F1 alone.
