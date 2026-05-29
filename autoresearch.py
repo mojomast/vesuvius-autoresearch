@@ -758,8 +758,26 @@ def _record_promotion_status(run_id: str, status: str, payload: Dict[str, Any] |
         )
 
 
+def _reported_promotion_outputs(stdout: str) -> dict[str, str]:
+    try:
+        payload = json.loads(stdout.strip())
+    except Exception:
+        return {}
+    outputs = payload.get("outputs") if isinstance(payload, dict) else None
+    if not isinstance(outputs, dict):
+        return {}
+    return {str(key): str(value) for key, value in outputs.items() if value}
+
+
+def _promotion_output_exists(path_text: str) -> bool:
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.exists()
+
+
 def _run_automated_promotion(command_args: list[str], candidate_run_id: str, summary_json: Path, timeout: int) -> dict[str, Any]:
-    """Run promotion evidence and record SUCCEEDED, SUCCEEDED_NO_SUMMARY, or FAILED."""
+    """Run promotion evidence and record summary or artifact-output status."""
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.log"
     status = "FAILED"
@@ -775,8 +793,18 @@ def _run_automated_promotion(command_args: list[str], candidate_run_id: str, sum
                 status = "SUCCEEDED"
                 payload["summary"] = summary
             else:
-                status = "SUCCEEDED_NO_SUMMARY"
-                payload.update({"warning": "summary_json not found", "path": str(summary_json)})
+                outputs = _reported_promotion_outputs(completed.stdout)
+                if outputs:
+                    missing_outputs = [path for path in outputs.values() if not _promotion_output_exists(path)]
+                    payload["outputs"] = outputs
+                    if missing_outputs:
+                        payload["error"] = "promotion command reported outputs that are missing"
+                        payload["missing_outputs"] = missing_outputs
+                    else:
+                        status = "SUCCEEDED_ARTIFACTS"
+                else:
+                    status = "SUCCEEDED_NO_SUMMARY"
+                    payload.update({"warning": "summary_json not found", "path": str(summary_json)})
         else:
             payload["error"] = f"promotion command exited {completed.returncode}"
     except subprocess.TimeoutExpired as exc:

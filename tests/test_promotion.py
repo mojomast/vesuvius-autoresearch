@@ -66,3 +66,44 @@ def test_automated_promotion_records_missing_summary_after_success(tmp_path, mon
         row = conn.execute("SELECT status, payload_json FROM promotion_results WHERE run_id = ?", ("candidate",)).fetchone()
     assert row[0] == "SUCCEEDED_NO_SUMMARY"
     assert json.loads(row[1])["warning"] == "summary_json not found"
+
+
+def test_automated_promotion_records_artifact_outputs_without_summary(tmp_path, monkeypatch):
+    db_path = tmp_path / "experiments.db"
+    logs = tmp_path / "logs"
+    output_dir = tmp_path / "full_tile"
+    output_dir.mkdir()
+    metrics = output_dir / "metrics.json"
+    probability_map = output_dir / "probability_map.npy"
+    threshold_csv = output_dir / "metrics_by_threshold.csv"
+    for path in (metrics, probability_map, threshold_csv):
+        path.write_text("ok")
+    stdout = json.dumps({"outputs": {"metrics_json": str(metrics), "probability_map": str(probability_map), "threshold_csv": str(threshold_csv)}})
+    monkeypatch.setattr(autoresearch, "DB_PATH", db_path)
+    monkeypatch.setattr(autoresearch, "LOGS", logs)
+    init_db(db_path)
+
+    with patch("autoresearch.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr="")):
+        result = autoresearch._run_automated_promotion(["python", "script.py"], "candidate", logs / "missing.summary.json", timeout=5)
+
+    assert result["automation_status"] == "SUCCEEDED_ARTIFACTS"
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT status, payload_json FROM promotion_results WHERE run_id = ?", ("candidate",)).fetchone()
+    assert row[0] == "SUCCEEDED_ARTIFACTS"
+    assert json.loads(row[1])["outputs"]["metrics_json"] == str(metrics)
+
+
+def test_automated_promotion_fails_when_reported_outputs_are_missing(tmp_path, monkeypatch):
+    db_path = tmp_path / "experiments.db"
+    logs = tmp_path / "logs"
+    missing = tmp_path / "full_tile" / "metrics.json"
+    stdout = json.dumps({"outputs": {"metrics_json": str(missing)}})
+    monkeypatch.setattr(autoresearch, "DB_PATH", db_path)
+    monkeypatch.setattr(autoresearch, "LOGS", logs)
+    init_db(db_path)
+
+    with patch("autoresearch.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr="")):
+        result = autoresearch._run_automated_promotion(["python", "script.py"], "candidate", logs / "missing.summary.json", timeout=5)
+
+    assert result["automation_status"] == "FAILED"
+    assert result["promotion_payload"]["missing_outputs"] == [str(missing)]
