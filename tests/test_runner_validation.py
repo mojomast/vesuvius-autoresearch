@@ -10,6 +10,7 @@ import numpy as np
 
 from experiments.runner import (
     _check_extra_train_fold_safety,
+    _enforce_run_profile,
     _load_training_arrays,
     _pixel_metrics_from_probs,
     _positive_rate_excess,
@@ -51,6 +52,35 @@ class RunnerValidationTest(unittest.TestCase):
         self.assertEqual(result["run_id"], "existing")
         self.assertTrue(result["deduped"])
         self.assertEqual(result["main_metric"], 0.25)
+
+    def test_exploration_profile_rejects_unbounded_torch_runs(self) -> None:
+        cfg = {"autoresearch": {"run_profile": "exploration"}, "model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5}}
+
+        with self.assertRaisesRegex(ValueError, "max_train_samples"):
+            _enforce_run_profile(cfg)
+
+    def test_exploration_profile_sets_light_defaults_and_allows_bounded_torch(self) -> None:
+        cfg = {"autoresearch": {"run_profile": "exploration"}, "model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 1024}, "evaluation": {}}
+
+        _enforce_run_profile(cfg)
+
+        self.assertFalse(cfg["training"]["augment_flips"])
+        self.assertFalse(cfg["evaluation"]["tta_flips"])
+
+    def test_exploration_profile_rejects_seed_ensembles(self) -> None:
+        cfg = {"autoresearch": {"run_profile": "exploration"}, "model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 1024, "seeds": [1, 2]}}
+
+        with self.assertRaisesRegex(ValueError, "ensembles"):
+            _enforce_run_profile(cfg)
+
+    def test_promotion_profile_requires_heldout_segment(self) -> None:
+        cfg = {"autoresearch": {"run_profile": "promotion"}, "model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 1024}}
+
+        with self.assertRaisesRegex(ValueError, "heldout_segment"):
+            _enforce_run_profile(cfg)
+
+        cfg["autoresearch"]["heldout_segment"] = "seg-a"
+        _enforce_run_profile(cfg)
 
     def test_extra_train_npzs_are_concatenated_and_counted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

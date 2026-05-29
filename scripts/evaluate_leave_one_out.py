@@ -335,6 +335,8 @@ def main() -> int:
                 if seed is not None:
                     cfg.setdefault("training", {})["seed"] = seed
                 cfg.setdefault("autoresearch", {})["heldout_segment"] = heldout_segment
+                cfg["autoresearch"]["run_profile"] = "promotion"
+                cfg["autoresearch"]["intent"] = "promotion_validation"
                 cfg["autoresearch"]["fold_map"] = str(fold_map_path.relative_to(ROOT) if fold_map_path.is_relative_to(ROOT) else fold_map_path)
                 cfg["autoresearch"]["seed_repeat"] = seed
                 if args.rerun_tag is not None:

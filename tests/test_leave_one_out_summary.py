@@ -270,6 +270,8 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
 
         self.assertEqual(len(seen_configs), 1)
         self.assertIn("rerun_tag: stride32_allval", seen_configs[0])
+        self.assertIn("run_profile: promotion", seen_configs[0])
+        self.assertIn("intent: promotion_validation", seen_configs[0])
 
     def test_limit_worker_threads_sets_only_unset_thread_env_vars(self) -> None:
         preserved_key = THREAD_LIMIT_ENV_VARS[0]

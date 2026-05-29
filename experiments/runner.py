@@ -65,6 +65,53 @@ def load_config(path: str | os.PathLike[str]) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def _run_profile(cfg: Dict[str, Any]) -> str | None:
+    autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+    profile = autoresearch.get("run_profile")
+    if profile:
+        return str(profile)
+    intent = str(autoresearch.get("intent") or "")
+    if intent in {"cron_exploration", "promotion_action", "bounded_training_probe", "bounded_worst_fold_diagnostic"}:
+        return "exploration"
+    if intent in {"promotion_validation", "seed_repeat_leave_one_out"}:
+        return "promotion"
+    return None
+
+
+def _enforce_run_profile(cfg: Dict[str, Any]) -> None:
+    """Apply local safety limits for planner-marked exploration/promotion configs."""
+    profile = _run_profile(cfg)
+    if profile is None:
+        return
+    model_name = str(cfg.get("model", {}).get("name", ""))
+    training = cfg.setdefault("training", {})
+    evaluation = cfg.setdefault("evaluation", {})
+    autoresearch = cfg.setdefault("autoresearch", {})
+
+    if profile == "exploration":
+        training.setdefault("augment_flips", False)
+        evaluation.setdefault("tta_flips", False)
+        max_epochs = int(os.environ.get("AUTORESEARCH_EXPLORATION_MAX_EPOCHS", "8"))
+        epochs = int(training.get("epochs") or 0)
+        if epochs > max_epochs:
+            raise ValueError(f"exploration runs require training.epochs <= {max_epochs}")
+        if isinstance(training.get("seeds"), list) and len(training["seeds"]) > 1 and os.environ.get("AUTORESEARCH_ALLOW_EXPLORATION_ENSEMBLES", "0") != "1":
+            raise ValueError("exploration runs must not use training.seeds ensembles")
+        if "torch" in model_name:
+            sample_cap = int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024"))
+            max_train_samples = int(training.get("max_train_samples") or 0)
+            if max_train_samples <= 0 or max_train_samples > sample_cap:
+                raise ValueError(f"exploration torch runs require training.max_train_samples in 1..{sample_cap}")
+        else:
+            pixel_cap = int(os.environ.get("AUTORESEARCH_EXPLORATION_MAX_TRAIN_PIXELS", "600000"))
+            max_train_pixels = int(training.get("max_train_pixels") or pixel_cap)
+            if max_train_pixels > pixel_cap:
+                raise ValueError(f"exploration NumPy runs require training.max_train_pixels <= {pixel_cap}")
+    elif profile == "promotion":
+        if not autoresearch.get("heldout_segment"):
+            raise ValueError("promotion-profile runs must declare autoresearch.heldout_segment")
+
+
 def canonical_experiment_config_signature(cfg: Dict[str, Any]) -> str:
     """Stable hash of training config, excluding run artifacts and volatile metadata."""
     def clean(value: Any) -> Any:
@@ -1001,6 +1048,7 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
 
 def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH) -> Dict[str, Any]:
     cfg = load_config(config_path)
+    _enforce_run_profile(cfg)
     config_signature = canonical_experiment_config_signature(cfg)
     existing = _existing_run_for_signature(config_signature, db_path)
     if existing is not None:
