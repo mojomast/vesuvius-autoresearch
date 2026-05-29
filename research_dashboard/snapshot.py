@@ -20,6 +20,19 @@ from .operations import operations_snapshot
 from .progress import build_progress
 
 
+def _harness_metadata() -> dict[str, Any]:
+    """Return dashboard-safe metadata from the active autoresearch harness contract."""
+    try:
+        from autoresearch import METRIC_CONTRACT, PARAM_BOUNDS
+        return {
+            "type": "vesuvius",
+            "metric_contract_keys": sorted(METRIC_CONTRACT.required_metrics),
+            "param_bounds": {".".join(path): {"min": bounds[0], "max": bounds[1]} for path, bounds in PARAM_BOUNDS.items()},
+        }
+    except Exception as exc:
+        return {"type": "vesuvius", "error": str(exc), "metric_contract_keys": [], "param_bounds": {}}
+
+
 _SNAPSHOT_CACHE_TTL_SEC = 2.0
 _snapshot_cache_lock = threading.RLock()
 _snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -68,6 +81,9 @@ def _build_snapshot_uncached(root: Path) -> dict[str, Any]:
     }
     partial_snapshot = {"research_summary": research_summary, "experiments": experiments, "datasets": datasets}
     mining = build_hard_negative_plan(root, partial_snapshot)
+    harness = _harness_metadata()
+    latest = experiments.get("latest") if isinstance(experiments.get("latest"), dict) else {}
+    latest_config = latest.get("config", {}) if isinstance(latest.get("config"), dict) else {}
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -78,6 +94,8 @@ def _build_snapshot_uncached(root: Path) -> dict[str, Any]:
         "experiments": experiments,
         "progress": progress,
         "research_summary": research_summary,
+        "harness": harness,
+        "param_drift": {"current_config": latest_config, "bounds": harness.get("param_bounds", {})},
         "mining": mining,
         "operations": operations,
         "capabilities": {"enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1", "artifact_preview": True, "standalone": True},

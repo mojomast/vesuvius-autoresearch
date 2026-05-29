@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+from dataclasses import dataclass, field
 try:
     import fcntl
 except ImportError:
@@ -28,6 +29,10 @@ CONFIGS = ROOT / "configs"
 LOGS = ROOT / "logs"
 LOCK_PATH = ROOT / "logs" / "autoresearch.lock"
 BASELINE = CONFIGS / "baseline.yaml"
+LINKED_LOO_SUMMARY_CACHE_TTL_SECONDS = 300.0
+_LINKED_LOO_SUMMARY_CACHE_AT = 0.0
+_LINKED_LOO_SUMMARY_CACHE: list[Dict[str, Any]] | None = None
+_LINKED_LOO_SUMMARY_CACHE_ROOT: Path | None = None
 SCOPE_KEYS = ("train_npz", "val_npz", "validation_mode", "research_scope")
 SEARCH_PATHS = (
     ("model", "name"),
@@ -101,6 +106,94 @@ PIVOT_CONFIGS = (
     "robust_tta_seed_ensemble.yaml",
     "residual_25d_torch_unet_cpu.yaml",
 )
+PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
+    ("training", "pos_weight"): (0.25, 25.0),
+    ("training", "learning_rate"): (0.001, 0.25),
+    ("training", "weight_decay"): (0.0, 0.05),
+    ("evaluation", "threshold"): (0.05, 0.95),
+    ("training", "epochs"): (2.0, 20.0),
+    ("training", "dice_loss_weight"): (0.0, 0.8),
+    ("training", "positive_rate_loss_weight"): (0.0, 0.1),
+    ("training", "tversky_loss_weight"): (0.0, 0.5),
+    ("training", "tversky_beta"): (0.1, 0.9),
+    ("model", "base_channels"): (4.0, 16.0),
+    ("training", "batch_size"): (2.0, 32.0),
+    ("training", "max_train_samples"): (1.0, 2048.0),
+    ("model", "depth"): (1.0, 3.0),
+    ("model", "hidden_units"): (8.0, 96.0),
+    ("training", "max_train_pixels"): (100000.0, 1200000.0),
+    ("training", "sample_positive_fraction"): (0.05, 0.95),
+}
+
+
+@dataclass(frozen=True)
+class MetricContract:
+    """Required runner-to-autoresearch metric keys and expected Python types."""
+
+    required_metrics: Dict[str, tuple[type, ...]] = field(default_factory=lambda: {
+        "val_loss": (int, float),
+        "val_f1": (int, float),
+        "val_f05": (int, float),
+        "best_threshold": (int, float),
+        "precision": (int, float),
+        "recall": (int, float),
+        "average_precision": (int, float),
+        "ap_prevalence_lift": (int, float),
+        "val_positive_rate": (int, float),
+        "pred_positive_rate": (int, float),
+        "fixed_threshold_status": (str,),
+    })
+    optional_metrics: Dict[str, tuple[type, ...]] = field(default_factory=lambda: {
+        "promotion_checks": (dict,),
+        "loo_promotion_ready": (bool,),
+        "full_tile_promotion_ready": (bool,),
+    })
+
+
+METRIC_CONTRACT = MetricContract()
+
+
+def validate_metric_contract(run: Dict[str, Any], contract: MetricContract = METRIC_CONTRACT) -> Dict[str, Any]:
+    """Validate and normalize an experiment row loaded for autoresearch.
+
+    Args:
+        run: Experiment row with decoded `config` and `metrics` objects.
+        contract: Metric keys and types expected by autoresearch.
+
+    Returns:
+        A shallow copy of `run` with optional promotion evidence defaults present.
+
+    Raises:
+        ValueError: If required row fields or metric keys are missing or mistyped.
+    """
+    missing = [key for key in ("run_id", "timestamp", "config", "main_metric", "metrics", "artifact_dir") if key not in run]
+    if missing:
+        raise ValueError(f"experiment row missing required fields: {', '.join(missing)}")
+    if not isinstance(run.get("config"), dict):
+        raise ValueError("experiment row config must decode to an object")
+    metrics = run.get("metrics")
+    if not isinstance(metrics, dict):
+        raise ValueError("experiment row metrics must decode to an object")
+    normalized_metrics = dict(metrics)
+    defaults: Dict[str, Any] = {"promotion_checks": {}, "loo_promotion_ready": False, "full_tile_promotion_ready": False}
+    for key, value in defaults.items():
+        normalized_metrics.setdefault(key, value)
+    for key, expected in contract.required_metrics.items():
+        if key not in normalized_metrics:
+            raise ValueError(f"metrics missing required key: {key}")
+        value = normalized_metrics[key]
+        if isinstance(value, bool) or not isinstance(value, expected):
+            expected_names = " or ".join(item.__name__ for item in expected)
+            raise ValueError(f"metrics key {key} must be {expected_names}")
+    for key, expected in contract.optional_metrics.items():
+        value = normalized_metrics.get(key)
+        if value is not None and not isinstance(value, expected):
+            expected_names = " or ".join(item.__name__ for item in expected)
+            raise ValueError(f"metrics key {key} must be {expected_names}")
+    normalized = dict(run)
+    normalized["main_metric"] = float(run["main_metric"])
+    normalized["metrics"] = normalized_metrics
+    return normalized
 
 
 def _metric_direction(cfg: Dict[str, Any]) -> int:
@@ -122,7 +215,10 @@ def _recent_runs(limit: int | None = None) -> List[Dict[str, Any]]:
         rows = conn.execute(query, params).fetchall()
     runs = []
     for run_id, ts, cfg_json, metric, sec_json, artifact_dir in rows:
-        runs.append({"run_id": run_id, "timestamp": ts, "config": json.loads(cfg_json), "main_metric": float(metric), "metrics": json.loads(sec_json), "artifact_dir": artifact_dir})
+        try:
+            runs.append(validate_metric_contract({"run_id": run_id, "timestamp": ts, "config": json.loads(cfg_json), "main_metric": float(metric), "metrics": json.loads(sec_json), "artifact_dir": artifact_dir}))
+        except ValueError as exc:
+            print(f"Skipping run {run_id} with invalid metric contract: {exc}", file=sys.stderr)
     return runs
 
 
@@ -161,6 +257,21 @@ def _get_nested(cfg: Dict[str, Any], path: Tuple[str, ...], default: Any) -> Any
             return default
         cur = cur[p]
     return cur
+
+
+def _clamp_param(path: Tuple[str, ...], value: Any) -> Any:
+    """Clamp mutable numeric proposal values to safe autoresearch bounds."""
+    bounds = PARAM_BOUNDS.get(path)
+    if bounds is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    low, high = bounds
+    clamped = min(high, max(low, float(value)))
+    return int(clamped) if isinstance(value, int) else clamped
+
+
+def _bounded_candidates(candidates: list[tuple[Tuple[str, ...], Any, str]]) -> list[tuple[Tuple[str, ...], Any, str]]:
+    """Apply `PARAM_BOUNDS` to generated proposal candidates."""
+    return [(path, _clamp_param(path, value), reason) for path, value, reason in candidates]
 
 
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
@@ -224,6 +335,22 @@ def _reserved_signatures(runs: List[Dict[str, Any]]) -> set[Tuple[Any, ...]]:
     return signatures
 
 
+def _prune_stale_configs(max_age_hours: float = 48) -> int:
+    """Delete stale generated `auto_*.yaml` configs older than the given age."""
+    if max_age_hours <= 0:
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    deleted = 0
+    for path in CONFIGS.glob("auto_*.yaml"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                deleted += 1
+        except FileNotFoundError:
+            continue
+    return deleted
+
+
 def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], Any, str]]:
     model_name = str(_get_nested(base, ("model", "name"), "tiny_numpy_ink_logreg"))
     lr = float(_get_nested(base, ("training", "learning_rate"), 0.2))
@@ -265,7 +392,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         ]
         if max_train_samples and max_train_samples < 2048 and int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024")) >= 2048:
             candidates.append((("training", "max_train_samples"), 2048, "increase robust torch sample budget after local hyperparameter plateau"))
-        return candidates
+        return _bounded_candidates(candidates)
 
     depth = int(_get_nested(base, ("model", "depth"), 2))
     hidden_units = int(_get_nested(base, ("model", "hidden_units"), 24))
@@ -294,7 +421,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "max_train_pixels"), max(100000, max_train_pixels // 2), "fewer local pixels for faster noise-check MLP runs"),
             (("training", "sample_positive_fraction"), 0.25 if sample_positive_fraction != 0.25 else 0.5, "adjust MLP positive sampling fraction to probe prevalence calibration"),
         ])
-    return candidates
+    return _bounded_candidates(candidates)
 
 
 def _mutation_family(path: Tuple[str, ...]) -> str:
@@ -567,6 +694,53 @@ def _shell_command(args: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in args)
 
 
+def _record_promotion_status(run_id: str, status: str, payload: Dict[str, Any] | None = None) -> None:
+    """Persist automated promotion pipeline status for dashboard and audits."""
+    init_db(DB_PATH)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promotion_results (
+                run_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO promotion_results(run_id, timestamp, status, payload_json) VALUES (?, ?, ?, ?)",
+            (run_id, datetime.now(timezone.utc).isoformat(), status, json.dumps(payload or {}, sort_keys=True)),
+        )
+
+
+def _run_automated_promotion(command_args: list[str], candidate_run_id: str, summary_json: Path, timeout: int) -> dict[str, Any]:
+    """Run leave-one-out promotion evidence and persist success or failure status."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.log"
+    status = "FAILED"
+    payload: Dict[str, Any] = {"command": command_args, "log_file": str(log_path)}
+    try:
+        completed = subprocess.run(command_args, cwd=ROOT, text=True, capture_output=True, timeout=timeout, check=False)
+        log_path.write_text(f"$ {_shell_command(command_args)}\n\nSTDOUT\n{completed.stdout}\n\nSTDERR\n{completed.stderr}\n")
+        payload.update({"returncode": completed.returncode})
+        if completed.returncode == 0:
+            summary = json.loads(summary_json.read_text())
+            status = "SUCCEEDED"
+            payload["summary_json"] = str(summary_json)
+            payload["summary"] = summary
+        else:
+            payload["error"] = f"promotion command exited {completed.returncode}"
+    except subprocess.TimeoutExpired as exc:
+        log_path.write_text(f"$ {_shell_command(command_args)}\n\nTIMEOUT after {timeout}s\n{exc}\n")
+        payload["error"] = f"promotion command timed out after {timeout}s"
+    except Exception as exc:
+        log_path.write_text(f"$ {_shell_command(command_args)}\n\nERROR\n{exc}\n")
+        payload["error"] = str(exc)
+    _record_promotion_status(candidate_run_id, status, payload)
+    return {"automation_status": status, "promotion_log": str(log_path), "promotion_payload": payload}
+
+
 def _path_tail(value: Any) -> str:
     return str(value or "").replace("\\", "/").lstrip("./")
 
@@ -577,16 +751,31 @@ def _same_path_tail(left: Any, right: Any) -> bool:
     return bool(left_tail and right_tail and (left_tail.endswith(right_tail) or right_tail.endswith(left_tail)))
 
 
-def _linked_loo_summary_ready(run: Dict[str, Any]) -> bool:
-    run_id = str(run.get("run_id") or "")
-    artifact_config = Path(str(run.get("artifact_dir") or "")) / "config.json" if run.get("artifact_dir") else None
+def _cached_loo_summaries(now: float | None = None) -> list[Dict[str, Any]]:
+    """Return promotion-ready LOO summaries, caching filesystem scans for five minutes."""
+    global _LINKED_LOO_SUMMARY_CACHE_AT, _LINKED_LOO_SUMMARY_CACHE, _LINKED_LOO_SUMMARY_CACHE_ROOT
+    current = time.time() if now is None else now
+    cache_root = LOGS.resolve()
+    if _LINKED_LOO_SUMMARY_CACHE is not None and _LINKED_LOO_SUMMARY_CACHE_ROOT == cache_root and current - _LINKED_LOO_SUMMARY_CACHE_AT < LINKED_LOO_SUMMARY_CACHE_TTL_SECONDS:
+        return _LINKED_LOO_SUMMARY_CACHE
+    summaries: list[Dict[str, Any]] = []
     for path in sorted(LOGS.glob("*summary.json"), key=lambda item: item.stat().st_mtime, reverse=True):
         try:
             summary = json.loads(path.read_text())
         except Exception:
             continue
-        if not summary.get("promotion_ready"):
-            continue
+        if summary.get("promotion_ready"):
+            summaries.append(summary)
+    _LINKED_LOO_SUMMARY_CACHE = summaries
+    _LINKED_LOO_SUMMARY_CACHE_AT = current
+    _LINKED_LOO_SUMMARY_CACHE_ROOT = cache_root
+    return summaries
+
+
+def _linked_loo_summary_ready(run: Dict[str, Any]) -> bool:
+    run_id = str(run.get("run_id") or "")
+    artifact_config = Path(str(run.get("artifact_dir") or "")) / "config.json" if run.get("artifact_dir") else None
+    for summary in _cached_loo_summaries():
         run_ids = {str(item) for item in summary.get("run_ids") or []}
         if run_id and run_id in run_ids:
             return True
@@ -657,11 +846,13 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
         "candidate_linked_evidence_required",
     ]
     command = None
+    command_args = None
+    summary_json = None
     if action == "run_seed_repeat_leave_one_out":
         artifact_dir = Path(str(candidate.get("artifact_dir") or ROOT / "experiments" / "runs" / candidate_run_id))
         base_config = artifact_dir / "config.json"
         output_stem = f"{candidate_run_id}_seedrepeat_loo"
-        command = _shell_command([
+        command_args = [
             ".venv/bin/python",
             "scripts/evaluate_leave_one_out.py",
             "--base-config",
@@ -676,12 +867,14 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
             "11001,11018,15050",
             "--jobs",
             os.environ.get("AUTORESEARCH_LOO_JOBS", "2"),
-        ])
+        ]
+        summary_json = ROOT / f"logs/{output_stem}.summary.json"
+        command = _shell_command(command_args)
         reasoning.append("median_over_seeds_and_folds_required")
     else:
         reasoning.append("full_tile_command_should_come_from_dashboard_candidate_evidence")
 
-    return {
+    payload = {
         "status": "manual_promotion_action",
         "next_action": action,
         "candidate_run_id": candidate_run_id,
@@ -691,6 +884,10 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any]
         "promotion_required": ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"],
         "proposals": [],
     }
+    if command_args and os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1":
+        timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
+        payload.update(_run_automated_promotion(command_args, candidate_run_id, summary_json or LOGS / "promotion.summary.json", timeout))
+    return payload
 
 
 def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:
@@ -1017,6 +1214,25 @@ def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> N
     path.write_text(header + body)
 
 
+def _acquire_autoresearch_lock(lock: Any) -> None:
+    """Acquire the process lock or fail closed when no lock backend is available."""
+    if fcntl is not None:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    try:
+        import msvcrt
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError("autoresearch locking requires fcntl or msvcrt; no safe fallback is available") from exc
+    lock.seek(0)
+    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def _research_harness() -> Any:
+    """Instantiate the active research harness for the autoresearch loop."""
+    from harness.vesuvius_harness import VesuviusHarness
+    return VesuviusHarness(sys.modules[__name__])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run or plan the local AutoResearch cycle")
     parser.add_argument("--plan", action="store_true", help="Print planned proposals without writing configs or launching experiments")
@@ -1025,12 +1241,19 @@ def main() -> int:
     if args.json and not args.plan:
         parser.error("--json requires --plan")
 
+    LOGS.mkdir(parents=True, exist_ok=True)
+    CONFIGS.mkdir(parents=True, exist_ok=True)
+    pruned = _prune_stale_configs()
+    if pruned:
+        print(f"Pruned {pruned} stale generated config(s)", flush=True)
+    harness = _research_harness()
+
     if args.plan:
         runs = _recent_runs()
         if not runs:
             print(json.dumps({"status": "needs_baseline", "proposals": []}, indent=2 if args.json else None))
             return 0
-        ready_payload = _promotion_ready_payload()
+        ready_payload = harness.promotion_ready_payload()
         if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
             payload = ready_payload
             if args.json:
@@ -1052,7 +1275,7 @@ def main() -> int:
                     for item in payload["proposals"]:
                         print(f"  {item['name']}: {item['reason']} [{item.get('strategy_phase')}/{item.get('mutation_family')}]")
                 return 0
-        manual_payload = _promotion_phase_manual_action(runs)
+        manual_payload = harness.promotion_phase_manual_action(runs)
         if manual_payload:
             if args.json:
                 print(json.dumps(manual_payload, indent=2, sort_keys=True))
@@ -1061,13 +1284,13 @@ def main() -> int:
                 if manual_payload.get("command"):
                     print(f"Command: {manual_payload['command']}")
             return 0
-        base = _best_base_config(runs)
+        base = harness.best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         if args.json:
             with contextlib.redirect_stdout(sys.stderr):
-                proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+                proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
         else:
-            proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+            proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
         payload = {"status": "planned", "proposal_count": len(proposals), "fallback_from_action": source_action, "proposals": _proposal_plan(proposals)}
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1078,20 +1301,9 @@ def main() -> int:
                 print("No novel one-change proposals remain.")
         return 0
 
-    LOGS.mkdir(parents=True, exist_ok=True)
-    CONFIGS.mkdir(parents=True, exist_ok=True)
     with open(LOCK_PATH, "w") as lock:
         try:
-            if fcntl is not None:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            else:
-                try:
-                    import msvcrt
-                    lock.seek(0)
-                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-                except (ImportError, AttributeError, OSError):
-                    # Basic fallback if msvcrt isn't available or fails
-                    pass
+            _acquire_autoresearch_lock(lock)
         except (BlockingIOError, PermissionError, OSError):
             print(f"{datetime.now(timezone.utc).isoformat()} another autoresearch run is active; exiting safely")
             return 0
@@ -1101,22 +1313,22 @@ def main() -> int:
             print("No prior runs found; executing baseline first")
             subprocess.run([sys.executable, "run_experiment.py", "--config", str(BASELINE)], cwd=ROOT, check=True)
             runs = _recent_runs()
-        base = _best_base_config(runs)
+        base = harness.best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
-        ready_payload = _promotion_ready_payload()
+        ready_payload = harness.promotion_ready_payload()
         if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
             print(f"Promotion gate is ready; pausing exploration. Next action: {ready_payload.get('next_action')}", flush=True)
             if ready_payload.get("command"):
                 print(f"Command: {ready_payload['command']}", flush=True)
             return 0
-        manual_payload = _promotion_phase_manual_action(runs)
+        manual_payload = harness.promotion_phase_manual_action(runs)
         if manual_payload:
             print(f"AutoResearch promotion action required: {manual_payload.get('next_action')}", flush=True)
             if manual_payload.get("command"):
                 print(f"Command: {manual_payload['command']}", flush=True)
             return 0
-        proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+        proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
         if ready_payload and source_action:
             print(f"Promotion gate ready with auto-executable action={source_action}; generating targeted proposals", flush=True)
         if not proposals:

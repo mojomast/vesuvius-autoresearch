@@ -22,8 +22,58 @@ Quick setup from a clean clone:
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
+.venv/bin/python scripts/setup_data.py --data-dir ./data
 .venv/bin/python -m unittest discover -s tests
 ```
+
+## Setup
+
+Generate baseline and robust pivot configs for your prepared Vesuvius NPZ directory with:
+
+```bash
+python3 scripts/setup_data.py --data-dir ./data
+```
+
+The script writes `configs/baseline.yaml` plus the four robust pivot configs used by AutoResearch. It currently leaves authenticated ScrollPrize/public-mirror downloads as explicit TODO stubs and records the expected prepared NPZ paths in generated YAML.
+
+## Architecture
+
+```mermaid
+flowchart TD
+  A[autoresearch.py] --> B[VesuviusHarness]
+  B --> C[Load recent SQLite runs]
+  C --> D[Validate MetricContract]
+  D --> E[Promotion gate]
+  E -->|ready and auto enabled| F[evaluate_leave_one_out.py]
+  E -->|continue| G[Proposal candidates]
+  G --> H[PARAM_BOUNDS clamp]
+  H --> I[Generated config]
+  I --> J[run_experiment.py]
+  J --> K[experiments.db]
+  K --> C
+```
+
+The core loop is intentionally local and inspectable: it reads experiment rows from SQLite, validates metric keys, checks promotion evidence, proposes one-change configs through bounded mutation logic, and executes the standard experiment runner.
+
+## Configuration Reference
+
+| Section | Key | Purpose |
+| --- | --- | --- |
+| `dataset` | `train_npz`, `val_npz` | Prepared NPZ inputs; both are required together. |
+| `dataset` | `research_scope`, `validation_mode` | Search and promotion scope labels. |
+| `model` | `name`, `base_channels`, `depth` | Model family and capacity controls. |
+| `training` | `learning_rate`, `weight_decay`, `pos_weight`, `epochs` | Mutable optimizer/loss parameters clamped by `PARAM_BOUNDS`. |
+| `evaluation` | `main_metric`, `threshold` | Main scoring metric and fixed-threshold diagnostic. |
+| `autoresearch` | `scope_policy`, `promotable`, `promotion_required` | Search metadata and promotion gating intent. |
+| `outputs` | `runs_dir` | Experiment artifact root. |
+
+## Harness Extension
+
+The harness layer lives in `harness/`. Implement `ResearchHarness` from `harness/base.py` to pivot this project toward another ScrollPrize research loop while keeping the same propose/evaluate/promote lifecycle. See `harness/README.md` for the minimal interface and `harness/vesuvius_harness.py` for the adapter over current Vesuvius logic.
+
+## Cron And CI
+
+`.github/workflows/autoresearch_test.yml` runs the full unit suite on push and pull request. `.github/workflows/autoresearch_cron.yml` runs every 30 minutes, supports manual `workflow_dispatch`, and uploads `logs/` plus generated configs as artifacts.
 
 Install optional public-data ingestion support with:
 
@@ -79,6 +129,8 @@ python3 autoresearch.py --plan --json
 
 If the dashboard promotion gate is ready, AutoResearch pauses exploration by default and prints the candidate-linked promotion/verification action instead of generating more local F1 micro-sweeps. Planning JSON includes the selected action, candidate run, reasoning trace, and copyable command; weak-fold public full-tile commands include whole-fetch retry and chunk-level pacing flags. Override direct `autoresearch.py` runs only for deliberate diagnostics with `AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` or `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1`. The guarded cron launcher forces promotion-safe defaults unless `SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1` is also set.
 
+Set `AUTORESEARCH_AUTO_PROMOTE=1` to let AutoResearch run the printed seed-repeat leave-one-out command automatically. Automation is disabled by default, writes `logs/promotion_<timestamp>.log`, records `promotion_results` rows in SQLite, and uses `AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS=3600` unless overridden.
+
 Seed-repeat LOO can be accelerated with independent process workers while preserving deterministic JSONL order:
 
 ```bash
@@ -94,6 +146,12 @@ python3 scripts/evaluate_leave_one_out.py \
 ```
 
 `fold-major` schedules all seed repeats for a held-out fold together, reducing repeated setup while preserving the row schema and summary behavior. Keep `--jobs` matched to `training.num_threads` on CPU hosts because each worker writes independent run artifacts and shares the experiment DB. Pending generated `configs/auto_*` signatures expire after `AUTORESEARCH_PENDING_CONFIG_TTL_HOURS=24` by default so crashed proposal files do not block future search forever; set it to `0` to reserve all generated configs indefinitely.
+
+AutoResearch prunes stale generated `configs/auto_*.yaml` files older than 48 hours at process startup. This keeps cron proposal accumulation bounded while preserving manual configs, baseline configs, and curated robust pivot configs.
+
+GitHub Actions workflows are available in `.github/workflows/`: `autoresearch_test.yml` runs `python -m pytest tests/` on push and pull request, while `autoresearch_cron.yml` runs AutoResearch every 30 minutes and uploads `logs/` plus generated configs as artifacts.
+
+The autoresearch loop now runs through `harness.VesuviusHarness`, a thin adapter over the existing Vesuvius-specific logic. See `harness/README.md` for the base `ResearchHarness` interface and extension pattern for future ScrollPrize research harnesses.
 
 For distributed-lite execution, enqueue existing config paths through `experiments.jobs.enqueue_experiment_config(...)` and run workers with the same core experiment runner:
 

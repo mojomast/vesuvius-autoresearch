@@ -804,7 +804,7 @@ def _leaderboard_rows(runs: list[dict[str, Any]], project_root: Path | None = No
 def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
     db_path = project_root / "experiments" / "experiments.db"
     loo_summaries = _load_loo_summaries(project_root)
-    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries, project_root), "loo_summaries": loo_summaries, "metric_trends": [], "validation_matrix": [], "leaderboard": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
+    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries, project_root), "loo_summaries": loo_summaries, "promotion_results": [], "metric_trends": [], "validation_matrix": [], "leaderboard": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
     if not db_path.exists():
         return empty
     try:
@@ -813,6 +813,10 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         try:
             count = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
             rows = conn.execute("SELECT run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir FROM experiments ORDER BY timestamp DESC LIMIT ?", (limit,)).fetchall()
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+            promotion_rows = []
+            if "promotion_results" in tables:
+                promotion_rows = conn.execute("SELECT run_id,timestamp,status,payload_json FROM promotion_results ORDER BY timestamp DESC LIMIT 20").fetchall()
         finally:
             conn.close()
     except Exception as exc:
@@ -832,6 +836,13 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         return run
 
     runs = [row_to_run(row) for row in rows]
+    promotion_results = []
+    for row in promotion_rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        promotion_results.append({"run_id": row["run_id"], "timestamp": row["timestamp"], "status": row["status"], "log_file": payload.get("log_file"), "summary_json": payload.get("summary_json"), "error": payload.get("error")})
     best = min(runs, key=lambda run: _metric_direction(run) * float(run.get("main_metric", 0.0)), default=None)
     robust_candidates = [run for run in runs if _is_robust_candidate(run)]
     robust = min(
@@ -872,6 +883,7 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         "champions": {"peak_score": _compact_run(best), "robust_candidate": _compact_run(robust), "promotion_eligible": _compact_run(promotable)},
         "decision": _decision_snapshot(runs, best, robust, promotable, loo_summaries, project_root),
         "loo_summaries": loo_summaries,
+        "promotion_results": promotion_results,
         "metric_trends": [{"run_id": r["run_id"], "timestamp": r["timestamp"], "main_metric": r["main_metric"], "val_f1": r.get("metrics", {}).get("val_f1"), "average_precision": r.get("metrics", {}).get("average_precision")} for r in chronological],
         "validation_matrix": sorted(matrix.values(), key=lambda item: (item["train_segment_id"], item["val_segment_id"])),
         "leaderboard": _leaderboard_rows(runs, project_root),
