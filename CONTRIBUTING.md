@@ -70,3 +70,12 @@ CI cron runs require `configs/baseline.yaml` to be present in the repo; regenera
 ## Harness Changes
 
 New research loops should implement `harness.ResearchHarness` and include tests that prove proposal, evaluation, promotion decision, and promotion hooks compose without dashboard assumptions.
+
+## Pre-commit Checklist
+
+Before every commit:
+
+- [ ] `python -m pytest tests/` passes with zero failures
+- [ ] `python autoresearch.py --plan --json` exits 0
+- [ ] `from harness.vesuvius_harness import VesuviusHarness` succeeds
+- [ ] No `unittest discover` references remain in docs

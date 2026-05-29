@@ -36,6 +36,10 @@ python3 scripts/setup_data.py --data-dir ./data
 
 The script writes `configs/baseline.yaml` plus the four robust pivot configs used by AutoResearch. It currently leaves authenticated ScrollPrize/public-mirror downloads as explicit TODO stubs and records the expected prepared NPZ paths in generated YAML.
 
+## Health Check
+
+Verify the installation with `python -m pytest tests/ && python autoresearch.py --plan --json && python -c "from harness.vesuvius_harness import VesuviusHarness; print('ok')" && python -c "from autoresearch import METRIC_CONTRACT, PARAM_BOUNDS; print(len(PARAM_BOUNDS), 'bounds')"`.
+
 ## Architecture
 
 ```mermaid
