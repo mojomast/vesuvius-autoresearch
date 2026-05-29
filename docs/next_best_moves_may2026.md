@@ -171,6 +171,12 @@ Seed ensembling and TTA can change probability scale. Re-run threshold calibrati
 
 ## 5. 2.5D Residual U-Net
 
+Status on 2026-05-29: COMPLETE for the CPU-safe residual 2.5D pivot. DB mining found the best contract-compliant historical residual run `20260528T155452Z_8846f887` with sampled `val_f1=0.4286`, AP `0.3122`, and pred/val `2.99` using `model.name=residual_25d_torch_unet`, `base_channels=8`, `max_train_samples=4096`, `positive_rate_loss_weight=0.08`, tolerance `0.01`, and cap `3.0`. Current hardware is CPU-only, so the committed search used `configs/residual_25d_cpu_safe.yaml` with `max_train_samples=1024`.
+
+Residual pivot outcome: DO NOT PROMOTE. Six CPU-safe configs ran. The strongest sampled config was `configs/residual25d_cap250.yaml` run `20260529T034850Z_d0ee3406` with sampled `val_f1=0.4664`, AP `0.4084`, pred/val `1.40`; its full-tile check on `20230520175435` remained eligible with `val_f1=0.2132`, AP `0.1483`, pred/val `2.43`. Two-seed LOO still failed with zero/near-zero folds, especially `20230530172803` at `val_f1=0.0` for seeds `11001` and `11018`. See `logs/residual25d_run_results.md`.
+
+Residual 2.5D pivot is therefore complete as diagnostic evidence and blocked for promotion by segment-generalization failure on `20230530172803`, not by sampled F1 or full-tile eligibility on `20230520175435`.
+
 Post-fix 2026-05-29 evidence supports keeping 4096-sample, positive-rate-controlled candidates in the search space. The new tiny torch post-fix batch produced `20260529T005748Z_7d9b2b4d` (`prratio2.5`, `val_f1=0.3447`, AP `0.2420`, pred/val ratio `2.45`) and `20260529T005819Z_28af43a2` (`prratio3.0`, `val_f1=0.3740`, AP `0.2598`, pred/val ratio `2.99`). The unconstrained seed-repeat candidate `20260529T005804Z_12a24594` had higher sampled `val_f1=0.3887` but pred/val ratio `3.87`, outside the target safe band.
 
 The current `tiny_torch_unet` already consumes multi-channel NPZs, so 2.5D data can be prepared now with `--z-offsets`. The next model-family change should be a residual U-Net variant that keeps 64 x 64 patches and treats adjacent z slices as channels.

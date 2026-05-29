@@ -79,6 +79,25 @@ Positive-rate tightening with `20260529T023543Z_021a01b0` reduced alarms but did
 
 The `8b44032d` prratio3.5 diagnostic improved eligible full-tile `20230520175435` to `val_f1=0.2363`, but LOO with `11001,11018,15073` failed badly: median-over-seeds median `0.0681`, worst fold `0.0133`, and zero precision/recall on two `15073` folds. The `caa81174` prratio3 diagnostic was safer on full-tile pred/val (`2.97`) but did not beat `570f6775` (`val_f1=0.2266` vs `0.2279`).
 
+## Residual 2.5D Architecture
+
+What worked in the CPU-safe residual pivot:
+
+- Historical residual DB evidence was strongest with `model.name: residual_25d_torch_unet`, `base_channels: 8`, `positive_rate_loss_weight: 0.08`, tolerance `0.01`, cap `3.0`, and 4096 training samples.
+- On CPU-safe `max_train_samples: 1024`, sampled metrics remained strong. `residual25d_cap250` reached `val_f1=0.4664`, AP `0.4084`, pred/val `1.40`; `residual25d_prw006` reached `val_f1=0.4505`, AP `0.4459`, pred/val `2.97`.
+- Full-tile checks stayed eligible and above the LOO gate on `20230520175435`: `prw006` full-tile `val_f1=0.2785`, AP `0.1770`, pred/val `2.97`; `cap250` full-tile `val_f1=0.2132`, AP `0.1483`, pred/val `2.43`.
+
+What did not work:
+
+- Positive-rate caps did not fix leave-one-out robustness. Both `prw006` and stricter `cap250` produced zero `val_f1` on held-out `20230530172803` for seeds `11001` and `11018`.
+- The failure was not simple flooding: zero-fold pred/val was close to prevalence, but AP lift was weak and selected positives did not overlap ink, indicating segment-specific ranking/generalization failure.
+- Hard-negative fraction `0.85` reduced sampled AP/F1 versus the best candidates and did not justify LOO.
+
+Recommended starting config for future residual 2.5D sessions:
+
+- Start from `configs/residual25d_cap250.yaml` when CPU-only, or the historical `20260528T155452Z_8846f887` settings when 4096 samples are feasible.
+- Before repeating three-seed LOO, target `20230530172803` specifically with data/provenance diagnostics, segment-balanced sampling, or an architecture/data expansion change. Do not seed-shop around `11001` and `11018`; both exposed the same zero-fold issue.
+
 ## Plateau Policy
 
 When recent robust/torch runs stop improving, AutoResearch should switch out of local exploit mode instead of emitting more near-duplicate micro-sweeps:
