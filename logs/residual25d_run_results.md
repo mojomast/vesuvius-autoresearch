@@ -50,6 +50,14 @@ Follow-up diagnosis on 2026-05-29: `scripts/evaluate_leave_one_out.py` already p
 
 Diagnostic full-tile inference on 20230530172803 using the base `d0ee3406` artifact and config-inferred z offsets produced `val_f1=0.0854`, AP `0.0544`, pred/val `2.369`, and `prob_max=0.6065`. This is diagnostic-only because the base artifact trained on 20230530172803, but it shows the segment is not probability-collapsed. Before another LOO retrain, run candidate-linked full-tile diagnostics from the actual LOO artifacts that held out 20230530172803, or regenerate denser tiled validation NPZs/fold maps so the weak fold is measured more like the full tile.
 
+## Dense Validation Fix Attempt
+
+Classification: CASE 1. The original `20230530172803` validation strip had `positive_rate=0.00877`, below the `0.01` low-ink threshold. Re-preparing with `--val-tiled --val-stride 32 --val-samples 0` produced 1,633 validation patches at `positive_rate=0.01805`. A stride-16 sampled attempt was worse (`0.00620`), and stride-32 with only 128 sampled patches remained low (`0.01458`).
+
+Fresh tagged 2-seed LOO on the fixed fold map removed zero precision/recall folds and reached median-over-folds median `0.1682`; worst fold remained `20230530172803` with median `0.0311`. Retrain `20260529T043342Z_478e28aa` from the fixed config produced sampled `val_f1=0.4611`, AP `0.4350`, and pred/val `2.30`.
+
+Three-seed LOO for `20260529T043342Z_478e28aa` passed summary promotion readiness: `promotion_ready=true`, no zero precision/recall folds, median-over-seeds median `0.1880`, and no positive-rate alarms. Promotion is still rejected because the worst fold is `20230530172803` at `0.0336`, below the stricter `>0.04` gate, and full-tile `20230522181603` is ineligible for this artifact lineage because the base run trained on that segment.
+
 ## REASSESS
 
 The sampled residual 2.5D axis is strong on 20230520175435, and full-tile checks for prw006 and cap250 remained eligible with full-tile val_f1 above 0.18. Promotion is blocked by leave-one-out robustness: both 2-seed LOO attempts produced zero val_f1 on held-out segment 20230530172803 for seeds 11001 and 11018.

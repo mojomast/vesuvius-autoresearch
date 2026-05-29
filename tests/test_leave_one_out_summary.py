@@ -248,6 +248,29 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertEqual([[row["seed"] for _, row in group] for group in executor_instances[0].groups], [[2, 1], [2, 1]])
         self.assertEqual(executor_instances[0].kwargs, {"max_workers": 2})
 
+    def test_rerun_tag_is_written_to_fold_config(self) -> None:
+        seen_configs = []
+
+        def fake_run(config_path: str):
+            seen_configs.append(Path(config_path).read_text())
+            return {"run_id": "run1", "artifact_dir": "artifact", "metrics": _metrics()}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = root / "base.yaml"
+            config.write_text("dataset:\n  patch_size: 64\nmodel:\n  name: tiny_torch_unet\ntraining:\n  seed: 7\n")
+            fold_map = root / "fold_map.json"
+            fold_map.write_text(json.dumps({"a": {"train_npz": "train_a.npz", "val_npz": "val_a.npz"}}))
+            output = root / "loo.jsonl"
+            summary = root / "loo.summary.json"
+
+            with patch("scripts.evaluate_leave_one_out.run_experiment", side_effect=fake_run):
+                with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", str(config), "--fold-map", str(fold_map), "--output-jsonl", str(output), "--summary-json", str(summary), "--seeds", "2", "--rerun-tag", "stride32_allval"]):
+                    self.assertEqual(main(), 0)
+
+        self.assertEqual(len(seen_configs), 1)
+        self.assertIn("rerun_tag: stride32_allval", seen_configs[0])
+
     def test_limit_worker_threads_sets_only_unset_thread_env_vars(self) -> None:
         preserved_key = THREAD_LIMIT_ENV_VARS[0]
         with patch.dict(os.environ, {preserved_key: "4"}, clear=True):

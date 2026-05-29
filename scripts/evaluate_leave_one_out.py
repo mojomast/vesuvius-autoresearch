@@ -294,6 +294,7 @@ def main() -> int:
     parser.add_argument("--output-jsonl", required=True, help="Per-fold result JSONL path")
     parser.add_argument("--summary-json", default=None, help="Optional summary JSON path")
     parser.add_argument("--label", default=None, help="Label stored in outputs; defaults to base config stem")
+    parser.add_argument("--rerun-tag", default=None, help="Optional tag added to fold configs to force fresh non-deduped diagnostic runs")
     parser.add_argument("--seeds", default=None, help="Comma-separated training.seed values to repeat for each held-out segment")
     parser.add_argument("--min-seeds-for-promotion", type=int, default=3, help="Distinct successful seeds required before setting promotion_ready")
     parser.add_argument("--jobs", type=int, default=1, help="Parallel fold jobs for non-dry-run execution; default 1")
@@ -336,6 +337,8 @@ def main() -> int:
                 cfg.setdefault("autoresearch", {})["heldout_segment"] = heldout_segment
                 cfg["autoresearch"]["fold_map"] = str(fold_map_path.relative_to(ROOT) if fold_map_path.is_relative_to(ROOT) else fold_map_path)
                 cfg["autoresearch"]["seed_repeat"] = seed
+                if args.rerun_tag is not None:
+                    cfg["autoresearch"]["rerun_tag"] = args.rerun_tag
                 _validate_extra_train_npzs_for_fold(cfg, heldout_segment)
 
                 seed_suffix = f"__seed_{seed}" if seed is not None else ""

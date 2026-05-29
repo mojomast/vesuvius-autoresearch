@@ -81,6 +81,12 @@ The `8b44032d` prratio3.5 diagnostic improved eligible full-tile `20230520175435
 
 ## Residual 2.5D Architecture
 
+### Known Difficult Segments
+
+`20230530172803` is a low-prevalence, sparse-ink segment that exposed a validation-strip failure in residual 2.5D LOO. The original prepared validation strip had `positive_rate=0.00877` across 128 tiled patches at stride 64, below the segment full-label prevalence (`0.0216`). Threshold sweeps were already per-fold; the zero-F1 rows were not caused by global-threshold reuse, probability collapse, or simple positive-rate flooding.
+
+Re-preparing the segment with all tiled validation origins at stride 32 produced 1,633 validation patches and `positive_rate=0.01805`. This did not reach the aspirational `0.03` target, but it better matches the segment prevalence and eliminated zero precision/recall in residual 2.5D checks. Treat the fold as promotion-relevant, not excluded, but keep the worst-fold gate strict because its median remains low (`0.0336` in the three-seed residual check).
+
 What worked in the CPU-safe residual pivot:
 
 - Historical residual DB evidence was strongest with `model.name: residual_25d_torch_unet`, `base_channels: 8`, `positive_rate_loss_weight: 0.08`, tolerance `0.01`, cap `3.0`, and 4096 training samples.
