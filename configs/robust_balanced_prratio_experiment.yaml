@@ -1,0 +1,49 @@
+# Next-step tiny_torch_unet calibration template; do not treat as run evidence.
+# Targets: 20230530172803 low-F1 near-cap behavior plus prior positive-rate
+# alarm folds 20230522181603, 20230522215721, and 20230530212931.
+# Rationale: use the previously proposed balanced cap/tolerance point
+# (pred/val cap 2.75, tolerance 0.008) to recover recall versus the strict
+# 2.5x residual fix while remaining below the flood-prone 3.0x alarm cases.
+# Evaluation required: 3-seed LOO with seeds 11001,11018,11045 and --rerun-tag,
+# followed by full-tile checks on 20230520175435 and 20230522181603.
+autoresearch:
+  changed_path: balanced_positive_rate_calibration
+  intent: staged_next_compute_template
+  mutation_family: balanced_calibration
+  parent_config: configs/tightened_positive_rate_570f6775.yaml
+  parent_reason: balance 2.5x strict cap against prior 3.0x threshold cliffs
+  promotable: false
+  promotion_required:
+    - seed_repeat_leave_one_out
+    - full_tile_validation
+    - promotion_checks_eligible
+  scope_policy: expanded_multi_segment_leave_one_out
+dataset:
+  patch_size: 64
+  research_scope: multi_segment_balanced_prratio2p75_tolerance0p008
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435_20230522181603/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  validation_mode: leave-one-segment-out
+evaluation:
+  main_metric: val_f1
+  max_pred_positive_rate_ratio: 2.75
+  min_pred_positive_rate_ratio: 0.1
+  target_pred_positive_rate: auto_val
+  threshold: 0.35
+model:
+  base_channels: 8
+  name: tiny_torch_unet
+outputs:
+  runs_dir: experiments/runs
+training:
+  allow_cuda: false
+  batch_size: 8
+  epochs: 5
+  learning_rate: 0.0012
+  max_train_samples: 4096
+  pos_weight: auto
+  positive_rate_loss_target: auto_train
+  positive_rate_loss_tolerance: 0.008
+  positive_rate_loss_weight: 0.03
+  seed: 11018
+  weight_decay: 0.0001
