@@ -1,0 +1,92 @@
+{
+  "base_config": "/home/mojo/projects/vesuvius-autoresearch/experiments/runs/20260529T023543Z_021a01b0/config.json",
+  "distinct_successful_seeds": 1,
+  "fold_map": "/home/mojo/projects/vesuvius-autoresearch/data/real_cross_folds_expanded_combined/fold_map.json",
+  "folds_failed": 0,
+  "folds_requested": 8,
+  "folds_successful": 8,
+  "folds_with_fixed_threshold_not_ok": [],
+  "folds_with_positive_rate_alarm": [
+    "20230522181603:seed=11035",
+    "20230530212931:seed=11035",
+    "20230611014200:seed=11035"
+  ],
+  "folds_with_threshold_edge_case": [],
+  "folds_with_weak_ap_prevalence_lift": [
+    "20230531121653:seed=11035"
+  ],
+  "folds_with_zero_precision_or_recall": [],
+  "label": "config",
+  "max_val_f1": 0.38136428035996717,
+  "mean_average_precision": 0.10670352622400969,
+  "mean_val_f1": 0.15360798697105096,
+  "median_average_precision": 0.08664137497544289,
+  "median_over_seeds_median_val_f1": 0.12666388945494053,
+  "median_val_f1": 0.12666388945494053,
+  "min_seeds_for_promotion": 1,
+  "min_val_f1": 0.008269423141047016,
+  "per_fold_average_precision": {
+    "20230520175435": 0.2854137718677521,
+    "20230522181603": 0.03724817931652069,
+    "20230522215721": 0.09609299153089523,
+    "20230530172803": 0.012029181234538555,
+    "20230530212931": 0.07718975841999054,
+    "20230531121653": 0.18210817873477936,
+    "20230601193301": 0.04802068695425987,
+    "20230611014200": 0.11552546173334122
+  },
+  "per_fold_successful_seeds": {
+    "20230520175435": 1,
+    "20230522181603": 1,
+    "20230522215721": 1,
+    "20230530172803": 1,
+    "20230530212931": 1,
+    "20230531121653": 1,
+    "20230601193301": 1,
+    "20230611014200": 1
+  },
+  "per_fold_val_f1": {
+    "20230520175435": 0.38136428035996717,
+    "20230522181603": 0.0823629049333051,
+    "20230522215721": 0.11113083614415052,
+    "20230530172803": 0.008269423141047016,
+    "20230530212931": 0.14219694276573053,
+    "20230531121653": 0.25287555991215116,
+    "20230601193301": 0.061100824776973574,
+    "20230611014200": 0.1895631237350827
+  },
+  "per_seed_mean_average_precision": {
+    "11035": 0.10670352622400969
+  },
+  "per_seed_mean_val_f1": {
+    "11035": 0.15360798697105096
+  },
+  "per_seed_median_val_f1": {
+    "11035": 0.12666388945494053
+  },
+  "per_seed_min_val_f1": {
+    "11035": 0.008269423141047016
+  },
+  "promotion_ready": false,
+  "promotion_warnings": [
+    "positive_rate_alarm:20230522181603:seed=11035",
+    "positive_rate_alarm:20230530212931:seed=11035",
+    "positive_rate_alarm:20230611014200:seed=11035"
+  ],
+  "run_ids": [
+    "20260529T024017Z_b1eae4ed",
+    "20260529T024017Z_e8970fb0",
+    "20260529T024034Z_def47f4f",
+    "20260529T024034Z_97ed689d",
+    "20260529T024051Z_711be080",
+    "20260529T024052Z_383cff82",
+    "20260529T024108Z_ac4ddce9",
+    "20260529T024108Z_711933af"
+  ],
+  "seeds": [
+    11035
+  ],
+  "worst_fold_id": "20230530172803",
+  "worst_fold_val_f1": 0.008269423141047016,
+  "worst_seed_median_val_f1": 0.12666388945494053
+}

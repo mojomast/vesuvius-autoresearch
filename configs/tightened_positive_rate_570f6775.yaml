@@ -1,0 +1,44 @@
+autoresearch:
+  changed_path: positive_rate_alarm_fix
+  intent: targeted_positive_rate_alarm_fix
+  mutation_family: loss_calibration
+  parent_run_id: 20260529T021416Z_570f6775
+  promotable: true
+  promotion_required:
+    - seed_repeat_leave_one_out
+    - full_tile_validation
+    - promotion_checks_eligible
+  proposal_status: manual
+  provenance_fix: dual_heldout_20230520175435_20230522181603_train_npz
+  scope_policy: expanded_multi_segment_leave_one_out
+  strategy_phase: promote
+  validation_strip_fix: positive_heldout_strip_selection
+dataset:
+  patch_size: 64
+  research_scope: multi_segment_robust_expanded_prratio2p5_tolerance0p005
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435_20230522181603/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  validation_mode: leave-one-segment-out
+evaluation:
+  main_metric: val_f1
+  max_pred_positive_rate_ratio: 2.5
+  min_pred_positive_rate_ratio: 0.1
+  target_pred_positive_rate: auto_val
+  threshold: 0.35
+model:
+  base_channels: 8
+  name: tiny_torch_unet
+outputs:
+  runs_dir: experiments/runs
+training:
+  allow_cuda: false
+  batch_size: 8
+  epochs: 5
+  learning_rate: 0.0012
+  max_train_samples: 4096
+  pos_weight: auto
+  positive_rate_loss_target: auto_train
+  positive_rate_loss_tolerance: 0.005
+  positive_rate_loss_weight: 0.03
+  seed: 11018
+  weight_decay: 0.0001
