@@ -111,6 +111,11 @@ PIVOT_CONFIGS = (
     "residual_25d_torch_unet_cpu.yaml",
 )
 BALANCED_CALIBRATION_PATH = ("balanced_calibration",)
+BALANCED_CALIBRATION_FIELDS = {
+    "max_pred_positive_rate_ratio": ("evaluation", "max_pred_positive_rate_ratio"),
+    "positive_rate_loss_tolerance": ("training", "positive_rate_loss_tolerance"),
+    "positive_rate_loss_weight": ("training", "positive_rate_loss_weight"),
+}
 PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "pos_weight"): (0.25, 25.0),
     ("training", "learning_rate"): (0.001, 0.25),
@@ -211,7 +216,7 @@ def _metric_direction(cfg: Dict[str, Any]) -> int:
 
 def _recent_runs(limit: int | None = None) -> List[Dict[str, Any]]:
     if limit is None:
-        raw_limit = os.environ.get("AUTORESEARCH_RECENT_LIMIT", "1000")
+        raw_limit = os.environ.get("AUTORESEARCH_RECENT_LIMIT", "300")
         limit = 0 if raw_limit.lower() in {"0", "all", "none"} else int(raw_limit)
     init_db(DB_PATH)
     query = "SELECT run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir FROM experiments ORDER BY timestamp DESC"
@@ -228,6 +233,73 @@ def _recent_runs(limit: int | None = None) -> List[Dict[str, Any]]:
         except ValueError as exc:
             print(f"Skipping run {run_id} with invalid metric contract: {exc}", file=sys.stderr)
     return runs
+
+
+class _CycleProfiler:
+    def __init__(self, enabled: bool | None = None) -> None:
+        self.enabled = (os.environ.get("AUTORESEARCH_PROFILE", "0") == "1") if enabled is None else enabled
+        self.events: list[tuple[str, float]] = []
+
+    @contextlib.contextmanager
+    def measure(self, label: str):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter() - start
+            if self.enabled:
+                self.events.append((label, elapsed))
+                print(f"AUTORESEARCH_PROFILE {label} {elapsed:.3f}s", file=sys.stderr, flush=True)
+
+
+class _RunHistory:
+    """Per-cycle cache for decoded experiment rows and derived views."""
+
+    def __init__(self, profiler: _CycleProfiler | None = None) -> None:
+        self.profiler = profiler or _CycleProfiler(enabled=False)
+        self._recent_by_limit: dict[int | None, list[Dict[str, Any]]] = {}
+        self._strategy_by_runs_id: dict[int, Dict[str, Any]] = {}
+        self._ranked_torch_by_runs_id: dict[int, list[tuple[Dict[str, Any], str]]] = {}
+        self._manual_candidate_by_runs_id: dict[int, Dict[str, Any] | None] = {}
+
+    def recent_runs(self, limit: int | None = None) -> list[Dict[str, Any]]:
+        if limit not in self._recent_by_limit:
+            with self.profiler.measure("recent_runs"):
+                self._recent_by_limit[limit] = _recent_runs(limit=limit)
+        return self._recent_by_limit[limit]
+
+    def invalidate(self) -> None:
+        self._recent_by_limit.clear()
+        self._strategy_by_runs_id.clear()
+        self._ranked_torch_by_runs_id.clear()
+        self._manual_candidate_by_runs_id.clear()
+
+    def torch_runs(self, runs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        return [run for run in runs if "torch" in str(_get_nested(run.get("config", {}), ("model", "name"), ""))]
+
+    def promotion_eligible_runs(self, runs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        return [run for run in runs if _promotion_gate(run)[0]]
+
+    def strategy_phase(self, runs: list[Dict[str, Any]]) -> Dict[str, Any]:
+        key = id(runs)
+        if key not in self._strategy_by_runs_id:
+            with self.profiler.measure("strategy_phase"):
+                self._strategy_by_runs_id[key] = _strategy_phase(runs)
+        return self._strategy_by_runs_id[key]
+
+    def ranked_recent_torch_bases(self, runs: list[Dict[str, Any]]) -> list[tuple[Dict[str, Any], str]]:
+        key = id(runs)
+        if key not in self._ranked_torch_by_runs_id:
+            with self.profiler.measure("ranked_recent_torch_bases"):
+                self._ranked_torch_by_runs_id[key] = _ranked_recent_torch_bases(runs)
+        return self._ranked_torch_by_runs_id[key]
+
+    def manual_promotion_candidate(self, runs: list[Dict[str, Any]]) -> Dict[str, Any] | None:
+        key = id(runs)
+        if key not in self._manual_candidate_by_runs_id:
+            with self.profiler.measure("manual_promotion_candidate"):
+                self._manual_candidate_by_runs_id[key] = _manual_promotion_candidate(runs)
+        return self._manual_candidate_by_runs_id[key]
 
 
 def _best_base_config(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -260,17 +332,17 @@ def _set_nested(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> None:
 
 def _candidate_is_noop(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> bool:
     if path == BALANCED_CALIBRATION_PATH:
-        return (
-            _get_nested(cfg, ("evaluation", "max_pred_positive_rate_ratio"), None) == value["max_pred_positive_rate_ratio"]
-            and _get_nested(cfg, ("training", "positive_rate_loss_tolerance"), None) == value["positive_rate_loss_tolerance"]
+        return all(
+            _get_nested(cfg, BALANCED_CALIBRATION_FIELDS[key], None) == proposed
+            for key, proposed in value.items()
         )
     return _get_nested(cfg, path, None) == value
 
 
 def _apply_candidate(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> None:
     if path == BALANCED_CALIBRATION_PATH:
-        _set_nested(cfg, ("evaluation", "max_pred_positive_rate_ratio"), value["max_pred_positive_rate_ratio"])
-        _set_nested(cfg, ("training", "positive_rate_loss_tolerance"), value["positive_rate_loss_tolerance"])
+        for key, proposed in value.items():
+            _set_nested(cfg, BALANCED_CALIBRATION_FIELDS[key], proposed)
         return
     _set_nested(cfg, path, value)
 
@@ -309,6 +381,44 @@ def _proposal_value_slug(value: Any) -> str:
         text = str(value).replace(".", "p")
     slug = "".join(ch if ch.isalnum() or ch in {"_", "-", "p"} else "_" for ch in text)
     return slug[:80]
+
+
+COST_TIER_ORDER = {"cheap": 0, "normal": 1, "expensive": 2}
+
+
+def _cost_tier_rank(tier: str) -> int:
+    return COST_TIER_ORDER.get(tier, COST_TIER_ORDER["expensive"])
+
+
+def _config_cost_tier(cfg: Dict[str, Any]) -> str:
+    """Classify expected local runtime cost without changing experiment behavior."""
+    model_name = str(_get_nested(cfg, ("model", "name"), "tiny_numpy_ink_logreg"))
+    training = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
+    evaluation = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
+    epochs = int(training.get("epochs") or SIGNATURE_DEFAULTS[("training", "epochs")])
+    max_train_samples = int(training.get("max_train_samples") or 0)
+    max_train_pixels = int(training.get("max_train_pixels") or SIGNATURE_DEFAULTS[("training", "max_train_pixels")])
+    seeds = training.get("seeds")
+    ensemble_size = len(seeds) if isinstance(seeds, list) else 1
+    if ensemble_size > 1 or bool(evaluation.get("tta_flips")) or max_train_samples > 2048 or max_train_pixels > 600000 or epochs > 8:
+        return "expensive"
+    if model_name == "tiny_numpy_ink_logreg" and epochs <= 5 and max_train_pixels <= 600000:
+        return "cheap"
+    if model_name == "tiny_numpy_mlp" and max_train_pixels <= 600000 and epochs <= 8:
+        return "normal"
+    if "torch" in model_name and (max_train_samples == 0 or max_train_samples <= 2048) and epochs <= 8:
+        return "normal"
+    return "expensive"
+
+
+def _max_allowed_cost_tier(allow_expensive: bool = False) -> str:
+    if allow_expensive:
+        return "expensive"
+    return os.environ.get("AUTORESEARCH_MAX_COST_TIER", "normal").lower()
+
+
+def _cost_tier_allowed(tier: str, *, allow_expensive: bool = False) -> bool:
+    return _cost_tier_rank(tier) <= _cost_tier_rank(_max_allowed_cost_tier(allow_expensive))
 
 
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
@@ -427,6 +537,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("evaluation", "max_pred_positive_rate_ratio"), 3.0 if pred_ratio_cap < 3.0 else 3.5, "test a slightly looser positive-rate cap when AP lift is strong but strict caps suppress F1"),
             (("evaluation", "max_pred_positive_rate_ratio"), 2.75, "test intermediate positive-rate cap between 2.5 and 3.0 for balanced calibration"),
             (BALANCED_CALIBRATION_PATH, {"max_pred_positive_rate_ratio": 2.75, "positive_rate_loss_tolerance": 0.008}, "combine intermediate positive-rate cap with tighter tolerance for balanced calibration"),
+            (BALANCED_CALIBRATION_PATH, {"max_pred_positive_rate_ratio": 3.0, "positive_rate_loss_weight": 0.10}, "combine maximum positive-rate loss weight with 3.0 cap to diagnose blocking fold 20230530172803"),
             (("model", "base_channels"), max(4, base_channels // 2), "smaller torch U-Net width for faster regularized CPU search"),
             (("model", "base_channels"), min(16, base_channels * 2), "larger torch U-Net width to test capacity without changing data scope"),
             (("training", "epochs"), max(2, epochs - 1), "shorter torch training to test overfit/probability inflation"),
@@ -494,7 +605,7 @@ def _mutation_family(path: Tuple[str, ...]) -> str:
     return "other"
 
 
-def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
+def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None, allow_expensive: bool = False) -> List[Tuple[str, Dict[str, Any], str]]:
     """Change only 1 hyperparameter per proposal for interpretable search."""
     baseline_dataset = load_config(BASELINE).get("dataset", {})
     tested = _reserved_signatures(runs)
@@ -528,6 +639,10 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         if path == ("training", "tversky_beta"):
             cfg.setdefault("training", {}).setdefault("tversky_loss_weight", 0.15)
             cfg.setdefault("training", {})["tversky_alpha"] = round(1.0 - float(value), 4)
+        cost_tier = _config_cost_tier(cfg)
+        if not _cost_tier_allowed(cost_tier, allow_expensive=allow_expensive):
+            print(f"Skipping {cost_tier} proposal {'.'.join(path)} under AUTORESEARCH_MAX_COST_TIER={_max_allowed_cost_tier(allow_expensive)}")
+            continue
         signature = _search_signature(cfg)
         if signature in tested or signature in seen_batch_signatures:
             print(f"Skipping already-tested search signature {signature}")
@@ -538,10 +653,12 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         autoresearch["scope_policy"] = scope_policy
         autoresearch["search_signature"] = list(signature)
         autoresearch["intent"] = "cron_exploration"
+        autoresearch["run_profile"] = "exploration"
         autoresearch["promotable"] = False
         autoresearch["proposal_status"] = "generated"
         autoresearch["changed_path"] = ".".join(path)
         autoresearch["mutation_family"] = family
+        autoresearch["cost_tier"] = cost_tier
         if strategy_phase:
             autoresearch["strategy_phase"] = strategy_phase
         autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
@@ -916,14 +1033,14 @@ def _manual_promotion_candidate(runs: List[Dict[str, Any]]) -> Dict[str, Any] | 
     return max(candidates, key=_run_quality_score)
 
 
-def _promotion_phase_manual_action(runs: List[Dict[str, Any]]) -> dict[str, Any] | None:
+def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHistory | None = None) -> dict[str, Any] | None:
     """Return a candidate-linked promotion action when local sweeps should stop."""
     if os.environ.get("AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION", "0") == "1":
         return None
-    strategy = _strategy_phase(runs)
+    strategy = history.strategy_phase(runs) if history else _strategy_phase(runs)
     if not strategy.get("plateau"):
         return None
-    candidate = _manual_promotion_candidate(runs)
+    candidate = history.manual_promotion_candidate(runs) if history else _manual_promotion_candidate(runs)
     if not candidate:
         return None
     action = _promotion_next_action_with_evidence(candidate)
@@ -1023,9 +1140,10 @@ def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[st
     return out
 
 
-def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
+def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None, history: _RunHistory | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
     out: list[Tuple[str, Dict[str, Any], str]] = []
-    for base, label in _ranked_recent_torch_bases(runs):
+    ranked_bases = history.ranked_recent_torch_bases(runs) if history else _ranked_recent_torch_bases(runs)
+    for base, label in ranked_bases:
         remaining = count - len(out)
         if remaining <= 0:
             break
@@ -1052,9 +1170,9 @@ def _pivot_bases() -> list[tuple[str, Dict[str, Any], str]]:
     return bases
 
 
-def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:
+def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int, history: _RunHistory | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
     print("AutoResearch strategy: robust/torch best path first; focused NumPy is fallback only", flush=True)
-    strategy = _strategy_phase(runs)
+    strategy = history.strategy_phase(runs) if history else _strategy_phase(runs)
     required_families = strategy["required_families"] or None
     phase = str(strategy["phase"])
     print(f"AutoResearch strategy phase={phase} plateau={strategy['plateau']} next_action={strategy['next_action']}", flush=True)
@@ -1068,7 +1186,7 @@ def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: 
     if out:
         return out
     print("Curated robust/torch bases are exhausted; trying best recent robust/torch winners", flush=True)
-    out = _propose_from_recent_winners(runs, count=count, required_families=required_families, strategy_phase=phase)
+    out = _propose_from_recent_winners(runs, count=count, required_families=required_families, strategy_phase=phase, history=history)
     if out:
         return out
     if os.environ.get("AUTORESEARCH_ALLOW_FOCUSED_FALLBACK", "1") != "1":
@@ -1092,6 +1210,7 @@ def _proposal_plan(proposals: List[Tuple[str, Dict[str, Any], str]]) -> list[Dic
             "mutation_family": autoresearch.get("mutation_family"),
             "strategy_phase": autoresearch.get("strategy_phase"),
             "scope_policy": autoresearch.get("scope_policy"),
+            "cost_tier": autoresearch.get("cost_tier"),
             "promotable": bool(autoresearch.get("promotable")),
             "promotion_required": autoresearch.get("promotion_required", []),
             "search_signature": autoresearch.get("search_signature"),
@@ -1137,6 +1256,7 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
         if path == ("training", "tversky_loss_weight"):
             cfg.setdefault("training", {}).setdefault("tversky_alpha", 0.3)
             cfg.setdefault("training", {}).setdefault("tversky_beta", 0.7)
+        cost_tier = _config_cost_tier(cfg)
         signature = _search_signature(cfg)
         if signature in tested or signature in seen:
             return None
@@ -1145,11 +1265,14 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
         autoresearch["parent_reason"] = reason
         autoresearch["scope_policy"] = str(autoresearch.get("scope_policy") or base.get("dataset", {}).get("research_scope") or "promotion_action")
         autoresearch["intent"] = "promotion_action"
+        autoresearch["run_profile"] = "exploration"
         autoresearch["promotion_action_id"] = action_id
         autoresearch["promotable"] = False
         autoresearch["proposal_status"] = "generated"
         autoresearch["changed_path"] = ".".join(path)
         autoresearch["mutation_family"] = _mutation_family(path)
+        autoresearch["cost_tier"] = cost_tier
+        autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
         name = f"auto_{stamp}_promotion_{action_id}_{len(proposals)+1}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
         return (name, cfg, reason)
 
@@ -1220,14 +1343,14 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
     return proposals
 
 
-def _promotion_or_fallback_proposals(runs: List[Dict[str, Any]], base: Dict[str, Any], ready_payload: dict[str, Any] | None, count: int) -> tuple[List[Tuple[str, Dict[str, Any], str]], str | None]:
+def _promotion_or_fallback_proposals(runs: List[Dict[str, Any]], base: Dict[str, Any], ready_payload: dict[str, Any] | None, count: int, history: _RunHistory | None = None) -> tuple[List[Tuple[str, Dict[str, Any], str]], str | None]:
     """Return auto-action proposals, falling back to normal exploration if exhausted."""
     if ready_payload and ready_payload.get("action_id") in _AUTO_ACTIONS:
         action_proposals = _generate_promotion_action_proposals(runs, ready_payload, count=count)
         if action_proposals:
             return action_proposals, str(ready_payload.get("action_id"))
         print(f"Promotion gate action={ready_payload.get('action_id')} proposals exhausted; falling back to normal exploration", flush=True)
-    return _propose_best_path(base, runs, count=count), None
+    return _propose_best_path(base, runs, count=count, history=history), None
 
 
 def _promotion_ready_payload() -> dict[str, Any] | None:
@@ -1376,7 +1499,9 @@ def main() -> int:
         print(f"Pruned {pruned} stale generated config(s)", flush=True)
 
     if args.plan:
-        runs = _recent_runs()
+        profiler = _CycleProfiler()
+        history = _RunHistory(profiler)
+        runs = history.recent_runs()
         if not runs:
             print(json.dumps({"status": "needs_baseline", "proposals": []}, indent=2 if args.json else None))
             return 0
@@ -1402,7 +1527,7 @@ def main() -> int:
                     for item in payload["proposals"]:
                         print(f"  {item['name']}: {item['reason']} [{item.get('strategy_phase')}/{item.get('mutation_family')}]")
                 return 0
-        manual_payload = harness.promotion_phase_manual_action(runs)
+        manual_payload = _promotion_phase_manual_action(runs, history=history)
         if manual_payload:
             if args.json:
                 print(json.dumps(manual_payload, indent=2, sort_keys=True))
@@ -1415,9 +1540,11 @@ def main() -> int:
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         if args.json:
             with contextlib.redirect_stdout(sys.stderr):
-                proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+                with profiler.measure("proposal_generation"):
+                    proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count, history=history)
         else:
-            proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+            with profiler.measure("proposal_generation"):
+                proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count, history=history)
         payload = {"status": "planned", "proposal_count": len(proposals), "fallback_from_action": source_action, "proposals": _proposal_plan(proposals)}
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1435,11 +1562,15 @@ def main() -> int:
             print(f"{datetime.now(timezone.utc).isoformat()} another autoresearch run is active; exiting safely")
             return 0
         init_db(DB_PATH)
-        runs = _recent_runs()
+        profiler = _CycleProfiler()
+        history = _RunHistory(profiler)
+        runs = history.recent_runs()
         if not runs:
             print("No prior runs found; executing baseline first")
-            subprocess.run([sys.executable, "run_experiment.py", "--config", str(BASELINE)], cwd=ROOT, check=True)
-            runs = _recent_runs()
+            with profiler.measure("experiment_subprocess"):
+                subprocess.run([sys.executable, "run_experiment.py", "--config", str(BASELINE)], cwd=ROOT, check=True)
+            history.invalidate()
+            runs = history.recent_runs()
         base = harness.best_base_config(runs)
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
@@ -1454,13 +1585,14 @@ def main() -> int:
             if ready_payload.get("automation_status"):
                 print(f"Automation status: {ready_payload['automation_status']}", flush=True)
             return 0
-        manual_payload = harness.promotion_phase_manual_action(runs)
+        manual_payload = _promotion_phase_manual_action(runs, history=history)
         if manual_payload:
             print(f"AutoResearch promotion action required: {manual_payload.get('next_action')}", flush=True)
             if manual_payload.get("command"):
                 print(f"Command: {manual_payload['command']}", flush=True)
             return 0
-        proposals, source_action = harness.promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count)
+        with profiler.measure("proposal_generation"):
+            proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count, history=history)
         if ready_payload and source_action:
             print(f"Promotion gate ready with auto-executable action={source_action}; generating targeted proposals", flush=True)
         if not proposals:
@@ -1473,9 +1605,11 @@ def main() -> int:
                 print("AutoResearch deadline is near; stopping before launching another experiment", flush=True)
                 break
             cfg_path = CONFIGS / name
-            _dump_config_with_comment(cfg_path, cfg, reason)
+            with profiler.measure("config_dump"):
+                _dump_config_with_comment(cfg_path, cfg, reason)
             print(f"Running generated experiment {cfg_path.name}: {reason}", flush=True)
-            subprocess.run([sys.executable, "run_experiment.py", "--config", str(cfg_path)], cwd=ROOT, check=True)
+            with profiler.measure("experiment_subprocess"):
+                subprocess.run([sys.executable, "run_experiment.py", "--config", str(cfg_path)], cwd=ROOT, check=True)
     return 0
 
 if __name__ == "__main__":

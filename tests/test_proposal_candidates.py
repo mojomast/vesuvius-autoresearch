@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import autoresearch
-from autoresearch import PARAM_BOUNDS, _apply_candidate, _generate_promotion_action_proposals, _mutation_family, _proposal_candidates, _proposal_value_slug, _search_signature
+from autoresearch import PARAM_BOUNDS, _apply_candidate, _config_cost_tier, _generate_promotion_action_proposals, _mutation_family, _proposal_candidates, _proposal_plan, _proposal_value_slug, _search_signature
 
 
 def _assert_candidates_within_bounds(config):
@@ -78,6 +78,7 @@ def test_torch_candidates_include_combined_balanced_calibration():
     combined = [value for path, value, _reason in raw_candidates if path == ("balanced_calibration",)]
 
     assert {"max_pred_positive_rate_ratio": 2.75, "positive_rate_loss_tolerance": 0.008} in combined
+    assert {"max_pred_positive_rate_ratio": 3.0, "positive_rate_loss_weight": 0.10} in combined
 
 
 def test_balanced_calibration_candidate_applies_both_fields():
@@ -88,6 +89,17 @@ def test_balanced_calibration_candidate_applies_both_fields():
 
     assert cfg["evaluation"]["max_pred_positive_rate_ratio"] == 2.75
     assert cfg["training"]["positive_rate_loss_tolerance"] == 0.008
+    assert _mutation_family(("balanced_calibration",)) == "balanced_calibration"
+
+
+def test_balanced_calibration_candidate_can_apply_loss_weight():
+    cfg = {"training": {"positive_rate_loss_weight": 0.08}, "evaluation": {"max_pred_positive_rate_ratio": 2.75}}
+    value = {"max_pred_positive_rate_ratio": 3.0, "positive_rate_loss_weight": 0.10}
+
+    _apply_candidate(cfg, ("balanced_calibration",), value)
+
+    assert cfg["evaluation"]["max_pred_positive_rate_ratio"] == 3.0
+    assert cfg["training"]["positive_rate_loss_weight"] == 0.10
     assert _mutation_family(("balanced_calibration",)) == "balanced_calibration"
 
 
@@ -164,3 +176,30 @@ def test_proposal_value_slug_is_filesystem_safe_for_lists():
     assert slug == "2items"
     assert "/" not in slug
     assert "[" not in slug
+
+
+def test_config_cost_tier_classifies_simple_and_heavy_configs():
+    assert _config_cost_tier({"model": {"name": "tiny_numpy_ink_logreg"}, "training": {"max_train_pixels": 200000}}) == "cheap"
+    assert _config_cost_tier({"model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 1024}}) == "normal"
+    assert _config_cost_tier({"model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 4096}}) == "expensive"
+    assert _config_cost_tier({"model": {"name": "tiny_torch_unet"}, "training": {"seeds": [1, 2], "max_train_samples": 1024}}) == "expensive"
+
+
+def test_promotion_action_proposals_include_cost_tier_metadata(monkeypatch):
+    run = {
+        "run_id": "candidate",
+        "config": {
+            "model": {"name": "tiny_torch_unet"},
+            "training": {"learning_rate": 0.001, "epochs": 5, "max_train_samples": 1024},
+            "evaluation": {"threshold": 0.5},
+        },
+    }
+    monkeypatch.setattr(autoresearch, "_reserved_signatures", lambda runs: set())
+
+    proposals = _generate_promotion_action_proposals([run], {"action_id": "calibrate_probability_scale", "candidate_run_id": "candidate"}, count=1)
+
+    assert proposals
+    cfg = proposals[0][1]
+    assert cfg["autoresearch"]["cost_tier"] == "normal"
+    assert cfg["autoresearch"]["run_profile"] == "exploration"
+    assert _proposal_plan(proposals)[0]["cost_tier"] == "normal"

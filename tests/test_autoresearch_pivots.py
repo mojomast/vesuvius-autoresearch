@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autoresearch
-from autoresearch import _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _promotion_or_fallback_proposals, _promotion_phase_manual_action, _promotion_ready_payload, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
+from autoresearch import _CycleProfiler, _RunHistory, _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _promotion_or_fallback_proposals, _promotion_phase_manual_action, _promotion_ready_payload, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
 from experiments.runner import load_config
 
 
@@ -137,6 +137,39 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertGreaterEqual(len(families), 3)
         self.assertEqual(len(families), len(set(families)))
         self.assertTrue(all(proposal[1]["autoresearch"]["strategy_phase"] == "diversify" for proposal in proposals))
+
+    def test_run_history_caches_recent_runs(self) -> None:
+        history = _RunHistory(_CycleProfiler(enabled=False))
+        run = {"run_id": "r1", "config": {"model": {"name": "tiny_torch_unet"}}, "metrics": {}, "main_metric": 0.1}
+
+        with patch("autoresearch._recent_runs", return_value=[run]) as recent_runs:
+            self.assertEqual(history.recent_runs(), [run])
+            self.assertEqual(history.recent_runs(), [run])
+
+        self.assertEqual(recent_runs.call_count, 1)
+        self.assertEqual(history.torch_runs([run]), [run])
+
+    def test_proposals_include_cost_tier_metadata(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            proposals = _propose_configs(cfg, [], count=2, lock_to_baseline_scope=False)
+
+        self.assertTrue(proposals)
+        for _name, proposal_cfg, _reason in proposals:
+            self.assertIn(proposal_cfg["autoresearch"]["cost_tier"], {"cheap", "normal", "expensive"})
+            self.assertEqual(proposal_cfg["autoresearch"]["run_profile"], "exploration")
+        self.assertIn("cost_tier", _proposal_plan(proposals)[0])
+
+    def test_normal_cron_filters_expensive_proposals(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            with patch.dict("os.environ", {"AUTORESEARCH_MAX_COST_TIER": "normal"}):
+                proposals = _propose_configs(cfg, [], count=20, lock_to_baseline_scope=False)
+
+        self.assertTrue(proposals)
+        self.assertTrue(all(proposal[1]["autoresearch"]["cost_tier"] != "expensive" for proposal in proposals))
 
     def test_promotion_next_action_prefers_loo_then_full_tile(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
