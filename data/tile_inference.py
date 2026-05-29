@@ -35,6 +35,27 @@ def parse_offsets(raw: str | Iterable[int]) -> list[int]:
     return [int(x) for x in raw]
 
 
+def _artifact_config_path(artifact_or_config: Path) -> Path:
+    path = artifact_or_config.expanduser()
+    return path / "config.json" if path.is_dir() else path
+
+
+def _configured_z_offsets(artifact_or_config: Path) -> list[int] | None:
+    config_path = _artifact_config_path(artifact_or_config)
+    if not config_path.exists():
+        return None
+    cfg = json.loads(config_path.read_text())
+    candidates = [
+        cfg.get("dataset", {}).get("z_offsets"),
+        cfg.get("resolved_data", {}).get("val", {}).get("metadata", {}).get("z_offsets"),
+        cfg.get("resolved_data", {}).get("train", {}).get("metadata", {}).get("z_offsets"),
+    ]
+    for candidate in candidates:
+        if candidate is not None:
+            return parse_offsets(candidate)
+    return None
+
+
 def _validate_tiling_args(patch_size: int, stride: int, batch_size: int | None = None) -> None:
     if patch_size <= 0:
         raise ValueError("patch_size must be positive")
@@ -227,7 +248,7 @@ def load_torch_unet_artifact(artifact_or_config: Path, in_channels: int, device:
 
     path = artifact_or_config.expanduser()
     artifact_dir = path if path.is_dir() else path.parent
-    config_path = artifact_dir / "config.json" if path.is_dir() else path
+    config_path = _artifact_config_path(path)
     model_path = artifact_dir / "model.pt"
     if not config_path.exists():
         raise FileNotFoundError(f"No config JSON found at {config_path}")
@@ -635,7 +656,7 @@ def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
 
 
 def run_full_tile_inference(artifact: Path, segment_id: str, output_dir: Path, level: str = "1", z_offsets: list[int] | None = None, patch_size: int | None = None, stride: int | None = None, batch_size: int = 8, device: str = "cpu", catalog_source: str = "public-directory", overwrite: bool = False, public_retry_count: int = 0, public_retry_delay_sec: float = 0.0, public_chunk_delay_sec: float = 0.0, public_chunk_retry_count: int = 0, public_chunk_retry_delay_sec: float = 0.0, mine_output: Path | None = None, mine_max_patches: int = 128, mine_threshold: float | None = None, mine_stride: int | None = None, mine_max_label_positive_rate: float = 0.001) -> dict[str, Any]:
-    offsets = z_offsets if z_offsets is not None else [0]
+    offsets = z_offsets if z_offsets is not None else (_configured_z_offsets(artifact) or [0])
     image, label, segment_meta = load_public_segment(segment_id, level, offsets, catalog_source, public_retry_count, public_retry_delay_sec, public_chunk_delay_sec, public_chunk_retry_count, public_chunk_retry_delay_sec)
     models, cfg, artifact_dir, model_meta = load_torch_unet_artifact(artifact, image.shape[0], device)
     patch = int(cfg.get("dataset", {}).get("patch_size", 64) if patch_size is None else patch_size)

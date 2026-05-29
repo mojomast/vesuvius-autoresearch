@@ -46,10 +46,14 @@ Full-tile check on 20230520175435:
 
 Fix outcome: stricter sampled positive-rate cap did not fix the zero-fold bottleneck. The repeated zeroes on 20230530172803 indicate a segment-generalization/ranking failure, not simply threshold flooding. Do not run 3-seed LOO or promotion pipeline.
 
+Follow-up diagnosis on 2026-05-29: `scripts/evaluate_leave_one_out.py` already performs per-fold threshold sweeps, so this was not a stale global-threshold problem. For `20260529T034850Z_d0ee3406`, the 20230530172803 zero rows had non-collapsed probabilities (`prob_max=0.729` and `0.672`) and constrained `pred_positive_rate=0.007278` versus `val_positive_rate=0.008770`, but precision and recall stayed zero at the selected under-cap thresholds. Lower thresholds produced overlap only by flooding the sampled strip: the unconstrained best row reached only `val_f1=0.0231` at pred/val about `84.7` for seed 11001.
+
+Diagnostic full-tile inference on 20230530172803 using the base `d0ee3406` artifact and config-inferred z offsets produced `val_f1=0.0854`, AP `0.0544`, pred/val `2.369`, and `prob_max=0.6065`. This is diagnostic-only because the base artifact trained on 20230530172803, but it shows the segment is not probability-collapsed. Before another LOO retrain, run candidate-linked full-tile diagnostics from the actual LOO artifacts that held out 20230530172803, or regenerate denser tiled validation NPZs/fold maps so the weak fold is measured more like the full tile.
+
 ## REASSESS
 
 The sampled residual 2.5D axis is strong on 20230520175435, and full-tile checks for prw006 and cap250 remained eligible with full-tile val_f1 above 0.18. Promotion is blocked by leave-one-out robustness: both 2-seed LOO attempts produced zero val_f1 on held-out segment 20230530172803 for seeds 11001 and 11018.
 
 Likely bottleneck: segment-specific generalization to low-prevalence 20230530172803. Positive-rate caps and stronger sampled metrics do not solve ranking/overlap failure on that segment.
 
-Recommended next step: build a residual 2.5D follow-up that targets 20230530172803 explicitly, such as adding segment-aware augmentation/data expansion, reviewing fold-map/data provenance for that segment, or training a proposal that optimizes low-prevalence folds before repeating LOO.
+Recommended next step: build a residual 2.5D follow-up that targets 20230530172803 explicitly, such as adding segment-aware augmentation/data expansion, reviewing fold-map/data provenance for that segment, preparing denser tiled validation folds, or training a proposal that optimizes low-prevalence folds before repeating LOO.

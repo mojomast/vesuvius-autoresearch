@@ -13,6 +13,7 @@ import numpy as np
 from data.tile_inference import (
     evaluate_probability_map,
     _promotion_checks,
+    _configured_z_offsets,
     load_public_segment,
     mine_failure_patches,
     run_full_tile_inference,
@@ -235,6 +236,32 @@ class TileInferenceTest(unittest.TestCase):
             self.assertEqual(result["metrics"]["mined_hard_negatives"]["samples"], 1)
             self.assertEqual(result["metrics"]["mined_hard_negatives"]["mined_segment_id"], "seg")
             self.assertEqual(result["metrics"]["mined_hard_negatives"]["forbidden_heldout_segments"], ["seg"])
+
+    def test_run_full_tile_inference_infers_artifact_z_offsets(self) -> None:
+        image = np.zeros((3, 8, 8), dtype=np.float32)
+        label = np.zeros((8, 8), dtype=np.float32)
+        label[:4, :4] = 1.0
+        prob_map = np.zeros((8, 8), dtype=np.float32)
+        prob_map[:4, :4] = 0.9
+        cfg = {"dataset": {"patch_size": 4, "z_offsets": [-4, 0, 4]}, "evaluation": {"threshold": 0.5}, "model": {"name": "tiny_torch_unet"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "artifact"
+            artifact.mkdir()
+            (artifact / "config.json").write_text(json.dumps(cfg))
+            self.assertEqual(_configured_z_offsets(artifact), [-4, 0, 4])
+
+            with mock.patch("data.tile_inference.load_public_segment", return_value=(image, label, {"segment_id": "seg"})) as load_segment, \
+                 mock.patch("data.tile_inference.load_torch_unet_artifact", return_value=([object()], cfg, artifact, {})), \
+                 mock.patch("data.tile_inference.stitch_probabilities", return_value=(prob_map, {"patches": 4})):
+                result = run_full_tile_inference(
+                    artifact=artifact,
+                    segment_id="seg",
+                    output_dir=Path(tmp) / "tile",
+                )
+
+            self.assertEqual(load_segment.call_args.args[2], [-4, 0, 4])
+            self.assertEqual(result["metrics"]["inference_provenance"]["z_offsets"], [-4, 0, 4])
 
     def test_public_segment_retry_handles_rate_limit(self) -> None:
         class RateLimitError(Exception):

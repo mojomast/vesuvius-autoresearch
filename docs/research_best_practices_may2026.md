@@ -91,12 +91,13 @@ What did not work:
 
 - Positive-rate caps did not fix leave-one-out robustness. Both `prw006` and stricter `cap250` produced zero `val_f1` on held-out `20230530172803` for seeds `11001` and `11018`.
 - The failure was not simple flooding: zero-fold pred/val was close to prevalence, but AP lift was weak and selected positives did not overlap ink, indicating segment-specific ranking/generalization failure.
+- It was also not a missing per-fold threshold recalibration: the LOO evaluator already sweeps thresholds on each fold. For `d0ee3406`, lower-threshold overlap on `20230530172803` required extreme sampled-strip flooding, while under-cap thresholds selected no true positives.
 - Hard-negative fraction `0.85` reduced sampled AP/F1 versus the best candidates and did not justify LOO.
 
 Recommended starting config for future residual 2.5D sessions:
 
 - Start from `configs/residual25d_cap250.yaml` when CPU-only, or the historical `20260528T155452Z_8846f887` settings when 4096 samples are feasible.
-- Before repeating three-seed LOO, target `20230530172803` specifically with data/provenance diagnostics, segment-balanced sampling, or an architecture/data expansion change. Do not seed-shop around `11001` and `11018`; both exposed the same zero-fold issue.
+- Before repeating three-seed LOO, target `20230530172803` specifically with candidate-linked weak-fold full-tile diagnostics, denser tiled validation folds, segment-balanced sampling, or an architecture/data expansion change. Do not seed-shop around `11001` and `11018`; both exposed the same zero-fold issue.
 
 ## Plateau Policy
 

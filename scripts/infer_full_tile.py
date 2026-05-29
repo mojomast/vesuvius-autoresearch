@@ -17,11 +17,12 @@ from data.tile_inference import parse_offsets, run_full_tile_inference, self_tes
 def main() -> int:
     parser = argparse.ArgumentParser(description="Infer and evaluate a public labeled Vesuvius segment as one stitched tile")
     parser.add_argument("--artifact", help="Run artifact directory containing config.json and model.pt, or a config JSON path")
+    parser.add_argument("--config", help="Alias for --artifact when passing a config JSON path")
     parser.add_argument("--segment-id", help="Public labeled segment ID")
     parser.add_argument("--output-dir", help="Output directory for probability_map.npy, metrics.json, and metrics_by_threshold.csv")
     parser.add_argument("--catalog-source", choices=["public-directory", "installed-catalog", "merged"], default="public-directory")
     parser.add_argument("--level", default="1", help="Zarr resolution level")
-    parser.add_argument("--z-offsets", default="0", help="Comma-separated z offsets from the middle layer")
+    parser.add_argument("--z-offsets", default=None, help="Comma-separated z offsets from the middle layer; defaults to artifact config when present")
     parser.add_argument("--patch-size", type=int, default=None, help="Patch size; defaults to config dataset.patch_size or 64")
     parser.add_argument("--stride", type=int, default=None, help="Patch stride; defaults to patch_size/2")
     parser.add_argument("--batch-size", type=int, default=8)
@@ -43,15 +44,20 @@ def main() -> int:
     if args.self_test:
         print(json.dumps(self_test(), indent=2, sort_keys=True))
         return 0
-    missing = [name for name in ["artifact", "segment_id", "output_dir"] if getattr(args, name) is None]
+    artifact = args.artifact or args.config
+    if args.artifact and args.config:
+        parser.error("pass only one of --artifact or --config")
+    missing = [name for name in ["segment_id", "output_dir"] if getattr(args, name) is None]
+    if artifact is None:
+        missing.insert(0, "artifact")
     if missing:
         parser.error("missing required arguments unless --self-test is used: " + ", ".join("--" + x.replace("_", "-") for x in missing))
     result = run_full_tile_inference(
-        artifact=Path(args.artifact),
+        artifact=Path(artifact),
         segment_id=args.segment_id,
         output_dir=Path(args.output_dir),
         level=args.level,
-        z_offsets=parse_offsets(args.z_offsets),
+        z_offsets=parse_offsets(args.z_offsets) if args.z_offsets is not None else None,
         patch_size=args.patch_size,
         stride=args.stride,
         batch_size=args.batch_size,
