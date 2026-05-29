@@ -65,10 +65,15 @@ def test_automated_promotion_fails_missing_summary_after_success(tmp_path, monke
     assert result["automation_status"] == "FAILED"
     assert result["promotion_payload"]["error"] == "promotion command succeeded but produced no current summary_json or validated outputs"
     assert result["promotion_payload"]["path"] == str(summary)
+    assert "summary_json_missing" in result["promotion_payload"]["promotion_failure_reasons"]
+    assert result["promotion_payload"]["diagnostic_summary"]["summary_json_verified"] is False
+    assert "PROMOTION_DIAGNOSTICS" in Path(result["promotion_log"]).read_text()
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT status, payload_json FROM promotion_results WHERE run_id = ?", ("candidate",)).fetchone()
     assert row[0] == "FAILED"
-    assert json.loads(row[1])["error"] == "promotion command succeeded but produced no current summary_json or validated outputs"
+    payload = json.loads(row[1])
+    assert payload["error"] == "promotion command succeeded but produced no current summary_json or validated outputs"
+    assert "summary_json_missing" in payload["promotion_failure_reasons"]
 
 
 def test_automated_promotion_rejects_stale_summary_without_outputs(tmp_path, monkeypatch):
@@ -128,6 +133,14 @@ def test_automated_promotion_fails_when_reported_outputs_are_missing(tmp_path, m
 
     assert result["automation_status"] == "FAILED"
     assert result["promotion_payload"]["missing_outputs"] == [str(missing)]
+    assert "reported_artifact_path_not_found" in result["promotion_payload"]["promotion_failure_reasons"]
+    assert result["promotion_payload"]["diagnostic_summary"]["artifacts_verified"] is False
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT payload_json FROM promotion_results WHERE run_id = ?", ("candidate",)).fetchone()
+    payload = json.loads(row[0])
+    assert payload["missing_outputs"] == [str(missing)]
+    assert "reported_artifact_path_not_found" in payload["promotion_failure_reasons"]
 
 
 def test_automated_promotion_fails_incomplete_full_tile_outputs(tmp_path, monkeypatch):
