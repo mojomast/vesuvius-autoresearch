@@ -5,9 +5,11 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
+import experiments.runner as runner
 from experiments.runner import (
     _check_extra_train_fold_safety,
     _enforce_run_profile,
@@ -81,6 +83,50 @@ class RunnerValidationTest(unittest.TestCase):
 
         cfg["autoresearch"]["heldout_segment"] = "seg-a"
         _enforce_run_profile(cfg)
+
+    def test_exploration_profile_defaults_are_written_to_artifact_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            train = root / "train.npz"
+            val = root / "val.npz"
+            images = np.zeros((4, 1, 8, 8), dtype=np.float32)
+            labels = np.zeros((4, 1, 8, 8), dtype=np.float32)
+            labels[:, :, 2:4, 2:4] = 1.0
+            np.savez_compressed(train, images=images, labels=labels)
+            np.savez_compressed(val, images=images, labels=labels)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                "autoresearch:\n  run_profile: exploration\n"
+                "model:\n  name: tiny_numpy_ink_logreg\n"
+                "dataset:\n  patch_size: 8\n"
+                f"  train_npz: {train}\n  val_npz: {val}\n"
+                "training:\n  epochs: 1\n  max_train_pixels: 1000\n"
+                "evaluation:\n  main_metric: val_f1\n  threshold: 0.5\n"
+            )
+            db_path = root / "experiments.db"
+            runs_dir = root / "runs"
+
+            with patch.object(runner, "RUNS_DIR", runs_dir):
+                result = run_experiment(config_path, db_path=db_path)
+
+            artifact_config = json.loads((Path(result["artifact_dir"]) / "config.json").read_text())
+
+        self.assertFalse(artifact_config["training"]["augment_flips"])
+        self.assertFalse(artifact_config["evaluation"]["tta_flips"])
+
+    def test_promotion_profile_preserves_explicit_heavy_options(self) -> None:
+        cfg = {
+            "autoresearch": {"run_profile": "promotion", "heldout_segment": "seg-a"},
+            "model": {"name": "tiny_torch_unet"},
+            "training": {"epochs": 12, "max_train_samples": 4096, "seeds": [1, 2], "augment_flips": True},
+            "evaluation": {"tta_flips": True},
+        }
+
+        _enforce_run_profile(cfg)
+
+        self.assertEqual(cfg["training"]["epochs"], 12)
+        self.assertEqual(cfg["training"]["seeds"], [1, 2])
+        self.assertTrue(cfg["evaluation"]["tta_flips"])
 
     def test_extra_train_npzs_are_concatenated_and_counted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

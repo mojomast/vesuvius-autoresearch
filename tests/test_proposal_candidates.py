@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import autoresearch
-from autoresearch import PARAM_BOUNDS, _apply_candidate, _config_cost_tier, _generate_promotion_action_proposals, _mutation_family, _proposal_candidates, _proposal_plan, _proposal_value_slug, _search_signature
+from autoresearch import PARAM_BOUNDS, _apply_candidate, _config_cost_tier, _generate_promotion_action_proposals, _max_allowed_cost_tier, _mutation_family, _proposal_candidates, _proposal_plan, _proposal_value_slug, _search_signature
 
 
 def _assert_candidates_within_bounds(config):
@@ -180,9 +180,16 @@ def test_proposal_value_slug_is_filesystem_safe_for_lists():
 
 def test_config_cost_tier_classifies_simple_and_heavy_configs():
     assert _config_cost_tier({"model": {"name": "tiny_numpy_ink_logreg"}, "training": {"max_train_pixels": 200000}}) == "cheap"
+    assert _config_cost_tier({"model": {"name": "tiny_numpy_mlp"}, "training": {"epochs": 5, "max_train_pixels": 500000}}) == "normal"
     assert _config_cost_tier({"model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 1024}}) == "normal"
     assert _config_cost_tier({"model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 4096}}) == "expensive"
-    assert _config_cost_tier({"model": {"name": "tiny_torch_unet"}, "training": {"seeds": [1, 2], "max_train_samples": 1024}}) == "expensive"
+    assert _config_cost_tier({"model": {"name": "residual_25d_torch_unet"}, "training": {"seeds": [1, 2], "max_train_samples": 1024}, "evaluation": {"tta_flips": True}}) == "expensive"
+
+
+def test_invalid_max_cost_tier_fails_closed_to_normal(monkeypatch):
+    monkeypatch.setenv("AUTORESEARCH_MAX_COST_TIER", "surprise")
+
+    assert _max_allowed_cost_tier() == "normal"
 
 
 def test_promotion_action_proposals_include_cost_tier_metadata(monkeypatch):

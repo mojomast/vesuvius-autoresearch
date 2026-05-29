@@ -414,7 +414,8 @@ def _config_cost_tier(cfg: Dict[str, Any]) -> str:
 def _max_allowed_cost_tier(allow_expensive: bool = False) -> str:
     if allow_expensive:
         return "expensive"
-    return os.environ.get("AUTORESEARCH_MAX_COST_TIER", "normal").lower()
+    tier = os.environ.get("AUTORESEARCH_MAX_COST_TIER", "normal").lower()
+    return tier if tier in COST_TIER_ORDER else "normal"
 
 
 def _cost_tier_allowed(tier: str, *, allow_expensive: bool = False) -> bool:
