@@ -89,6 +89,7 @@ Metric interpretation:
 - `average_precision` measures ranking quality across thresholds. Its random baseline is approximately the positive-label prevalence. AP around `0.09` on a segment with `0.05` prevalence is useful signal; AP around `0.10` on `0.087` prevalence is only a small lift.
 - `fixed_threshold_f1` at `0.5` is currently diagnostic only. Recent calibrated full-tile panels often have `fixed_threshold_f1=0.0` because probability maxima are below `0.5`; best operating thresholds are selected by sweep and positive-rate constraints near `0.28-0.34`.
 - `prratio2p5` is the intermediate safety setting when `2.0x` loses too much recall but still avoids the floodier `3.0x`/`3.5x` range. `prratio3` is stricter than `3.5x` while recovering more recall than `2.5x`. The original `4x` cap remains a recall/F1 reference, not a default promotion target when full-tile runs ride the cap.
+- AutoResearch now treats `evaluation.max_pred_positive_rate_ratio` and `training.positive_rate_loss_tolerance` as first-class search dimensions so future proposals can test the `2.5-3.0` cap band and tighter residual positive-rate tolerances without one-off config edits.
 
 ## 4. TTA And Seed Ensembling
 
@@ -124,5 +125,6 @@ Minimum config intent:
 - `model.input_mode: z_offsets_as_channels`.
 - `dataset.z_offsets` matching the preparation command.
 - LOO seed-repeat promotion before comparing against champions.
+- For residual CPU searches, `max_train_samples: 4096` has stronger local LOO evidence than the stricter `2048/2.0x` path; enable it only when the sample budget is explicit and promotion checks remain fold-safe.
 
 Use `configs/next_best_moves_robust_template.yaml` as the planning template, and keep runnable experiments tied to model names supported by the current training and inference entry points.

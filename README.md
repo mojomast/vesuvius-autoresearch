@@ -69,7 +69,8 @@ SQLite state is initialized by `experiments.runner.init_db`: `experiments` store
 | `dataset` | `research_scope`, `validation_mode` | Search and promotion scope labels. |
 | `model` | `name`, `base_channels`, `depth` | Model family and capacity controls. |
 | `training` | `learning_rate`, `weight_decay`, `pos_weight`, `epochs` | Mutable optimizer/loss parameters clamped by `PARAM_BOUNDS`. |
-| `evaluation` | `main_metric`, `threshold` | Main scoring metric and fixed-threshold diagnostic. |
+| `training` | `positive_rate_loss_weight`, `positive_rate_loss_tolerance`, `max_train_samples` | Positive-rate calibration and sample-budget controls; AutoResearch can propose the recent 4096-sample residual setting when the configured sample cap permits it. |
+| `evaluation` | `main_metric`, `threshold`, `max_pred_positive_rate_ratio` | Main scoring metric, fixed-threshold diagnostic, and positive-rate cap; proposal search includes the evidence-backed `2.5-3.0` cap band. |
 | `autoresearch` | `scope_policy`, `promotable`, `promotion_required` | Search metadata and promotion gating intent. |
 | `outputs` | `runs_dir` | Experiment artifact root. |
 

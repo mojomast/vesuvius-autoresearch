@@ -49,6 +49,7 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - Treat a ready gate as the start of review, not the end: run full-tile diagnostics on the linked LOO weakest fold before claiming Scroll Prize robustness.
 - Use `scripts/evaluate_leave_one_out.py --jobs N` for seed-repeat LOO throughput only when resources allow; jobs are independent process workers and parent-only JSONL output preserves reproducibility.
 - Let stale generated `configs/auto_*` reservations expire so killed exploratory configs do not permanently suppress useful ideas; completed DB runs remain reserved evidence.
+- Prefer evidence-backed calibration/search moves over blind local sweeps: positive-rate cap proposals should cover the `2.5-3.0` band, positive-rate loss tolerance should remain bounded, and `4096`-sample residual proposals require an explicit sample budget.
 
 ## Promotion Gate
 

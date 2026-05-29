@@ -54,6 +54,7 @@ SEARCH_PATHS = (
     ("training", "sample_positive_fraction"),
     ("training", "dice_loss_weight"),
     ("training", "positive_rate_loss_weight"),
+    ("training", "positive_rate_loss_tolerance"),
     ("training", "tversky_loss_weight"),
     ("training", "tversky_alpha"),
     ("training", "tversky_beta"),
@@ -65,6 +66,7 @@ SEARCH_PATHS = (
     ("training", "sampling_strategy"),
     ("training", "hard_negative_fraction"),
     ("evaluation", "threshold"),
+    ("evaluation", "max_pred_positive_rate_ratio"),
     ("evaluation", "tta_flips"),
 )
 SIGNATURE_DEFAULTS = {
@@ -87,6 +89,7 @@ SIGNATURE_DEFAULTS = {
     ("training", "sample_positive_fraction"): None,
     ("training", "dice_loss_weight"): None,
     ("training", "positive_rate_loss_weight"): None,
+    ("training", "positive_rate_loss_tolerance"): None,
     ("training", "tversky_loss_weight"): None,
     ("training", "tversky_alpha"): None,
     ("training", "tversky_beta"): None,
@@ -98,6 +101,7 @@ SIGNATURE_DEFAULTS = {
     ("training", "sampling_strategy"): None,
     ("training", "hard_negative_fraction"): None,
     ("evaluation", "threshold"): 0.5,
+    ("evaluation", "max_pred_positive_rate_ratio"): None,
     ("evaluation", "tta_flips"): None,
 }
 PIVOT_CONFIGS = (
@@ -114,15 +118,18 @@ PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "epochs"): (2.0, 20.0),
     ("training", "dice_loss_weight"): (0.0, 0.8),
     ("training", "positive_rate_loss_weight"): (0.0, 0.1),
+    ("training", "positive_rate_loss_tolerance"): (0.001, 0.05),
     ("training", "tversky_loss_weight"): (0.0, 0.5),
     ("training", "tversky_beta"): (0.1, 0.9),
     ("model", "base_channels"): (4.0, 16.0),
     ("training", "batch_size"): (2.0, 32.0),
-    ("training", "max_train_samples"): (1.0, 2048.0),
+    ("training", "max_train_samples"): (1.0, 4096.0),
     ("model", "depth"): (1.0, 3.0),
     ("model", "hidden_units"): (8.0, 96.0),
     ("training", "max_train_pixels"): (100000.0, 1200000.0),
     ("training", "sample_positive_fraction"): (0.05, 0.95),
+    ("training", "hard_negative_fraction"): (0.1, 0.9),
+    ("evaluation", "max_pred_positive_rate_ratio"): (1.5, 3.5),
 }
 
 
@@ -274,6 +281,16 @@ def _bounded_candidates(candidates: list[tuple[Tuple[str, ...], Any, str]]) -> l
     return [(path, _clamp_param(path, value), reason) for path, value, reason in candidates]
 
 
+def _proposal_value_slug(value: Any) -> str:
+    """Return a filesystem-safe short slug for generated proposal names."""
+    if isinstance(value, list):
+        text = f"{len(value)}items"
+    else:
+        text = str(value).replace(".", "p")
+    slug = "".join(ch if ch.isalnum() or ch in {"_", "-", "p"} else "_" for ch in text)
+    return slug[:80]
+
+
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
     if path == ("model", "depth") and isinstance(value, int) and value > 3:
         return 3
@@ -366,6 +383,9 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         max_train_samples = int(_get_nested(base, ("training", "max_train_samples"), 512) or 0)
         dice = float(_get_nested(base, ("training", "dice_loss_weight"), 0.0) or 0.0)
         prloss = float(_get_nested(base, ("training", "positive_rate_loss_weight"), 0.0) or 0.0)
+        prtol = float(_get_nested(base, ("training", "positive_rate_loss_tolerance"), 0.02) or 0.02)
+        pred_ratio_cap = float(_get_nested(base, ("evaluation", "max_pred_positive_rate_ratio"), 3.0) or 3.0)
+        sampling_strategy = _get_nested(base, ("training", "sampling_strategy"), None)
         augment_flips = bool(_get_nested(base, ("training", "augment_flips"), False))
         tta_flips = bool(_get_nested(base, ("evaluation", "tta_flips"), False))
         bounded_samples = max_train_samples if max_train_samples > 0 else 1024
@@ -376,10 +396,14 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), "increase Dice weight to test ink-recall stability"),
             (("training", "positive_rate_loss_weight"), round(max(0.0, prloss - 0.02), 4), "reduce positive-rate loss weight to test probability calibration spread"),
             (("training", "positive_rate_loss_weight"), round(min(0.1, prloss + 0.02), 4), "increase positive-rate loss weight to tighten prediction rate toward the cap"),
+            (("training", "positive_rate_loss_tolerance"), round(max(0.001, prtol * 0.5), 4), "tighten positive-rate loss tolerance using recent promotion-ready residual evidence"),
+            (("training", "positive_rate_loss_tolerance"), round(min(0.05, prtol * 1.5), 4), "relax positive-rate loss tolerance to recover F1 when ranking is strong"),
             (("training", "tversky_loss_weight"), 0.15, "add a light Tversky term to test recall/precision balance on the current robust base"),
             (("training", "tversky_beta"), 0.8, "bias Tversky toward false-negative reduction for rare ink recall"),
             (("training", "sampling_strategy"), "hard_mining", "try hard-negative mining to improve precision against textured non-ink"),
             (("evaluation", "threshold"), 0.35, "evaluate a calibrated fixed threshold closer to recent swept-F1 optima"),
+            (("evaluation", "max_pred_positive_rate_ratio"), 2.5 if pred_ratio_cap >= 3.0 else 3.0, "test positive-rate cap in the 2.5-3.0 band that retained F1 in recent cap sweeps"),
+            (("evaluation", "max_pred_positive_rate_ratio"), 3.0 if pred_ratio_cap < 3.0 else 3.5, "test a slightly looser positive-rate cap when AP lift is strong but strict caps suppress F1"),
             (("model", "base_channels"), max(4, base_channels // 2), "smaller torch U-Net width for faster regularized CPU search"),
             (("model", "base_channels"), min(16, base_channels * 2), "larger torch U-Net width to test capacity without changing data scope"),
             (("training", "epochs"), max(2, epochs - 1), "shorter torch training to test overfit/probability inflation"),
@@ -390,8 +414,13 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("evaluation", "tta_flips"), not tta_flips, "toggle test-time flip TTA to measure ensemble-like lift"),
             (("training", "seed"), seed + 17, "repeat torch setup with a deterministic seed change"),
         ]
-        if max_train_samples and max_train_samples < 2048 and int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024")) >= 2048:
+        if sampling_strategy == "hard_mining":
+            candidates.append((("training", "hard_negative_fraction"), 0.85, "raise hard-negative fraction toward recent precision-oriented residual configs"))
+        sample_cap = int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024"))
+        if max_train_samples and max_train_samples < 2048 and sample_cap >= 2048:
             candidates.append((("training", "max_train_samples"), 2048, "increase robust torch sample budget after local hyperparameter plateau"))
+        if max_train_samples and max_train_samples < 4096 and sample_cap >= 4096:
+            candidates.append((("training", "max_train_samples"), 4096, "increase robust torch sample budget to the recent 4096-sample residual setting with stronger LOO evidence"))
         return _bounded_candidates(candidates)
 
     depth = int(_get_nested(base, ("model", "depth"), 2))
@@ -427,13 +456,13 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
 def _mutation_family(path: Tuple[str, ...]) -> str:
     if path in {("training", "learning_rate"), ("training", "weight_decay"), ("training", "epochs"), ("training", "batch_size")}:
         return "optimizer"
-    if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "positive_rate_loss_weight"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
+    if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "positive_rate_loss_weight"), ("training", "positive_rate_loss_tolerance"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
         return "loss_calibration"
     if path in {("training", "sampling_strategy"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips")}:
         return "data_sampling"
     if path in {("model", "name"), ("model", "input_mode"), ("model", "base_channels"), ("model", "depth"), ("model", "hidden_units")}:
         return "model_family"
-    if path in {("evaluation", "threshold"), ("evaluation", "tta_flips")}:
+    if path in {("evaluation", "threshold"), ("evaluation", "max_pred_positive_rate_ratio"), ("evaluation", "tta_flips")}:
         return "inference_calibration"
     if path in {("training", "seed"), ("training", "seeds"), ("training", "deterministic")}:
         return "replication"
@@ -491,7 +520,7 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         if strategy_phase:
             autoresearch["strategy_phase"] = strategy_phase
         autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
-        name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
+        name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
         proposals.append((name, cfg, reason))
         used_families.add(family)
         if len(proposals) >= count:
@@ -1027,6 +1056,7 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
     seen: set[Tuple[Any, ...]] = set()
 
     def _make_proposal(path: Tuple[str, ...], value: Any, reason: str) -> Tuple[str, Dict[str, Any], str] | None:
+        value = _clamp_param(path, value)
         cfg = copy.deepcopy(base)
         cfg.pop("resolved_data", None)
         cfg.pop("validation_setup", None)
@@ -1051,7 +1081,7 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
         autoresearch["proposal_status"] = "generated"
         autoresearch["changed_path"] = ".".join(path)
         autoresearch["mutation_family"] = _mutation_family(path)
-        name = f"auto_{stamp}_promotion_{action_id}_{len(proposals)+1}_{'_'.join(path)}_{str(value).replace('.', 'p')}.yaml"
+        name = f"auto_{stamp}_promotion_{action_id}_{len(proposals)+1}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
         return (name, cfg, reason)
 
     if action_id == "calibrate_probability_scale":
