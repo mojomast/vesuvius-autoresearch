@@ -1243,6 +1243,27 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
     return None
 
 
+def _auto_execute_ready_payload_command(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Run a dashboard-provided promotion evidence command when explicitly enabled."""
+    if os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") != "1":
+        return None
+    command = payload.get("command")
+    if not command:
+        return None
+    if payload.get("safe_to_execute_from_dashboard") is False:
+        return {"automation_status": "SKIPPED_UNSAFE_COMMAND"}
+    try:
+        command_args = shlex.split(str(command))
+    except ValueError as exc:
+        return {"automation_status": "SKIPPED_INVALID_COMMAND", "automation_error": str(exc)}
+    if not command_args:
+        return None
+    candidate_run_id = str(payload.get("candidate_run_id") or payload.get("action_id") or "promotion_ready")
+    timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
+    summary_json = LOGS / f"{candidate_run_id}_promotion_action.summary.json"
+    return _run_automated_promotion(command_args, candidate_run_id, summary_json, timeout)
+
+
 def _promotion_ready_message() -> str | None:
     payload = _promotion_ready_payload()
     if not payload:
@@ -1373,9 +1394,14 @@ def main() -> int:
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
         ready_payload = harness.promotion_ready_payload()
         if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
+            automation_result = _auto_execute_ready_payload_command(ready_payload)
+            if automation_result:
+                ready_payload.update(automation_result)
             print(f"Promotion gate is ready; pausing exploration. Next action: {ready_payload.get('next_action')}", flush=True)
             if ready_payload.get("command"):
                 print(f"Command: {ready_payload['command']}", flush=True)
+            if ready_payload.get("automation_status"):
+                print(f"Automation status: {ready_payload['automation_status']}", flush=True)
             return 0
         manual_payload = harness.promotion_phase_manual_action(runs)
         if manual_payload:

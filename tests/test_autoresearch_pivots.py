@@ -306,6 +306,32 @@ class AutoResearchPivotTest(unittest.TestCase):
 
         run_mock.assert_not_called()
 
+    def test_main_auto_executes_safe_promotion_ready_command(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "run1", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
+        payload = {
+            "status": "promotion_ready",
+            "next_action": "Run full-tile evidence",
+            "candidate_run_id": "run1",
+            "action_id": "weak_fold_full_tile",
+            "command": ".venv/bin/python scripts/infer_full_tile.py --artifact experiments/runs/run1 --segment-id 20230530172803",
+            "safe_to_execute_from_dashboard": True,
+            "proposals": [],
+        }
+
+        with patch.dict("os.environ", {"AUTORESEARCH_AUTO_PROMOTE": "1", "AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS": "222"}, clear=False), \
+            patch("sys.argv", ["autoresearch.py"]), \
+            patch("autoresearch._recent_runs", return_value=[run]), \
+            patch("autoresearch._promotion_ready_payload", return_value=payload), \
+            patch("autoresearch._run_automated_promotion", return_value={"automation_status": "SUCCEEDED"}) as promote_mock:
+            self.assertEqual(autoresearch.main(), 0)
+
+        command_args = promote_mock.call_args.args[0]
+        self.assertEqual(command_args[:2], [".venv/bin/python", "scripts/infer_full_tile.py"])
+        self.assertIn("--segment-id", command_args)
+        self.assertEqual(promote_mock.call_args.args[1], "run1")
+        self.assertEqual(promote_mock.call_args.args[3], 222)
+
     def test_main_generates_proposals_for_calibrate_probability_scale(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
         run = {"run_id": "candidate", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
