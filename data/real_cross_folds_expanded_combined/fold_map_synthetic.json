@@ -1,0 +1,10 @@
+{
+  "20230520175435": {
+    "train_npz": "data/real_cross/segment_20230827161847/train.npz",
+    "val_npz": "data/real_cross/segment_20230520175435/val.npz"
+  },
+  "20230827161847": {
+    "train_npz": "data/real_cross/segment_20230520175435/val.npz",
+    "val_npz": "data/real_cross/segment_20230827161847/train.npz"
+  }
+}
