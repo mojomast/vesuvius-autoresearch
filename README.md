@@ -71,7 +71,7 @@ SQLite state is initialized by `experiments.runner.init_db`: `experiments` store
 
 ## Harness Extension
 
-The harness layer lives in `harness/`. Implement `ResearchHarness` from `harness/base.py` to pivot this project toward another ScrollPrize research loop while keeping the same propose/evaluate/promote lifecycle. See `harness/README.md` for the minimal interface and `harness/vesuvius_harness.py` for the adapter over current Vesuvius logic.
+The harness layer lives in `harness/`. Implement `ResearchHarness` from `harness/base.py` to pivot this project toward another ScrollPrize research loop while keeping the same propose/evaluate/promote lifecycle. See [`harness/README.md`](harness/README.md) for the minimal interface and `harness/vesuvius_harness.py` for the adapter over current Vesuvius logic.
 
 ## Cron And CI
 

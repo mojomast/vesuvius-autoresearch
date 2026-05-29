@@ -27,8 +27,22 @@ def test_research_harness_interface_with_mock():
     assert harness.should_promote(result, []) is True
 
 
+def test_research_harness_requires_four_lifecycle_methods():
+    assert ResearchHarness.__abstractmethods__ == {
+        "propose_next_experiment",
+        "evaluate_experiment",
+        "should_promote",
+        "on_promotion",
+    }
+
+
 def test_vesuvius_harness_instantiates():
     harness = VesuviusHarness()
 
     assert harness.harness_type == "vesuvius"
     assert harness.autoresearch is not None
+
+
+def test_vesuvius_harness_implements_lifecycle_methods():
+    for name in ResearchHarness.__abstractmethods__:
+        assert callable(getattr(VesuviusHarness, name))
