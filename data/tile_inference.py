@@ -614,11 +614,12 @@ def _promotion_checks(cfg: dict[str, Any], segment_id: str) -> dict[str, Any]:
     val_segment = str(setup.get("val_segment_id") or val_meta.get("segment_id") or "")
     mode = str(setup.get("mode") or cfg.get("dataset", {}).get("validation_mode") or "unknown")
     warnings = []
-    if (train_segment and train_segment == str(segment_id)) or str(segment_id) in train_segments:
+    segment_is_training = (train_segment and train_segment == str(segment_id)) or str(segment_id) in train_segments
+    if segment_is_training:
         warnings.append("inference segment matches training segment; treat as diagnostic-only")
     if mode not in {"cross-segment", "cross-scroll", "leave-one-segment-out"}:
         warnings.append(f"validation mode is {mode}; promotion requires held-out segment evidence")
-    if val_segment and val_segment != str(segment_id):
+    if val_segment and val_segment != str(segment_id) and (mode != "leave-one-segment-out" or segment_is_training):
         warnings.append("inference segment does not match recorded validation segment")
     return {
         "eligible": not warnings,

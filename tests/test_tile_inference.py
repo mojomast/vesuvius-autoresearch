@@ -365,6 +365,16 @@ class TileInferenceTest(unittest.TestCase):
         self.assertIn("training segment", " ".join(checks["warnings"]))
         self.assertEqual(checks["train_segments"], ["abc", "def"])
 
+    def test_promotion_checks_allow_leave_one_out_non_training_segment(self) -> None:
+        cfg = {
+            "validation_setup": {"mode": "leave-one-segment-out", "train_segments": ["abc", "def"], "val_segment_id": "ghi"}
+        }
+
+        checks = _promotion_checks(cfg, "xyz")
+
+        self.assertTrue(checks["eligible"])
+        self.assertEqual(checks["warnings"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
