@@ -392,12 +392,12 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         candidates = [
             (("training", "learning_rate"), round(max(0.0002, lr * 0.6), 6), "lower torch learning rate to test calibration on the current robust/residual base"),
             (("training", "learning_rate"), round(min(0.006, lr * 1.5), 6), "raise torch learning rate modestly to test convergence-limited behavior"),
-            (("training", "dice_loss_weight"), round(max(0.0, dice - 0.15), 4), "reduce Dice weight to test whether BCE precision improves"),
-            (("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), "increase Dice weight to test ink-recall stability"),
-            (("training", "positive_rate_loss_weight"), round(max(0.0, prloss - 0.02), 4), "reduce positive-rate loss weight to test probability calibration spread"),
-            (("training", "positive_rate_loss_weight"), round(min(0.1, prloss + 0.02), 4), "increase positive-rate loss weight to tighten prediction rate toward the cap"),
             (("training", "positive_rate_loss_tolerance"), round(max(0.001, prtol * 0.5), 4), "tighten positive-rate loss tolerance using recent promotion-ready residual evidence"),
             (("training", "positive_rate_loss_tolerance"), round(min(0.05, prtol * 1.5), 4), "relax positive-rate loss tolerance to recover F1 when ranking is strong"),
+            (("training", "positive_rate_loss_weight"), round(max(0.0, prloss - 0.02), 4), "reduce positive-rate loss weight to test probability calibration spread"),
+            (("training", "positive_rate_loss_weight"), round(min(0.1, prloss + 0.02), 4), "increase positive-rate loss weight to tighten prediction rate toward the cap"),
+            (("training", "dice_loss_weight"), round(max(0.0, dice - 0.15), 4), "reduce Dice weight to test whether BCE precision improves"),
+            (("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), "increase Dice weight to test ink-recall stability"),
             (("training", "tversky_loss_weight"), 0.15, "add a light Tversky term to test recall/precision balance on the current robust base"),
             (("training", "tversky_beta"), 0.8, "bias Tversky toward false-negative reduction for rare ink recall"),
             (("training", "sampling_strategy"), "hard_mining", "try hard-negative mining to improve precision against textured non-ink"),
@@ -696,7 +696,7 @@ def _strategy_phase(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     next_action = _promotion_next_action(best_recent)
     if plateau and next_action != "continue_exploration":
         phase = "promote"
-        families = {"replication", "inference_calibration"}
+        families = {"replication", "inference_calibration", "loss_calibration"}
     elif plateau:
         phase = "diversify"
         families = {"loss_calibration", "data_sampling", "model_family", "inference_calibration"}

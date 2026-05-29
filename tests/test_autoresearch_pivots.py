@@ -117,6 +117,8 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertTrue(strategy["plateau"])
         self.assertIn(strategy["phase"], {"diversify", "promote"})
         self.assertTrue(strategy["required_families"])
+        if strategy["phase"] == "promote":
+            self.assertIn("loss_calibration", strategy["required_families"])
 
     def test_plateau_proposals_use_distinct_mutation_families(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
