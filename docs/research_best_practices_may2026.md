@@ -26,7 +26,7 @@ This repo should optimize for reproducible cross-segment ink detection, not isol
 3. Continue threshold-calibrated inference on full validation tiles, because per-pixel F1 on sampled patches can overstate real segment utility. Seed-repeat LOO now exists for `robust_calibrated_prloss_w0p03_lr0012_prratio3` and `prratio3p5`; next work should improve calibration rather than emit more local F1 micro-sweeps.
 4. Add uncertainty checks: seed ensembles, test-time flip averaging, per-fold probability calibration, prediction-rate alarms, Brier score, expected calibration error, and AP/prevalence lift.
 5. Add model families that are still small but closer to winning approaches: 2.5D residual U-Net with more z offsets and optional pretrained encoders when GPU is available.
-6. Add dataset diagnostics: positive coverage maps, train/val region plots, and segment-level metadata summaries.
+6. Add dataset diagnostics: positive coverage maps, train/val region plots, segment-level metadata summaries, and validation-strip positive-coverage checks.
 7. Compare against public Grand Prize and Kaggle-style baselines before investing in larger sweeps.
 
 See `docs/next_best_moves_may2026.md` for command examples and promotion checks for seed-repeat LOO, safe data expansion, full-tile inference, TTA/seed ensembling, and 2.5D residual U-Net work.
@@ -36,6 +36,8 @@ See `docs/next_best_moves_may2026.md` for command examples and promotion checks 
 The `promotion_checks.eligible=false` root cause for `20260529T005819Z_28af43a2` was spatial provenance, not the full-tile metric values. Prepared NPZ metadata did not record `source_segments` or `spatial_overlap_checked`, and the robust generated configs pointed at `all_segments/train.npz`, which can include the nominal validation segment. That made full-tile inference diagnostic-only once provenance was inspected.
 
 The fix records `source_segments`, `provenance`, `spatial_overlap_checked`, `val_stride`, `z_offsets`, and spatial bounding boxes next to prepared NPZs. Combined train NPZs now preserve `train_segments`, and robust configs use leave-one-out train NPZs rather than `all_segments/train.npz`. Leave-one-out full-tile checks are eligible for any non-training held-out segment, while training-segment leakage is still rejected.
+
+The follow-up validation-strip fix prevents tiled held-out validation regions from being empty-positive when the source segment contains ink positives. This turned the prior zero-F1 LOO collapse into measurable but still weak fold performance: `20260529T021416Z_570f6775` removed all zero precision/recall folds and reached three-seed median-over-seeds median `val_f1=0.1109`, but still did not promote because of fold-level positive-rate alarms.
 
 ## Results To Date
 
@@ -49,12 +51,15 @@ Post-fix positive-rate calibration batch, run on 2026-05-29:
 | `20260529T011645Z_20f27abf` | 0.3783 | 0.2621 | 0.3839 | not run | not run | not run | not assessed | diagnostic |
 | `20260529T013717Z_27879bc4` | 0.4291 | 0.3506 | 0.4161 | 0.0766 | 0.2129 | 0.1423 | false | diagnostic |
 | `20260529T014355Z_5fc7c1ca` | 0.4258 | 0.2638 | 0.4153 | 0.0766 | 0.2168 | 0.1434 | false | do not promote |
+| `20260529T021416Z_570f6775` | 0.4071 | 0.2998 | 0.4149 | 0.1109 | 0.2279 | 0.1509 | false | do not promote |
 
 The selected LOO candidate was `20260529T005819Z_28af43a2` because its pred/val positive-rate ratio was below 3.5. Its seed-repeat LOO summary reported mean AP `0.1196` and worst fold `20230522181603` at `val_f1=0.0426`. Full-tile inference improved the validation-segment comparison against the previous contract-compliant sampled DB row (`val_f1=0.2187` vs `0.1462`, AP `0.1463` vs `0.1151`) and kept both full-tile pred/val ratios below `3.5`, but promotion was rejected because `promotion_checks.eligible=false` on both full-tile segments due `spatial-same-segment` artifact provenance.
 
 Post-decision sweeps confirmed the planner now exercises both requested axes: `20260529T011256Z_375c2944` tested `max_pred_positive_rate_ratio=2.5`, and `20260529T011645Z_20f27abf` tested `positive_rate_loss_tolerance=0.01` with `max_pred_positive_rate_ratio=3.0`. Treat these as diagnostic until LOO/full-tile promotion lineage is available.
 
 Clean-provenance retrains confirmed the original eligibility blocker is fixed. `20260529T014355Z_5fc7c1ca` excludes both key full-tile segments from training and has `promotion_checks.eligible=true` for `20230520175435` and `20230522181603`. It still should not promote: LOO `promotion_ready=false`, worst fold `20230530172803` has `val_f1=0.0`, and fixed-threshold diagnostics are weak.
+
+Validation-strip regeneration fixed the empty-positive held-out strips for `20230530172803`, `20230601193301`, and `20230611014200`. The retrained candidate `20260529T021416Z_570f6775` improved LOO median-over-seeds median to `0.1109` with no zero precision/recall folds, and full-tile checks remained eligible. It still should not promote because three-seed LOO reported positive-rate alarms on `20230522181603`, `20230522215721`, and `20230530212931`.
 
 ## Plateau Policy
 
@@ -76,6 +81,7 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - Let stale generated `configs/auto_*` reservations expire so killed exploratory configs do not permanently suppress useful ideas; completed DB runs remain reserved evidence.
 - Prefer evidence-backed calibration/search moves over blind local sweeps: positive-rate cap proposals should cover the `2.5-3.0` band, positive-rate loss tolerance should remain bounded, and `4096`-sample residual proposals require an explicit sample budget.
 - Promote-phase sweeps include loss calibration as well as inference calibration and replication so positive-rate tolerance proposals are not starved by family-diversity rules.
+- Empty-positive validation strips are a data-preparation failure, not model evidence. Regenerate the segment split or mark the fold diagnostic-only before interpreting zero-F1 LOO results.
 
 ## Promotion Gate
 

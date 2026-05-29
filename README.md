@@ -70,7 +70,7 @@ Current `python3 autoresearch.py --plan --json` state, redacted to omit local ab
 }
 ```
 
-The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Clean-provenance retrain `20260529T014355Z_5fc7c1ca` now has full-tile `promotion_checks.eligible=true` on both key segments, but promotion is still blocked by LOO `promotion_ready=false` and weak fixed-threshold diagnostics.
+The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Clean-provenance retrain `20260529T014355Z_5fc7c1ca` fixed full-tile provenance eligibility but exposed empty-positive validation strips. Strip-fix candidate `20260529T021416Z_570f6775` removed zero precision/recall LOO folds and reached three-seed median-over-seeds median `val_f1=0.1109`, but promotion is still blocked by positive-rate alarms.
 
 For continued diagnostic sweeps after promotion review is blocked, use `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1 AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` with `.venv/bin/python autoresearch.py`; promote-phase planning now includes loss-calibration proposals such as `training.positive_rate_loss_tolerance: 0.01` as well as the `2.5-3.0` positive-rate cap band.
 
@@ -128,6 +128,7 @@ Do not commit generated data, model weights, experiment databases, logs, full-ti
 
 - Optimize for rare-positive ink detection, not generic accuracy or loss alone.
 - Use cross-segment/cross-scroll validation when labeled real data exists. The installed `vesuvius` package catalog is stale, but the public Scroll 1 segment directory exposes 33 exact Zarr-plus-inklabel pairs, so `configs/baseline.yaml` now uses cross-segment validation.
+- Ensure validation strips contain positives when the source held-out segment contains ink; empty-positive held-out strips are a data-preparation artifact and must not be interpreted as model collapse.
 - Promote runs by threshold-swept `val_f1`; a lower loss that predicts no positive ink is not useful.
 - Log threshold diagnostics for every run in `metrics_by_threshold.csv` and inspect `best_threshold`, `average_precision`, `pred_positive_rate`, and probability quantiles before trusting a result.
 - Treat `evaluation.threshold: 0.50` as a diagnostic baseline, not a deployable operating point, until calibration evidence says otherwise. Recent full-tile runs have `fixed_threshold_f1=0.0` and selected thresholds around `0.28-0.34`.
