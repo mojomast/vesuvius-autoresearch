@@ -10,6 +10,8 @@ Seed-repeat LOO results from `logs/20260529T005819Z_28af43a2_seedrepeat_loo.summ
 
 Promotion decision on 2026-05-29: DO NOT PROMOTE. Full-tile inference completed for `20230520175435` and `20230522181603`, but both candidate full-tile results have `promotion_checks.eligible=false` because the artifact lineage records `spatial-same-segment` validation provenance. See `logs/promotion_evidence_28af43a2.md`.
 
+Clean-provenance follow-up on 2026-05-29: COMPLETE for dual-heldout retrain `20260529T014355Z_5fc7c1ca`. Full-tile `promotion_checks.eligible=true` now passes on both key segments, confirming the provenance blocker is fixed. Promotion remains rejected because seed-repeat LOO has `promotion_ready=false` with zero precision/recall on folds `20230530172803`, `20230601193301`, and `20230611014200`, and fixed-threshold diagnostics are weak. See `logs/promotion_evidence_20260529T014355Z_5fc7c1ca.md`.
+
 Run the same committed config through `scripts/evaluate_leave_one_out.py` for at least three seeds before promotion. Keep each seed as a separate config so `config.json`, `metrics.json`, and the LOO JSONL files remain reproducible.
 
 Promotion summary should report:
@@ -68,7 +70,14 @@ Status on 2026-05-29: COMPLETE for candidate `20260529T005819Z_28af43a2` on vali
 
 Hard-negative mining was not applied: the worst-fold full-tile pred/val ratio was `2.9641`, below the `3.5` flooding threshold, and `prob_p95=0.3535` was slightly above `best_threshold=0.3500`. The current blocker is promotion-ineligible provenance, not confirmed flooding.
 
-Next active milestone: keep TTA/seed-ensemble and positive-rate calibration sweeps diagnostic until a promotion-eligible held-out full-tile lineage is generated.
+Clean dual-heldout full-tile results from `20260529T014355Z_5fc7c1ca`:
+
+| Segment | val_f1 | val_f05 | AP | pred/val ratio | eligible |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 20230520175435 | 0.2168 | 0.1759 | 0.1434 | 2.9745 | true |
+| 20230522181603 | 0.1431 | 0.1110 | 0.0933 | 2.8938 | true |
+
+Next active milestone: curate or remove zero-positive validation folds from the expanded fold map, then rerun LOO with a probability-calibrated clean candidate.
 
 Patch-sampled F1 can overstate segment utility when validation patches are positive-biased. Promotion runs should use validation NPZs prepared with `--val-tiled --val-stride 64` so every candidate sees a uniform tile grid over the held-out validation region.
 
@@ -108,6 +117,7 @@ Metric interpretation:
 - `prratio2p5` is the intermediate safety setting when `2.0x` loses too much recall but still avoids the floodier `3.0x`/`3.5x` range. `prratio3` is stricter than `3.5x` while recovering more recall than `2.5x`. The original `4x` cap remains a recall/F1 reference, not a default promotion target when full-tile runs ride the cap.
 - AutoResearch now treats `evaluation.max_pred_positive_rate_ratio` and `training.positive_rate_loss_tolerance` as first-class search dimensions so future proposals can test the `2.5-3.0` cap band and tighter residual positive-rate tolerances without one-off config edits.
 - Promote-phase sweeps now include loss-calibration proposals before Dice-weight mutations so `positive_rate_loss_tolerance: 0.01` can be exercised even when plateau logic requires mutation-family diversity. The first tolerance-inclusive batch produced `20260529T011645Z_20f27abf` (`val_f1=0.3783`, AP `0.2621`, pred/val ratio `2.99`, tolerance `0.01`, cap `3.0`) and rejected unconstrained tolerance/TTA variants with pred/val ratios above `4.0` as unsafe.
+- The next continued batch produced `20260529T015215Z_89fc1bd7` (`val_f1=0.4287`, AP `0.2933`, pred/val `2.75`, positive-rate loss weight `0.02`), `20260529T015248Z_fca39d7a` (`val_f1=0.4287`, AP `0.2933`, fixed threshold `0.35` ok but fixed pred/val `3.73`), and `20260529T015318Z_98047893` (`val_f1=0.4254`, AP `0.3521`, pred/val `2.70`, positive-rate loss weight `0.05`). Treat them as diagnostic until clean full-tile/LOO evidence is available.
 
 ## 4. TTA And Seed Ensembling
 

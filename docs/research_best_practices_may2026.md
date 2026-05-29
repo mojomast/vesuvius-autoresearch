@@ -31,6 +31,12 @@ This repo should optimize for reproducible cross-segment ink detection, not isol
 
 See `docs/next_best_moves_may2026.md` for command examples and promotion checks for seed-repeat LOO, safe data expansion, full-tile inference, TTA/seed ensembling, and 2.5D residual U-Net work.
 
+## Data Provenance
+
+The `promotion_checks.eligible=false` root cause for `20260529T005819Z_28af43a2` was spatial provenance, not the full-tile metric values. Prepared NPZ metadata did not record `source_segments` or `spatial_overlap_checked`, and the robust generated configs pointed at `all_segments/train.npz`, which can include the nominal validation segment. That made full-tile inference diagnostic-only once provenance was inspected.
+
+The fix records `source_segments`, `provenance`, `spatial_overlap_checked`, `val_stride`, `z_offsets`, and spatial bounding boxes next to prepared NPZs. Combined train NPZs now preserve `train_segments`, and robust configs use leave-one-out train NPZs rather than `all_segments/train.npz`. Leave-one-out full-tile checks are eligible for any non-training held-out segment, while training-segment leakage is still rejected.
+
 ## Results To Date
 
 Post-fix positive-rate calibration batch, run on 2026-05-29:
@@ -41,10 +47,14 @@ Post-fix positive-rate calibration batch, run on 2026-05-29:
 | `20260529T005804Z_12a24594` | 0.3887 | 0.2473 | 0.4969 | not run | not run | not run | not assessed | unsafe ratio |
 | `20260529T005819Z_28af43a2` | 0.3740 | 0.2598 | 0.3839 | 0.1747 | 0.2187 | 0.1463 | true | do not promote |
 | `20260529T011645Z_20f27abf` | 0.3783 | 0.2621 | 0.3839 | not run | not run | not run | not assessed | diagnostic |
+| `20260529T013717Z_27879bc4` | 0.4291 | 0.3506 | 0.4161 | 0.0766 | 0.2129 | 0.1423 | false | diagnostic |
+| `20260529T014355Z_5fc7c1ca` | 0.4258 | 0.2638 | 0.4153 | 0.0766 | 0.2168 | 0.1434 | false | do not promote |
 
 The selected LOO candidate was `20260529T005819Z_28af43a2` because its pred/val positive-rate ratio was below 3.5. Its seed-repeat LOO summary reported mean AP `0.1196` and worst fold `20230522181603` at `val_f1=0.0426`. Full-tile inference improved the validation-segment comparison against the previous contract-compliant sampled DB row (`val_f1=0.2187` vs `0.1462`, AP `0.1463` vs `0.1151`) and kept both full-tile pred/val ratios below `3.5`, but promotion was rejected because `promotion_checks.eligible=false` on both full-tile segments due `spatial-same-segment` artifact provenance.
 
 Post-decision sweeps confirmed the planner now exercises both requested axes: `20260529T011256Z_375c2944` tested `max_pred_positive_rate_ratio=2.5`, and `20260529T011645Z_20f27abf` tested `positive_rate_loss_tolerance=0.01` with `max_pred_positive_rate_ratio=3.0`. Treat these as diagnostic until LOO/full-tile promotion lineage is available.
+
+Clean-provenance retrains confirmed the original eligibility blocker is fixed. `20260529T014355Z_5fc7c1ca` excludes both key full-tile segments from training and has `promotion_checks.eligible=true` for `20230520175435` and `20230522181603`. It still should not promote: LOO `promotion_ready=false`, worst fold `20230530172803` has `val_f1=0.0`, and fixed-threshold diagnostics are weak.
 
 ## Plateau Policy
 

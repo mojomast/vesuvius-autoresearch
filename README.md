@@ -70,7 +70,7 @@ Current `python3 autoresearch.py --plan --json` state, redacted to omit local ab
 }
 ```
 
-The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key.
+The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Clean-provenance retrain `20260529T014355Z_5fc7c1ca` now has full-tile `promotion_checks.eligible=true` on both key segments, but promotion is still blocked by LOO `promotion_ready=false` and weak fixed-threshold diagnostics.
 
 For continued diagnostic sweeps after promotion review is blocked, use `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1 AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` with `.venv/bin/python autoresearch.py`; promote-phase planning now includes loss-calibration proposals such as `training.positive_rate_loss_tolerance: 0.01` as well as the `2.5-3.0` positive-rate cap band.
 
