@@ -31,7 +31,6 @@ def test_dashboard_snapshot_renders_harness_and_promotion_state(tmp_path):
     }
     with sqlite3.connect(db_path) as conn:
         conn.execute("INSERT INTO experiments(run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir,config_signature) VALUES (?,?,?,?,?,?,?)", ("run-1", "2026-05-28T00:00:00+00:00", json.dumps(config), 0.2, json.dumps(metrics), str(tmp_path / "runs" / "run-1"), "sig"))
-        conn.execute("CREATE TABLE promotion_results(run_id TEXT, timestamp TEXT, status TEXT, payload_json TEXT)")
         conn.execute("INSERT INTO promotion_results VALUES (?,?,?,?)", ("run-1", "2026-05-28T00:01:00+00:00", "FAILED", json.dumps({"log_file": "logs/promotion.log", "error": "mock"})))
 
     snapshot = build_snapshot(tmp_path, use_cache=False)

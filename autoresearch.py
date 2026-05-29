@@ -699,16 +699,6 @@ def _record_promotion_status(run_id: str, status: str, payload: Dict[str, Any] |
     init_db(DB_PATH)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS promotion_results (
-                run_id TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                status TEXT NOT NULL,
-                payload_json TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
             "INSERT INTO promotion_results(run_id, timestamp, status, payload_json) VALUES (?, ?, ?, ?)",
             (run_id, datetime.now(timezone.utc).isoformat(), status, json.dumps(payload or {}, sort_keys=True)),
         )

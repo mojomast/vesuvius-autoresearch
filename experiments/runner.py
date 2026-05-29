@@ -141,6 +141,7 @@ def _load_training_arrays(train_npz: str, cfg: Dict[str, Any]) -> tuple[np.ndarr
 
 
 def init_db(db_path: Path | str = DB_PATH) -> None:
+    """Create the experiments database tables: experiments and promotion_results."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect_experiments_db(db_path) as conn:
@@ -160,6 +161,16 @@ def init_db(db_path: Path | str = DB_PATH) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_metric ON experiments(main_metric)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_timestamp ON experiments(timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_config_signature ON experiments(config_signature)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promotion_results (
+                run_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
 
 
 def _existing_run_for_signature(config_signature: str, db_path: Path | str = DB_PATH) -> Dict[str, Any] | None:

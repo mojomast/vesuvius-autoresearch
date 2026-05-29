@@ -55,6 +55,8 @@ flowchart TD
 
 The core loop is intentionally local and inspectable: it initializes the active harness before pruning generated configs, reads experiment rows from SQLite, validates metric keys, checks promotion evidence, proposes one-change configs through bounded mutation logic, and executes the standard experiment runner. Harness import errors fail closed before pruning so a broken adapter cannot partially run AutoResearch.
 
+SQLite state is initialized by `experiments.runner.init_db`: `experiments` stores run configs, metrics, artifact paths, and config signatures; `promotion_results` stores automated promotion command statuses and payload JSON for review.
+
 ## Configuration Reference
 
 | Section | Key | Purpose |
