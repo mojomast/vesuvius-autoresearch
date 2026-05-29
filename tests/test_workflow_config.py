@@ -29,4 +29,5 @@ def test_autoresearch_test_workflow_runs_full_suite_on_push_and_pr():
     assert "push" in workflow["on"]
     assert "pull_request" in workflow["on"]
     steps = workflow["jobs"]["tests"]["steps"]
+    assert any("pytest" in step.get("run", "") for step in steps if step.get("name") == "Install dependencies")
     assert any(step.get("run") == "python -m pytest tests/" for step in steps)
