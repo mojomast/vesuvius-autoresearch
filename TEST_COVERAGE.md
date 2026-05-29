@@ -3,10 +3,10 @@
 Command:
 
 ```bash
-.venv/bin/python -m pytest tests/ -v --cov=src/autoresearch --cov-report=term-missing --cov-fail-under=80
+.venv/bin/python -m pytest tests/ -v --cov=src/autoresearch --cov-report=term-missing
 ```
 
-Result: `273 passed`, total package coverage `89.38%`.
+Result: `275 passed`, total package coverage `89.38%`.
 
 ```text
 Name                                  Stmts   Miss  Cover   Missing

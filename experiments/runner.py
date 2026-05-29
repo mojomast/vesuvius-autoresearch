@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -23,6 +24,7 @@ from data.vesuvius_data import prepare_training_subset, validate_prepared_npz
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "experiments" / "experiments.db"
 RUNS_DIR = ROOT / "experiments" / "runs"
+LOGGER = logging.getLogger(__name__)
 SQLITE_TIMEOUT_SECONDS = 30.0
 SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_TIMEOUT_SECONDS * 1000)
 CONFIG_SIGNATURE_EXCLUDED_KEYS = {
@@ -523,23 +525,30 @@ def _apply_training_augmentation(images: np.ndarray, labels: np.ndarray, *, augm
     if augment_flips:
         image_parts.extend([images[:, :, :, ::-1], images[:, :, ::-1, :]])
         label_parts.extend([labels[:, :, :, ::-1], labels[:, :, ::-1, :]])
-    if augment_rotation:
-        image_parts.extend([np.rot90(images, k=k, axes=(-2, -1)) for k in (1, 2, 3)])
-        label_parts.extend([np.rot90(labels, k=k, axes=(-2, -1)) for k in (1, 2, 3)])
     if len(image_parts) == 1:
-        return images, labels
-    return np.concatenate(image_parts, axis=0).copy(), np.concatenate(label_parts, axis=0).copy()
+        aug_images, aug_labels = images, labels
+    else:
+        aug_images, aug_labels = np.concatenate(image_parts, axis=0), np.concatenate(label_parts, axis=0)
+    if not augment_rotation:
+        return aug_images.copy() if aug_images is not images else images, aug_labels.copy() if aug_labels is not labels else labels
+    rotated_images = np.empty_like(aug_images)
+    rotated_labels = np.empty_like(aug_labels)
+    for index, turns in enumerate(np.random.randint(0, 4, size=aug_images.shape[0])):
+        rotated_images[index] = np.rot90(aug_images[index], k=int(turns), axes=(-2, -1))
+        rotated_labels[index] = np.rot90(aug_labels[index], k=int(turns), axes=(-2, -1))
+    return rotated_images, rotated_labels
 
 
-def _curriculum_sampling_strategy(curriculum: Any, epoch: int) -> str | None:
+def _curriculum_sampling_strategy(curriculum: Any, epoch: int, total_epochs: int | None = None) -> str | None:
     if not curriculum:
         return None
+    default_switch_epoch = max(1, int(total_epochs or 2) // 2)
     if isinstance(curriculum, str):
-        if curriculum == "uniform_to_hard_mining":
-            return "random" if epoch == 0 else "hard_mining"
+        if curriculum in {"uniform_to_hard_mining", "warmup_then_hard"}:
+            return "random" if epoch < default_switch_epoch else "hard_mining"
         return curriculum
     if isinstance(curriculum, dict):
-        switch_epoch = int(curriculum.get("switch_epoch", curriculum.get("hard_mining_after_epoch", 1)))
+        switch_epoch = int(curriculum.get("switch_epoch", curriculum.get("hard_mining_after_epoch", default_switch_epoch)))
         return str(curriculum.get("initial", "random")) if epoch < switch_epoch else str(curriculum.get("final", "hard_mining"))
     raise ValueError("training.sampling_curriculum must be a string or mapping")
 
@@ -1026,7 +1035,10 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         for _epoch in range(epochs):
             if use_sampling_curriculum:
                 epoch_cfg = dict(train_cfg)
-                epoch_strategy = _curriculum_sampling_strategy(sampling_curriculum, _epoch)
+                epoch_strategy = _curriculum_sampling_strategy(sampling_curriculum, _epoch, epochs)
+                previous_strategy = _curriculum_sampling_strategy(sampling_curriculum, _epoch - 1, epochs) if _epoch > 0 else None
+                if epoch_strategy == "hard_mining" and previous_strategy != "hard_mining":
+                    LOGGER.info("Sampling curriculum: switching to hard_mining at epoch %s", _epoch + 1)
                 if epoch_strategy:
                     epoch_cfg["patch_sampling"] = epoch_strategy
                     epoch_cfg["sampling_strategy"] = epoch_strategy

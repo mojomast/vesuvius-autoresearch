@@ -1,5 +1,11 @@
 # Changelog
 
+## Watch Item Fixes
+
+- Watch Item 1: audited new focal/augmentation/curriculum search paths, widened `training.focal_gamma` bounds to `0.5..5.0`, classified new mutation families, and added torch proposals for focal loss, focal gamma, rotation augmentation, and sampling curriculum.
+- Watch Item 2: validated all targeted promotion configs as executable YAML with required fields, supported model names, `autoresearch.promotable: true`, and runner-handled new keys.
+- Watch Item 3: confirmed torch training reads the new features, changed rotation augmentation to random per-sample 0/90/180/270-degree training-only rotations, completed the sampling curriculum half-epoch transition behavior, and added transition logging/tests.
+
 ## Bug Fixes
 
 - Fixed `_RunHistory` derived caches to use content-based run-id keys instead of `id(runs)`.

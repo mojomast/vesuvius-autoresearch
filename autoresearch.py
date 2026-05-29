@@ -196,7 +196,7 @@ PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "dice_loss_weight"): (0.0, 0.8),
     ("training", "focal_loss_weight"): (0.0, 0.5),
     ("training", "focal_alpha"): (0.05, 0.95),
-    ("training", "focal_gamma"): (0.5, 4.0),
+    ("training", "focal_gamma"): (0.5, 5.0),
     ("training", "combo_loss_weight"): (0.0, 0.8),
     ("training", "combo_bce_weight"): (0.0, 1.0),
     ("training", "combo_dice_weight"): (0.0, 1.0),
@@ -625,7 +625,10 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
         prtol = float(_get_nested(base, ("training", "positive_rate_loss_tolerance"), 0.02) or 0.02)
         pred_ratio_cap = float(_get_nested(base, ("evaluation", "max_pred_positive_rate_ratio"), 3.0) or 3.0)
         sampling_strategy = _get_nested(base, ("training", "sampling_strategy"), None)
+        sampling_curriculum = _get_nested(base, ("training", "sampling_curriculum"), None)
         augment_flips = bool(_get_nested(base, ("training", "augment_flips"), False))
+        augment_rotation = bool(_get_nested(base, ("training", "augment_rotation"), False))
+        focal_loss_weight = float(_get_nested(base, ("training", "focal_loss_weight"), 0.0) or 0.0)
         tta_flips = bool(_get_nested(base, ("evaluation", "tta_flips"), False))
         bounded_samples = max_train_samples if max_train_samples > 0 else 1024
         candidates = [
@@ -638,9 +641,12 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "positive_rate_loss_weight"), round(min(0.1, prloss + 0.02), 4), "increase positive-rate loss weight to tighten prediction rate toward the cap"),
             (("training", "dice_loss_weight"), round(max(0.0, dice - 0.15), 4), "reduce Dice weight to test whether BCE precision improves"),
             (("training", "dice_loss_weight"), round(min(0.8, dice + 0.15), 4), "increase Dice weight to test ink-recall stability"),
+            (("training", "focal_loss_weight"), 0.1, "add a light focal BCE term to test sparse ink recall"),
+            (("training", "focal_loss_weight"), 0.2, "add a stronger focal BCE term to focus sparse ink learning"),
             (("training", "tversky_loss_weight"), 0.15, "add a light Tversky term to test recall/precision balance on the current robust base"),
             (("training", "tversky_beta"), 0.8, "bias Tversky toward false-negative reduction for rare ink recall"),
             (("training", "sampling_strategy"), "hard_mining", "try hard-negative mining to improve precision against textured non-ink"),
+            (("training", "sampling_curriculum"), "warmup_then_hard", "warm up with uniform sampling before switching to hard mining"),
             (("evaluation", "threshold"), 0.35, "evaluate a calibrated fixed threshold closer to recent swept-F1 optima"),
             (("evaluation", "max_pred_positive_rate_ratio"), 2.5 if pred_ratio_cap >= 3.0 else 3.0, "test positive-rate cap in the 2.5-3.0 band that retained F1 in recent cap sweeps"),
             (("evaluation", "max_pred_positive_rate_ratio"), 3.0 if pred_ratio_cap < 3.0 else 3.5, "test a slightly looser positive-rate cap when AP lift is strong but strict caps suppress F1"),
@@ -654,11 +660,19 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "batch_size"), max(2, batch_size // 2), "smaller torch batch for noisier but possibly better CPU generalization"),
             (("training", "max_train_samples"), bounded_samples, "bound full robust training to a CPU-safe sample budget for cron exploration"),
             (("training", "augment_flips"), not augment_flips, "toggle train-time flip augmentation on this torch base"),
+            (("training", "augment_rotation"), not augment_rotation, "toggle train-time 90-degree rotation augmentation on this torch base"),
             (("evaluation", "tta_flips"), not tta_flips, "toggle test-time flip TTA to measure ensemble-like lift"),
             (("training", "seed"), seed + (SEED_REPEAT_DELTAS[0] if SEED_REPEAT_DELTAS else 17), "repeat torch setup with a deterministic seed change"),
         ]
+        if focal_loss_weight > 0.0:
+            candidates.extend([
+                (("training", "focal_gamma"), 2.0, "use standard focal gamma for sparse ink classification"),
+                (("training", "focal_gamma"), 3.0, "increase focal gamma to focus harder on confusing negatives"),
+            ])
         if sampling_strategy == "hard_mining":
             candidates.append((("training", "hard_negative_fraction"), 0.85, "raise hard-negative fraction toward recent precision-oriented residual configs"))
+        if sampling_curriculum:
+            candidates = [candidate for candidate in candidates if candidate[0] != ("training", "sampling_curriculum")]
         sample_cap = int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024"))
         if max_train_samples and max_train_samples < 2048 and sample_cap >= 2048:
             candidates.append((("training", "max_train_samples"), 2048, "increase robust torch sample budget after local hyperparameter plateau"))
@@ -701,9 +715,9 @@ def _mutation_family(path: Tuple[str, ...]) -> str:
         return "balanced_calibration"
     if path in {("training", "learning_rate"), ("training", "weight_decay"), ("training", "epochs"), ("training", "batch_size")}:
         return "optimizer"
-    if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "positive_rate_loss_weight"), ("training", "positive_rate_loss_tolerance"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
+    if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "focal_loss_weight"), ("training", "focal_gamma"), ("training", "positive_rate_loss_weight"), ("training", "positive_rate_loss_tolerance"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
         return "loss_calibration"
-    if path in {("training", "sampling_strategy"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips")}:
+    if path in {("training", "sampling_strategy"), ("training", "sampling_curriculum"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips"), ("training", "augment_rotation")}:
         return "data_sampling"
     if path in {("model", "name"), ("model", "input_mode"), ("model", "base_channels"), ("model", "depth"), ("model", "hidden_units")}:
         return "model_family"
