@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -604,7 +605,6 @@ def write_mined_npz(output: Path, images: np.ndarray, labels: np.ndarray, meta: 
 
 
 def write_outputs(output_dir: Path, prob_map: np.ndarray, metrics: dict[str, Any], threshold_rows: list[dict[str, float]], overwrite: bool = False) -> dict[str, str]:
-    output_dir.mkdir(parents=True, exist_ok=True)
     prob_path = output_dir / "probability_map.npy"
     metrics_path = output_dir / "metrics.json"
     csv_path = output_dir / "metrics_by_threshold.csv"
@@ -612,12 +612,28 @@ def write_outputs(output_dir: Path, prob_map: np.ndarray, metrics: dict[str, Any
     existing = [path for path in paths if path.exists()]
     if existing and not overwrite:
         raise FileExistsError("Refusing to overwrite existing output files without overwrite=True: " + ", ".join(str(path) for path in existing))
-    np.save(prob_path, prob_map.astype(np.float32))
-    metrics_path.write_text(json.dumps(_jsonable(metrics), indent=2, sort_keys=True) + "\n")
-    with csv_path.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["threshold", "precision", "recall", "f05", "f1", "pred_positive_rate"])
-        writer.writeheader()
-        writer.writerows(threshold_rows)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f".tmp-{os.getpid()}-{time.time_ns()}"
+    tmp_prob_path = output_dir / f"probability_map.npy{suffix}"
+    tmp_metrics_path = output_dir / f"metrics.json{suffix}"
+    tmp_csv_path = output_dir / f"metrics_by_threshold.csv{suffix}"
+    tmp_paths = [tmp_prob_path, tmp_metrics_path, tmp_csv_path]
+    try:
+        with tmp_prob_path.open("wb") as fh:
+            np.save(fh, prob_map.astype(np.float32))
+        tmp_metrics_path.write_text(json.dumps(_jsonable(metrics), indent=2, sort_keys=True) + "\n")
+        with tmp_csv_path.open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["threshold", "precision", "recall", "f05", "f1", "pred_positive_rate"])
+            writer.writeheader()
+            writer.writerows(threshold_rows)
+        for src, dst in [(tmp_prob_path, prob_path), (tmp_metrics_path, metrics_path), (tmp_csv_path, csv_path)]:
+            os.replace(src, dst)
+    finally:
+        for path in tmp_paths:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
     return {"probability_map": str(prob_path), "metrics_json": str(metrics_path), "threshold_csv": str(csv_path)}
 
 

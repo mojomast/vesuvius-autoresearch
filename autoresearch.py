@@ -905,9 +905,26 @@ def _record_promotion_status(run_id: str, status: str, payload: Dict[str, Any] |
 
 
 def _reported_promotion_outputs(stdout: str) -> dict[str, str]:
+    decoder = json.JSONDecoder()
+    payload = None
+    text = stdout.strip()
     try:
-        payload = json.loads(stdout.strip())
+        payload = json.loads(text)
     except Exception:
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                parsed, _end = decoder.raw_decode(text[index:])
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                payload = parsed
+                if isinstance(parsed.get("outputs"), dict):
+                    break
+        if payload is None:
+            return {}
+    if not isinstance(payload, dict):
         return {}
     outputs = payload.get("outputs") if isinstance(payload, dict) else None
     if not isinstance(outputs, dict):
@@ -922,35 +939,89 @@ def _promotion_output_exists(path_text: str) -> bool:
     return path.exists()
 
 
+def _promotion_output_path(path_text: str) -> Path:
+    path = Path(path_text)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _validate_reported_promotion_outputs(command_args: list[str], outputs: dict[str, str]) -> tuple[bool, dict[str, Any]]:
+    payload: dict[str, Any] = {"outputs": outputs}
+    missing_outputs = [path for path in outputs.values() if not _promotion_output_exists(path)]
+    if missing_outputs:
+        payload["error"] = "promotion command reported outputs that are missing"
+        payload["missing_outputs"] = missing_outputs
+        return False, payload
+    empty_outputs = [path for path in outputs.values() if _promotion_output_path(path).is_file() and _promotion_output_path(path).stat().st_size == 0]
+    if empty_outputs:
+        payload["error"] = "promotion command reported empty output files"
+        payload["empty_outputs"] = empty_outputs
+        return False, payload
+    if any(str(part).endswith("scripts/infer_full_tile.py") for part in command_args):
+        required = {"metrics_json", "probability_map", "threshold_csv"}
+        missing_keys = sorted(required - set(outputs))
+        if missing_keys:
+            payload["error"] = "full-tile promotion output set is incomplete"
+            payload["missing_output_keys"] = missing_keys
+            return False, payload
+        try:
+            output_dir = command_args[command_args.index("--output-dir") + 1]
+        except (ValueError, IndexError):
+            output_dir = None
+        if output_dir:
+            root = _promotion_output_path(output_dir).resolve()
+            outside = []
+            for key in required:
+                path = _promotion_output_path(outputs[key]).resolve()
+                if path.parent != root:
+                    outside.append(outputs[key])
+            if outside:
+                payload["error"] = "full-tile outputs are outside the requested output directory"
+                payload["outside_output_dir"] = outside
+                return False, payload
+        try:
+            metrics = json.loads(_promotion_output_path(outputs["metrics_json"]).read_text())
+        except Exception as exc:
+            payload["error"] = "full-tile metrics_json is not valid JSON"
+            payload["metrics_json_error"] = str(exc)
+            return False, payload
+        if not isinstance(metrics, dict) or "promotion_checks" not in metrics:
+            payload["error"] = "full-tile metrics_json is missing promotion checks"
+            return False, payload
+        payload["outputs_verified"] = True
+    else:
+        payload["outputs_verified"] = True
+    return True, payload
+
+
 def _run_automated_promotion(command_args: list[str], candidate_run_id: str, summary_json: Path, timeout: int) -> dict[str, Any]:
     """Run promotion evidence and record summary or artifact-output status."""
     LOGS.mkdir(parents=True, exist_ok=True)
-    log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.log"
+    log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.log"
     status = "FAILED"
     payload: Dict[str, Any] = {"command": command_args, "log_file": str(log_path)}
     try:
+        started_at = time.time()
         completed = subprocess.run(command_args, cwd=ROOT, text=True, capture_output=True, timeout=timeout, check=False)
         log_path.write_text(f"$ {_shell_command(command_args)}\n\nSTDOUT\n{completed.stdout}\n\nSTDERR\n{completed.stderr}\n")
         payload.update({"returncode": completed.returncode})
         if completed.returncode == 0:
             payload["summary_json"] = str(summary_json)
-            if summary_json.exists():
+            summary_is_current = summary_json.exists() and summary_json.stat().st_mtime >= started_at
+            if summary_is_current:
                 summary = json.loads(summary_json.read_text())
                 status = "SUCCEEDED"
                 payload["summary"] = summary
             else:
+                if summary_json.exists():
+                    payload["stale_summary_json"] = str(summary_json)
                 outputs = _reported_promotion_outputs(completed.stdout)
                 if outputs:
-                    missing_outputs = [path for path in outputs.values() if not _promotion_output_exists(path)]
-                    payload["outputs"] = outputs
-                    if missing_outputs:
-                        payload["error"] = "promotion command reported outputs that are missing"
-                        payload["missing_outputs"] = missing_outputs
-                    else:
+                    valid_outputs, output_payload = _validate_reported_promotion_outputs(command_args, outputs)
+                    payload.update(output_payload)
+                    if valid_outputs:
                         status = "SUCCEEDED_ARTIFACTS"
                 else:
-                    status = "SUCCEEDED_NO_SUMMARY"
-                    payload.update({"warning": "summary_json not found", "path": str(summary_json)})
+                    payload.update({"error": "promotion command succeeded but produced no current summary_json or validated outputs", "path": str(summary_json)})
         else:
             payload["error"] = f"promotion command exited {completed.returncode}"
     except subprocess.TimeoutExpired as exc:
