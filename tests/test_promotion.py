@@ -46,3 +46,23 @@ def test_automated_promotion_records_failure(tmp_path, monkeypatch):
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT status FROM promotion_results WHERE run_id = ?", ("candidate",)).fetchone()
     assert row[0] == "FAILED"
+
+
+def test_automated_promotion_records_missing_summary_after_success(tmp_path, monkeypatch):
+    db_path = tmp_path / "experiments.db"
+    logs = tmp_path / "logs"
+    summary = logs / "missing.summary.json"
+    monkeypatch.setattr(autoresearch, "DB_PATH", db_path)
+    monkeypatch.setattr(autoresearch, "LOGS", logs)
+    init_db(db_path)
+
+    with patch("autoresearch.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")):
+        result = autoresearch._run_automated_promotion(["python", "script.py"], "candidate", summary, timeout=5)
+
+    assert result["automation_status"] == "SUCCEEDED_NO_SUMMARY"
+    assert result["promotion_payload"]["warning"] == "summary_json not found"
+    assert result["promotion_payload"]["path"] == str(summary)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT status, payload_json FROM promotion_results WHERE run_id = ?", ("candidate",)).fetchone()
+    assert row[0] == "SUCCEEDED_NO_SUMMARY"
+    assert json.loads(row[1])["warning"] == "summary_json not found"

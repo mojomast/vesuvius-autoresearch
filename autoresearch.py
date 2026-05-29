@@ -715,7 +715,7 @@ def _record_promotion_status(run_id: str, status: str, payload: Dict[str, Any] |
 
 
 def _run_automated_promotion(command_args: list[str], candidate_run_id: str, summary_json: Path, timeout: int) -> dict[str, Any]:
-    """Run leave-one-out promotion evidence and persist success or failure status."""
+    """Run promotion evidence and record SUCCEEDED, SUCCEEDED_NO_SUMMARY, or FAILED."""
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.log"
     status = "FAILED"
@@ -725,10 +725,14 @@ def _run_automated_promotion(command_args: list[str], candidate_run_id: str, sum
         log_path.write_text(f"$ {_shell_command(command_args)}\n\nSTDOUT\n{completed.stdout}\n\nSTDERR\n{completed.stderr}\n")
         payload.update({"returncode": completed.returncode})
         if completed.returncode == 0:
-            summary = json.loads(summary_json.read_text())
-            status = "SUCCEEDED"
             payload["summary_json"] = str(summary_json)
-            payload["summary"] = summary
+            if summary_json.exists():
+                summary = json.loads(summary_json.read_text())
+                status = "SUCCEEDED"
+                payload["summary"] = summary
+            else:
+                status = "SUCCEEDED_NO_SUMMARY"
+                payload.update({"warning": "summary_json not found", "path": str(summary_json)})
         else:
             payload["error"] = f"promotion command exited {completed.returncode}"
     except subprocess.TimeoutExpired as exc:
