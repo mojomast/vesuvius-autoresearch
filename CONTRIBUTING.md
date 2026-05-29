@@ -78,4 +78,4 @@ Before every commit:
 - [ ] `python -m pytest tests/` passes with zero failures
 - [ ] `python autoresearch.py --plan --json` exits 0
 - [ ] `from harness.vesuvius_harness import VesuviusHarness` succeeds
-- [ ] No `unittest discover` references remain in docs
+- [ ] No legacy unittest test-runner references remain in docs
