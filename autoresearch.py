@@ -110,6 +110,7 @@ PIVOT_CONFIGS = (
     "robust_tta_seed_ensemble.yaml",
     "residual_25d_torch_unet_cpu.yaml",
 )
+BALANCED_CALIBRATION_PATH = ("balanced_calibration",)
 PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "pos_weight"): (0.25, 25.0),
     ("training", "learning_rate"): (0.001, 0.25),
@@ -118,7 +119,7 @@ PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "epochs"): (2.0, 20.0),
     ("training", "dice_loss_weight"): (0.0, 0.8),
     ("training", "positive_rate_loss_weight"): (0.0, 0.1),
-    ("training", "positive_rate_loss_tolerance"): (0.001, 0.05),
+    ("training", "positive_rate_loss_tolerance"): (0.001, 0.02),
     ("training", "tversky_loss_weight"): (0.0, 0.5),
     ("training", "tversky_beta"): (0.1, 0.9),
     ("model", "base_channels"): (4.0, 16.0),
@@ -257,6 +258,23 @@ def _set_nested(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> None:
     cur[path[-1]] = value
 
 
+def _candidate_is_noop(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> bool:
+    if path == BALANCED_CALIBRATION_PATH:
+        return (
+            _get_nested(cfg, ("evaluation", "max_pred_positive_rate_ratio"), None) == value["max_pred_positive_rate_ratio"]
+            and _get_nested(cfg, ("training", "positive_rate_loss_tolerance"), None) == value["positive_rate_loss_tolerance"]
+        )
+    return _get_nested(cfg, path, None) == value
+
+
+def _apply_candidate(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> None:
+    if path == BALANCED_CALIBRATION_PATH:
+        _set_nested(cfg, ("evaluation", "max_pred_positive_rate_ratio"), value["max_pred_positive_rate_ratio"])
+        _set_nested(cfg, ("training", "positive_rate_loss_tolerance"), value["positive_rate_loss_tolerance"])
+        return
+    _set_nested(cfg, path, value)
+
+
 def _get_nested(cfg: Dict[str, Any], path: Tuple[str, ...], default: Any) -> Any:
     cur: Any = cfg
     for p in path:
@@ -285,6 +303,8 @@ def _proposal_value_slug(value: Any) -> str:
     """Return a filesystem-safe short slug for generated proposal names."""
     if isinstance(value, list):
         text = f"{len(value)}items"
+    elif isinstance(value, dict):
+        text = "_".join(f"{key}_{value[key]}" for key in sorted(value))
     else:
         text = str(value).replace(".", "p")
     slug = "".join(ch if ch.isalnum() or ch in {"_", "-", "p"} else "_" for ch in text)
@@ -394,6 +414,7 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("training", "learning_rate"), round(min(0.006, lr * 1.5), 6), "raise torch learning rate modestly to test convergence-limited behavior"),
             (("training", "positive_rate_loss_tolerance"), round(max(0.001, prtol * 0.5), 4), "tighten positive-rate loss tolerance using recent promotion-ready residual evidence"),
             (("training", "positive_rate_loss_tolerance"), round(min(0.05, prtol * 1.5), 4), "relax positive-rate loss tolerance to recover F1 when ranking is strong"),
+            (("training", "positive_rate_loss_tolerance"), 0.008, "test balanced tighter positive-rate loss tolerance from recent calibration evidence"),
             (("training", "positive_rate_loss_weight"), round(max(0.0, prloss - 0.02), 4), "reduce positive-rate loss weight to test probability calibration spread"),
             (("training", "positive_rate_loss_weight"), round(min(0.1, prloss + 0.02), 4), "increase positive-rate loss weight to tighten prediction rate toward the cap"),
             (("training", "dice_loss_weight"), round(max(0.0, dice - 0.15), 4), "reduce Dice weight to test whether BCE precision improves"),
@@ -404,6 +425,8 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             (("evaluation", "threshold"), 0.35, "evaluate a calibrated fixed threshold closer to recent swept-F1 optima"),
             (("evaluation", "max_pred_positive_rate_ratio"), 2.5 if pred_ratio_cap >= 3.0 else 3.0, "test positive-rate cap in the 2.5-3.0 band that retained F1 in recent cap sweeps"),
             (("evaluation", "max_pred_positive_rate_ratio"), 3.0 if pred_ratio_cap < 3.0 else 3.5, "test a slightly looser positive-rate cap when AP lift is strong but strict caps suppress F1"),
+            (("evaluation", "max_pred_positive_rate_ratio"), 2.75, "test intermediate positive-rate cap between 2.5 and 3.0 for balanced calibration"),
+            (BALANCED_CALIBRATION_PATH, {"max_pred_positive_rate_ratio": 2.75, "positive_rate_loss_tolerance": 0.008}, "combine intermediate positive-rate cap with tighter tolerance for balanced calibration"),
             (("model", "base_channels"), max(4, base_channels // 2), "smaller torch U-Net width for faster regularized CPU search"),
             (("model", "base_channels"), min(16, base_channels * 2), "larger torch U-Net width to test capacity without changing data scope"),
             (("training", "epochs"), max(2, epochs - 1), "shorter torch training to test overfit/probability inflation"),
@@ -454,6 +477,8 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
 
 
 def _mutation_family(path: Tuple[str, ...]) -> str:
+    if path == BALANCED_CALIBRATION_PATH:
+        return "balanced_calibration"
     if path in {("training", "learning_rate"), ("training", "weight_decay"), ("training", "epochs"), ("training", "batch_size")}:
         return "optimizer"
     if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "positive_rate_loss_weight"), ("training", "positive_rate_loss_tolerance"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
@@ -492,9 +517,9 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         cfg.pop("validation_setup", None)
         if lock_to_baseline_scope:
             cfg["dataset"] = copy.deepcopy(baseline_dataset)
-        if _get_nested(cfg, path, None) == value:
+        if _candidate_is_noop(cfg, path, value):
             continue
-        _set_nested(cfg, path, value)
+        _apply_candidate(cfg, path, value)
         if path == ("training", "sampling_strategy") and value == "hard_mining":
             cfg.setdefault("training", {}).setdefault("hard_negative_fraction", 0.5)
         if path == ("training", "tversky_loss_weight"):
@@ -696,10 +721,10 @@ def _strategy_phase(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     next_action = _promotion_next_action(best_recent)
     if plateau and next_action != "continue_exploration":
         phase = "promote"
-        families = {"replication", "inference_calibration", "loss_calibration"}
+        families = {"replication", "inference_calibration", "loss_calibration", "balanced_calibration"}
     elif plateau:
         phase = "diversify"
-        families = {"loss_calibration", "data_sampling", "model_family", "inference_calibration"}
+        families = {"loss_calibration", "data_sampling", "model_family", "inference_calibration", "balanced_calibration"}
     else:
         phase = "exploit"
         families = set()

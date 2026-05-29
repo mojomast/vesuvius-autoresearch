@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import autoresearch
-from autoresearch import PARAM_BOUNDS, _generate_promotion_action_proposals, _proposal_candidates, _proposal_value_slug, _search_signature
+from autoresearch import PARAM_BOUNDS, _apply_candidate, _generate_promotion_action_proposals, _mutation_family, _proposal_candidates, _proposal_value_slug, _search_signature
 
 
 def _assert_candidates_within_bounds(config):
@@ -59,9 +59,36 @@ def test_torch_candidates_include_evidence_backed_positive_rate_controls():
     })
     paths = [path for path, _value, _reason in raw_candidates]
     cap_values = [value for path, value, _reason in raw_candidates if path == ("evaluation", "max_pred_positive_rate_ratio")]
+    tol_values = [value for path, value, _reason in raw_candidates if path == ("training", "positive_rate_loss_tolerance")]
 
-    assert cap_values == [2.5, 3.5]
+    assert 2.5 in cap_values
+    assert 2.75 in cap_values
+    assert 3.5 in cap_values
+    assert 0.008 in tol_values
     assert ("training", "positive_rate_loss_tolerance") in paths
+
+
+def test_torch_candidates_include_combined_balanced_calibration():
+    raw_candidates = _proposal_candidates({
+        "model": {"name": "tiny_torch_unet", "base_channels": 8},
+        "training": {"positive_rate_loss_tolerance": 0.01},
+        "evaluation": {"max_pred_positive_rate_ratio": 3.0},
+    })
+
+    combined = [value for path, value, _reason in raw_candidates if path == ("balanced_calibration",)]
+
+    assert {"max_pred_positive_rate_ratio": 2.75, "positive_rate_loss_tolerance": 0.008} in combined
+
+
+def test_balanced_calibration_candidate_applies_both_fields():
+    cfg = {"training": {"positive_rate_loss_tolerance": 0.01}, "evaluation": {"max_pred_positive_rate_ratio": 3.0}}
+    value = {"max_pred_positive_rate_ratio": 2.75, "positive_rate_loss_tolerance": 0.008}
+
+    _apply_candidate(cfg, ("balanced_calibration",), value)
+
+    assert cfg["evaluation"]["max_pred_positive_rate_ratio"] == 2.75
+    assert cfg["training"]["positive_rate_loss_tolerance"] == 0.008
+    assert _mutation_family(("balanced_calibration",)) == "balanced_calibration"
 
 
 def test_torch_candidates_can_propose_4096_samples_when_budget_allows(monkeypatch):
