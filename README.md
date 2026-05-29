@@ -40,7 +40,7 @@ The script writes `configs/baseline.yaml` plus the four robust pivot configs use
 
 Verify the installation with `python -m pytest tests/ && python autoresearch.py --plan --json && python -c "from harness.vesuvius_harness import VesuviusHarness; print('ok')" && python -c "from autoresearch import METRIC_CONTRACT, PARAM_BOUNDS; print(len(PARAM_BOUNDS), 'bounds')"`.
 
-Current `python3 autoresearch.py --plan --json` state, redacted to omit local absolute paths:
+Current `python3 autoresearch.py --plan --json` state, redacted to omit local absolute paths, remains promotion review oriented after the full-tile evidence package:
 
 ```json
 {
@@ -71,6 +71,8 @@ Current `python3 autoresearch.py --plan --json` state, redacted to omit local ab
 ```
 
 The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key.
+
+For continued diagnostic sweeps after promotion review is blocked, use `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1 AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` with `.venv/bin/python autoresearch.py`; promote-phase planning now includes loss-calibration proposals such as `training.positive_rate_loss_tolerance: 0.01` as well as the `2.5-3.0` positive-rate cap band.
 
 ## Architecture
 

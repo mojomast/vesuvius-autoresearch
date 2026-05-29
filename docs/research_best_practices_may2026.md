@@ -35,13 +35,16 @@ See `docs/next_best_moves_may2026.md` for command examples and promotion checks 
 
 Post-fix positive-rate calibration batch, run on 2026-05-29:
 
-| run_id | val_f1 | AP | pred_pos_rate | LOO median val_f1 | promotion_ready |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `20260529T005748Z_7d9b2b4d` | 0.3447 | 0.2420 | 0.3148 | not run | not assessed |
-| `20260529T005804Z_12a24594` | 0.3887 | 0.2473 | 0.4969 | not run | not assessed |
-| `20260529T005819Z_28af43a2` | 0.3740 | 0.2598 | 0.3839 | 0.1747 | true |
+| run_id | val_f1 | AP | pred_pos_rate | LOO median val_f1 | full-tile val_f1 | full-tile AP | promotion_ready | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `20260529T005748Z_7d9b2b4d` | 0.3447 | 0.2420 | 0.3148 | not run | not run | not run | not assessed | diagnostic |
+| `20260529T005804Z_12a24594` | 0.3887 | 0.2473 | 0.4969 | not run | not run | not run | not assessed | unsafe ratio |
+| `20260529T005819Z_28af43a2` | 0.3740 | 0.2598 | 0.3839 | 0.1747 | 0.2187 | 0.1463 | true | do not promote |
+| `20260529T011645Z_20f27abf` | 0.3783 | 0.2621 | 0.3839 | not run | not run | not run | not assessed | diagnostic |
 
-The selected LOO candidate was `20260529T005819Z_28af43a2` because its pred/val positive-rate ratio was below 3.5. Its seed-repeat LOO summary reported mean AP `0.1196` and worst fold `20230522181603` at `val_f1=0.0426`; promotion review should focus on that weak fold before any broad robustness claim.
+The selected LOO candidate was `20260529T005819Z_28af43a2` because its pred/val positive-rate ratio was below 3.5. Its seed-repeat LOO summary reported mean AP `0.1196` and worst fold `20230522181603` at `val_f1=0.0426`. Full-tile inference improved the validation-segment comparison against the previous contract-compliant sampled DB row (`val_f1=0.2187` vs `0.1462`, AP `0.1463` vs `0.1151`) and kept both full-tile pred/val ratios below `3.5`, but promotion was rejected because `promotion_checks.eligible=false` on both full-tile segments due `spatial-same-segment` artifact provenance.
+
+Post-decision sweeps confirmed the planner now exercises both requested axes: `20260529T011256Z_375c2944` tested `max_pred_positive_rate_ratio=2.5`, and `20260529T011645Z_20f27abf` tested `positive_rate_loss_tolerance=0.01` with `max_pred_positive_rate_ratio=3.0`. Treat these as diagnostic until LOO/full-tile promotion lineage is available.
 
 ## Plateau Policy
 
@@ -62,6 +65,7 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - Use `scripts/evaluate_leave_one_out.py --jobs N` for seed-repeat LOO throughput only when resources allow; jobs are independent process workers and parent-only JSONL output preserves reproducibility.
 - Let stale generated `configs/auto_*` reservations expire so killed exploratory configs do not permanently suppress useful ideas; completed DB runs remain reserved evidence.
 - Prefer evidence-backed calibration/search moves over blind local sweeps: positive-rate cap proposals should cover the `2.5-3.0` band, positive-rate loss tolerance should remain bounded, and `4096`-sample residual proposals require an explicit sample budget.
+- Promote-phase sweeps include loss calibration as well as inference calibration and replication so positive-rate tolerance proposals are not starved by family-diversity rules.
 
 ## Promotion Gate
 
