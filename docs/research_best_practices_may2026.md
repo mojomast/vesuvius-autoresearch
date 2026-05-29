@@ -45,6 +45,12 @@ Positive-rate alarms can mean different things and should be diagnosed before ch
 
 Do not clear these alarms by relaxing the promotion summary alone. First try model-side probability-scale fixes such as tighter positive-rate loss tolerance, cap-aware training, calibration loss changes, or segment-balanced sampling. If a post-hoc fallback would choose near-zero-recall thresholds, keep the run diagnostic-only.
 
+## Seed Selection
+
+Seed-repeat LOO is a robustness test, not a seed-shopping mechanism. `seed=15050` repeatedly flooded small validation strips on `20230530212931` and `20230531121653`, but replacement seed `15073` introduced zero precision/recall failures for `20260529T024258Z_8b44032d`. Treat both as evidence of probability-scale instability rather than proof that a single seed should be excluded.
+
+The current standard seed set remains `11001,11018,15050` unless a candidate-specific evidence package explicitly justifies a replacement. If replacing a seed for diagnosis, document the original failure, the replacement seed behavior, and whether median-over-seeds and worst-fold metrics still satisfy promotion gates.
+
 ## Results To Date
 
 Post-fix positive-rate calibration batch, run on 2026-05-29:
@@ -59,6 +65,7 @@ Post-fix positive-rate calibration batch, run on 2026-05-29:
 | `20260529T014355Z_5fc7c1ca` | 0.4258 | 0.2638 | 0.4153 | 0.0766 | 0.2168 | 0.1434 | false | do not promote |
 | `20260529T021416Z_570f6775` | 0.4071 | 0.2998 | 0.4149 | 0.1109 | 0.2279 | 0.1509 | false | do not promote |
 | `20260529T023543Z_021a01b0` | 0.3912 | 0.2959 | 0.3462 | 0.1045 | not run | not run | false | do not promote |
+| `20260529T024258Z_8b44032d` | 0.4110 | 0.2756 | 0.4881 | 0.0681 | 0.2363 | 0.1508 | false | do not promote |
 
 The selected LOO candidate was `20260529T005819Z_28af43a2` because its pred/val positive-rate ratio was below 3.5. Its seed-repeat LOO summary reported mean AP `0.1196` and worst fold `20230522181603` at `val_f1=0.0426`. Full-tile inference improved the validation-segment comparison against the previous contract-compliant sampled DB row (`val_f1=0.2187` vs `0.1462`, AP `0.1463` vs `0.1151`) and kept both full-tile pred/val ratios below `3.5`, but promotion was rejected because `promotion_checks.eligible=false` on both full-tile segments due `spatial-same-segment` artifact provenance.
 
@@ -69,6 +76,8 @@ Clean-provenance retrains confirmed the original eligibility blocker is fixed. `
 Validation-strip regeneration fixed the empty-positive held-out strips for `20230530172803`, `20230601193301`, and `20230611014200`. The retrained candidate `20260529T021416Z_570f6775` improved LOO median-over-seeds median to `0.1109` with no zero precision/recall folds, and full-tile checks remained eligible. It still should not promote because three-seed LOO reported positive-rate alarms on `20230522181603`, `20230522215721`, and `20230530212931`.
 
 Positive-rate tightening with `20260529T023543Z_021a01b0` reduced alarms but did not pass promotion: the two-seed check cleared alarms but median-over-seeds median fell to `0.0954`, and the three-seed check recovered median `0.1045` while still alarming on `20230530212931:seed=15050` and `20230531121653:seed=15050`. Diagnostic full-tile for `20260529T022151Z_93da433a` reached unconstrained `val_f1=0.2562`, but pred/val `6.01` makes it diagnostic-only; under a `3.0x` cap it would not beat `570f6775`.
+
+The `8b44032d` prratio3.5 diagnostic improved eligible full-tile `20230520175435` to `val_f1=0.2363`, but LOO with `11001,11018,15073` failed badly: median-over-seeds median `0.0681`, worst fold `0.0133`, and zero precision/recall on two `15073` folds. The `caa81174` prratio3 diagnostic was safer on full-tile pred/val (`2.97`) but did not beat `570f6775` (`val_f1=0.2266` vs `0.2279`).
 
 ## Plateau Policy
 
@@ -91,6 +100,7 @@ When recent robust/torch runs stop improving, AutoResearch should switch out of 
 - Prefer evidence-backed calibration/search moves over blind local sweeps: positive-rate cap proposals should cover the `2.5-3.0` band, positive-rate loss tolerance should remain bounded, and `4096`-sample residual proposals require an explicit sample budget.
 - Promote-phase sweeps include loss calibration as well as inference calibration and replication so positive-rate tolerance proposals are not starved by family-diversity rules.
 - Empty-positive validation strips are a data-preparation failure, not model evidence. Regenerate the segment split or mark the fold diagnostic-only before interpreting zero-F1 LOO results.
+- AutoResearch includes a balanced calibration family for the observed over-tight/over-loose gap: `max_pred_positive_rate_ratio=2.75`, `positive_rate_loss_tolerance=0.008`, and a combined candidate applying both.
 
 ## Promotion Gate
 

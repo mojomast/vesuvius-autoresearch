@@ -70,7 +70,7 @@ Current `python3 autoresearch.py --plan --json` state, redacted to omit local ab
 }
 ```
 
-The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Clean-provenance retrain `20260529T014355Z_5fc7c1ca` fixed full-tile provenance eligibility but exposed empty-positive validation strips. Strip-fix candidate `20260529T021416Z_570f6775` removed zero precision/recall LOO folds and reached three-seed median-over-seeds median `val_f1=0.1109`, but promotion is still blocked by positive-rate alarms. Tightened candidate `20260529T023543Z_021a01b0` reduced alarms but still has `promotion_ready=false` and worst-fold `val_f1=0.0179`.
+The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Clean-provenance retrain `20260529T014355Z_5fc7c1ca` fixed full-tile provenance eligibility but exposed empty-positive validation strips. Strip-fix candidate `20260529T021416Z_570f6775` removed zero precision/recall LOO folds and reached three-seed median-over-seeds median `val_f1=0.1109`, but promotion is still blocked by positive-rate alarms. Tightened candidate `20260529T023543Z_021a01b0` reduced alarms but still has `promotion_ready=false` and worst-fold `val_f1=0.0179`; prratio3.5 candidate `20260529T024258Z_8b44032d` improved eligible full-tile F1 to `0.2363` but failed LOO.
 
 For continued diagnostic sweeps after promotion review is blocked, use `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1 AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` with `.venv/bin/python autoresearch.py`; promote-phase planning now includes loss-calibration proposals such as `training.positive_rate_loss_tolerance: 0.01` as well as the `2.5-3.0` positive-rate cap band.
 
@@ -104,7 +104,7 @@ SQLite state is initialized by `experiments.runner.init_db`: `experiments` store
 | `model` | `name`, `base_channels`, `depth` | Model family and capacity controls. |
 | `training` | `learning_rate`, `weight_decay`, `pos_weight`, `epochs` | Mutable optimizer/loss parameters clamped by `PARAM_BOUNDS`. |
 | `training` | `positive_rate_loss_weight`, `positive_rate_loss_tolerance`, `max_train_samples` | Positive-rate calibration and sample-budget controls; AutoResearch can propose the recent 4096-sample residual setting when the configured sample cap permits it. |
-| `evaluation` | `main_metric`, `threshold`, `max_pred_positive_rate_ratio` | Main scoring metric, fixed-threshold diagnostic, and positive-rate cap; proposal search includes the evidence-backed `2.5-3.0` cap band. |
+| `evaluation` | `main_metric`, `threshold`, `max_pred_positive_rate_ratio` | Main scoring metric, fixed-threshold diagnostic, and positive-rate cap; proposal search includes `2.5`, `2.75`, `3.0`, and balanced calibration with tolerance `0.008`. |
 | `autoresearch` | `scope_policy`, `promotable`, `promotion_required` | Search metadata and promotion gating intent. |
 | `outputs` | `runs_dir` | Experiment artifact root. |
 
