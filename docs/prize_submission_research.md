@@ -40,9 +40,13 @@ Conclusion: May 31, 2026 is active according to the official page as of 2026-05-
 
 Source: <https://scrollprize.org/prizes>, fetched 2026-05-28.
 
+Form source rechecked from <https://forms.gle/LrpQmSAqdwGpTczLA> on 2026-05-28. The Google Form rendered field labels without JavaScript but cannot be submitted from this environment because it requires a user email/name and an interactive Google Forms submission.
+
 - Progress Prize submission method: Google Form.
 - Progress Prize submission URL: <https://forms.gle/LrpQmSAqdwGpTczLA>
 - First Letters / First Title submission URL: <https://docs.google.com/forms/d/e/1FAIpQLSdw43FX_uPQwBTIV8pC2y0xkwZmu6GhrwxV4n3WEbqC8Xof9Q/viewform?usp=dialog>
+- Required Progress Prize form fields visible from fetched form: email, full name, team description, URL to open-source contribution, short description of how the contribution increases probability of reading complete scrolls, confirmation that a Community Projects / awesome-scroll-tools PR was submitted, and terms acceptance.
+- Community Projects PR submitted: <https://github.com/ScrollPrize/villa/pull/991>
 
 Related communication channels:
 
