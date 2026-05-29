@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import autoresearch
-from autoresearch import PARAM_BOUNDS, _apply_candidate, _config_cost_tier, _generate_promotion_action_proposals, _max_allowed_cost_tier, _mutation_family, _proposal_candidates, _proposal_plan, _proposal_value_slug, _search_signature
+from autoresearch import PARAM_BOUNDS, _apply_candidate, _config_cost_tier, _generate_promotion_action_proposals, _max_allowed_cost_tier, _mutation_family, _proposal_candidates, _proposal_plan, _proposal_value_slug, _propose_configs, _search_signature
 
 
 def _assert_candidates_within_bounds(config):
@@ -190,6 +190,43 @@ def test_invalid_max_cost_tier_fails_closed_to_normal(monkeypatch):
     monkeypatch.setenv("AUTORESEARCH_MAX_COST_TIER", "surprise")
 
     assert _max_allowed_cost_tier() == "normal"
+
+
+def test_expensive_proposals_are_skipped_without_plateau_context(monkeypatch):
+    base = {
+        "model": {"name": "tiny_torch_unet"},
+        "training": {"epochs": 5, "max_train_samples": 1024},
+        "evaluation": {"threshold": 0.5, "tta_flips": False},
+    }
+    monkeypatch.setattr(autoresearch, "_reserved_signatures", lambda runs: set())
+    monkeypatch.setattr(autoresearch, "_proposal_candidates", lambda cfg: [
+        (("evaluation", "tta_flips"), True, "expensive TTA"),
+        (("evaluation", "threshold"), 0.35, "normal threshold"),
+    ])
+
+    proposals = _propose_configs(base, [], count=2, lock_to_baseline_scope=False, strategy_phase="exploit")
+
+    assert len(proposals) == 1
+    assert proposals[0][1]["autoresearch"]["cost_tier"] == "normal"
+    assert proposals[0][1]["autoresearch"]["changed_path"] == "evaluation.threshold"
+
+
+def test_plateau_context_defers_expensive_proposals_until_normal_options_are_used(monkeypatch):
+    base = {
+        "model": {"name": "tiny_torch_unet"},
+        "training": {"epochs": 5, "max_train_samples": 1024},
+        "evaluation": {"threshold": 0.5, "tta_flips": False},
+    }
+    monkeypatch.setattr(autoresearch, "_reserved_signatures", lambda runs: set())
+    monkeypatch.setattr(autoresearch, "_proposal_candidates", lambda cfg: [
+        (("evaluation", "tta_flips"), True, "expensive TTA"),
+        (("evaluation", "threshold"), 0.35, "normal threshold"),
+    ])
+
+    proposals = _propose_configs(base, [], count=2, lock_to_baseline_scope=False, strategy_phase="diversify")
+
+    assert [cfg["autoresearch"]["cost_tier"] for _name, cfg, _reason in proposals] == ["normal", "expensive"]
+    assert [cfg["autoresearch"]["changed_path"] for _name, cfg, _reason in proposals] == ["evaluation.threshold", "evaluation.tta_flips"]
 
 
 def test_promotion_action_proposals_include_cost_tier_metadata(monkeypatch):

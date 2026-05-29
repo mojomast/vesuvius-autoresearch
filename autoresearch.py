@@ -422,6 +422,17 @@ def _cost_tier_allowed(tier: str, *, allow_expensive: bool = False) -> bool:
     return _cost_tier_rank(tier) <= _cost_tier_rank(_max_allowed_cost_tier(allow_expensive))
 
 
+def _strategy_allows_expensive(strategy: Dict[str, Any] | None) -> bool:
+    if not strategy:
+        return False
+    return bool(strategy.get("plateau")) or str(strategy.get("phase") or "") == "promote"
+
+
+def _metadata_allows_expensive(cfg: Dict[str, Any]) -> bool:
+    autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+    return str(autoresearch.get("run_profile") or "") == "promotion" or str(autoresearch.get("intent") or "") == "promotion_action"
+
+
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
     if path == ("model", "depth") and isinstance(value, int) and value > 3:
         return 3
@@ -615,9 +626,11 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
     slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
     candidates = candidates[slot:] + candidates[:slot]
     proposals = []
+    deferred_expensive: list[tuple[str, Dict[str, Any], str, str, Tuple[Any, ...]]] = []
     used_families: set[str] = set()
     seen_batch_signatures: set[Tuple[Any, ...]] = set()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    expensive_context = allow_expensive or strategy_phase in {"promote", "diversify"} or _metadata_allows_expensive(base)
     for path, value, reason in candidates:
         family = _mutation_family(path)
         if required_families and family not in required_families:
@@ -641,14 +654,13 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
             cfg.setdefault("training", {}).setdefault("tversky_loss_weight", 0.15)
             cfg.setdefault("training", {})["tversky_alpha"] = round(1.0 - float(value), 4)
         cost_tier = _config_cost_tier(cfg)
-        if not _cost_tier_allowed(cost_tier, allow_expensive=allow_expensive):
-            print(f"Skipping {cost_tier} proposal {'.'.join(path)} under AUTORESEARCH_MAX_COST_TIER={_max_allowed_cost_tier(allow_expensive)}")
+        if not _cost_tier_allowed(cost_tier, allow_expensive=expensive_context):
+            print(f"Skipping {cost_tier} proposal {'.'.join(path)} under AUTORESEARCH_MAX_COST_TIER={_max_allowed_cost_tier(expensive_context)}")
             continue
         signature = _search_signature(cfg)
         if signature in tested or signature in seen_batch_signatures:
             print(f"Skipping already-tested search signature {signature}")
             continue
-        seen_batch_signatures.add(signature)
         autoresearch = cfg.setdefault("autoresearch", {})
         autoresearch["parent_reason"] = reason
         autoresearch["scope_policy"] = scope_policy
@@ -664,10 +676,26 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
             autoresearch["strategy_phase"] = strategy_phase
         autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
         name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
+        if cost_tier == "expensive":
+            deferred_expensive.append((name, cfg, reason, family, signature))
+            continue
+        seen_batch_signatures.add(signature)
         proposals.append((name, cfg, reason))
         used_families.add(family)
         if len(proposals) >= count:
             break
+    for _name, cfg, reason, family, signature in deferred_expensive:
+        if len(proposals) >= count:
+            break
+        if required_families and family in used_families:
+            continue
+        if signature in seen_batch_signatures:
+            continue
+        name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{cfg['autoresearch']['changed_path'].replace('.', '_')}_{_proposal_value_slug(_get_nested(cfg, tuple(cfg['autoresearch']['changed_path'].split('.')), 'combined'))}.yaml"
+        seen_batch_signatures.add(signature)
+        proposals.append((name, cfg, reason))
+        used_families.add(family)
+    proposals.sort(key=lambda item: _cost_tier_rank(item[1].get("autoresearch", {}).get("cost_tier", "expensive")))
     return proposals
 
 
@@ -1141,7 +1169,7 @@ def _ranked_recent_torch_bases(runs: List[Dict[str, Any]]) -> list[tuple[Dict[st
     return out
 
 
-def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None, history: _RunHistory | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
+def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None, allow_expensive: bool = False, history: _RunHistory | None = None) -> List[Tuple[str, Dict[str, Any], str]]:
     out: list[Tuple[str, Dict[str, Any], str]] = []
     ranked_bases = history.ranked_recent_torch_bases(runs) if history else _ranked_recent_torch_bases(runs)
     for base, label in ranked_bases:
@@ -1150,7 +1178,7 @@ def _propose_from_recent_winners(runs: List[Dict[str, Any]], count: int, *, name
             break
         scope_policy = str(base.get("autoresearch", {}).get("scope_policy") or base.get("dataset", {}).get("research_scope") or "recent_robust_torch_winner")
         print(f"Trying AutoResearch recent robust winner base {label}", flush=True)
-        proposals = _propose_configs(base, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=name_index_offset + len(out), required_families=required_families, strategy_phase=strategy_phase)
+        proposals = _propose_configs(base, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=name_index_offset + len(out), required_families=required_families, strategy_phase=strategy_phase, allow_expensive=allow_expensive)
         for name, cfg, reason in proposals:
             cfg.setdefault("autoresearch", {})["parent_recent_winner"] = label
             out.append((name, cfg, f"follow up {label}: {reason}"))
@@ -1176,6 +1204,7 @@ def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: 
     strategy = history.strategy_phase(runs) if history else _strategy_phase(runs)
     required_families = strategy["required_families"] or None
     phase = str(strategy["phase"])
+    allow_expensive = _strategy_allows_expensive(strategy)
     print(f"AutoResearch strategy phase={phase} plateau={strategy['plateau']} next_action={strategy['next_action']}", flush=True)
     out: list[Tuple[str, Dict[str, Any], str]] = []
     for name, pivot, scope_policy in _pivot_bases():
@@ -1183,17 +1212,17 @@ def _propose_best_path(base: Dict[str, Any], runs: List[Dict[str, Any]], count: 
         if remaining <= 0:
             break
         print(f"Trying AutoResearch best-path base {name} scope={scope_policy}", flush=True)
-        out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=len(out), required_families=required_families, strategy_phase=phase))
+        out.extend(_propose_configs(pivot, runs, count=remaining, scope_policy=scope_policy, lock_to_baseline_scope=False, name_index_offset=len(out), required_families=required_families, strategy_phase=phase, allow_expensive=allow_expensive))
     if out:
         return out
     print("Curated robust/torch bases are exhausted; trying best recent robust/torch winners", flush=True)
-    out = _propose_from_recent_winners(runs, count=count, required_families=required_families, strategy_phase=phase, history=history)
+    out = _propose_from_recent_winners(runs, count=count, required_families=required_families, strategy_phase=phase, allow_expensive=allow_expensive, history=history)
     if out:
         return out
     if os.environ.get("AUTORESEARCH_ALLOW_FOCUSED_FALLBACK", "1") != "1":
         return []
     print("Recent robust/torch winner follow-ups are exhausted; falling back to focused NumPy search", flush=True)
-    return _propose_configs(base, runs, count=count, required_families=required_families, strategy_phase=phase)
+    return _propose_configs(base, runs, count=count, required_families=required_families, strategy_phase=phase, allow_expensive=allow_expensive)
 
 
 def _propose_with_pivots(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int) -> List[Tuple[str, Dict[str, Any], str]]:
@@ -1341,6 +1370,7 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
             if p:
                 proposals.append(p)
 
+    proposals.sort(key=lambda item: _cost_tier_rank(item[1].get("autoresearch", {}).get("cost_tier", "expensive")))
     return proposals
 
 
