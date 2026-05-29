@@ -60,7 +60,7 @@ def _base_config(data_dir: Path) -> dict[str, Any]:
 
 def _pivot_configs(data_dir: Path) -> dict[str, dict[str, Any]]:
     """Build robust pivot configs that unlock the torch-first search path."""
-    expanded_train = _rel(data_dir / "real_cross_folds_expanded_combined" / "all_segments" / "train.npz")
+    expanded_train = _rel(data_dir / "real_cross_folds_expanded_combined" / "leaveout_20230520175435" / "train.npz")
     expanded_val = _rel(data_dir / "real_cross_folds_v2" / "segment_20230520175435" / "val.npz")
     focused_train = _rel(data_dir / "real_cross" / "segment_20230827161847_pf0p15_n2048" / "train.npz")
     focused_val = _rel(data_dir / "real_cross" / "segment_20230520175435" / "val.npz")

@@ -17,7 +17,7 @@ outputs:
   runs_dir: experiments/runs
 dataset:
   research_scope: multi_segment_robust_expanded
-  train_npz: data/real_cross_folds_expanded_combined/all_segments/train.npz
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435/train.npz
   val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
   patch_size: 64
   validation_mode: leave-one-segment-out
