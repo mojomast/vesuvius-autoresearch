@@ -223,6 +223,7 @@ The official criteria explicitly ask for "comprehensive documentation" and "usag
 - One command to run a small demo.
 - A documented example using Vesuvius data or a small included/mock fixture where raw data cannot be bundled.
 - Sample outputs: experiment database rows, artifacts, plots, generated hypotheses, model cards, and logs.
+- A dashboard walkthrough or screenshot set showing the reviewer-facing state: current candidate, promotion gate, LOO/full-tile evidence, quality verdicts, and next recommended command.
 - Reproducibility notes: exact configs, seeds where relevant, hardware assumptions, expected runtime, and dependencies.
 - A short technical report explaining what specific scroll-reading bottleneck it solves and what measurable improvement it produced.
 
@@ -236,7 +237,7 @@ Tie it directly to the official requirements:
 
 - Problem identification: ink-detection generalization and experiment throughput are bottlenecks for reading multiple scrolls.
 - Demonstration: include a reproducible run that starts from a config, launches an agent/experiment loop, and produces a ranked result summary.
-- Advantages: fewer manual experiment cycles, auditable logs, standardized output artifacts, easier comparison across scrolls and model variants.
+- Advantages: fewer manual experiment cycles, auditable logs, standardized output artifacts, easier comparison across scrolls and model variants, and a dashboard that makes promotion safety review legible to humans.
 - Documentation: include a quickstart, architecture overview, config guide, and annotated example run.
 - Technical integration: document supported Vesuvius data paths/formats, especially Zarr/OME-Zarr if supported; otherwise mark current format support honestly and list next steps.
 
@@ -244,9 +245,15 @@ Tie it directly to the official requirements:
 
 - A concise benchmark table showing baseline vs autoresearch-discovered configuration or architecture.
 - If available, a cross-scroll metric such as validation Dice improvement on one scroll when training on another.
-- Screenshots of the dashboard or artifact viewer.
+- Screenshots of the dashboard or artifact viewer. For this submission, the dashboard should be treated as first-class evidence because it turns scattered experiment artifacts into an actionable review surface.
 - Links to logs/artifacts that show the full chain from hypothesis to run to result.
 - A short failure analysis section explaining hallucination/overfitting risks, especially if model outputs could be interpreted as ink.
+
+### Dashboard Framing
+
+The dashboard is a strong Progress Prize asset, not a minor convenience. It gives reviewers and future contributors a fast, read-only way to understand the state of the research loop: which candidate is best, what evidence supports it, which folds failed, whether full-tile provenance is eligible, whether positive-rate caps are binding, and what action should happen next. This is exactly the kind of practical tooling that reduces wasted scroll-research cycles.
+
+The dashboard also helps with hallucination control. It makes unsafe-looking wins visible by showing positive-rate ratios, AP/prevalence lift, fixed-threshold diagnostics, full-tile checks, and promotion warnings together. That makes it harder to accidentally promote a pretty but inflated patch result, and easier for community reviewers to reproduce the reasoning behind a rejection.
 
 ### Community Discovery Plan
 
@@ -261,6 +268,8 @@ Tie it directly to the official requirements:
 The submission should say, in substance:
 
 > This contribution helps read the scrolls by making ink-detection research reproducible and scalable. It automates the loop of proposing model/training changes, running controlled experiments, recording artifacts, and ranking outcomes. The included demo shows a complete run on Vesuvius-style data and produces standardized logs, metrics, and visual reports. This is designed for modular integration with the community pipeline and to help researchers quickly validate which ideas improve cross-scroll generalization.
+
+Post-submission update: the repository now also includes a no-download synthetic demo generator, a cleaner README landing page, residual 2.5D CPU-safe search configs, committed DB/runner audit logs, sampled/full-tile/LOO residual evidence, and updated research-status docs. The latest residual work found strong sampled and eligible full-tile signal but correctly blocked promotion after LOO exposed zero-fold failures on `20230530172803`, demonstrating the value of the dashboard and promotion gates.
 
 ## Source Index
 

@@ -13,11 +13,18 @@ The Progress Prize criteria favor open-source tools that solve a concrete Vesuvi
 ## What It Does (Technical Summary)
 
 - Autonomous experiment proposal with `PARAM_BOUNDS` clamping and duplicate-config avoidance.
-- `MetricContract` enforcement across 1,419+ recorded experiments.
+- `MetricContract` enforcement across 1,600+ recorded experiments.
 - Evidence-gated promotion: leave-one-out seed-repeat checks, full-tile inference, positive-rate alarms, fixed-threshold diagnostics, and eligibility checks.
+- A read-only standalone dashboard that turns the experiment database, configs, fold maps, full-tile artifacts, LOO summaries, promotion gates, quality verdicts, and recommended next actions into one reviewer-facing control room.
 - `VesuviusHarness` abstraction so the same propose/evaluate/promote loop can pivot to other scroll research workflows.
 - GitHub Actions CI with 222+ tests, a 30-minute cron workflow, baseline guards, and artifact upload.
 - Synthetic demo data generator so reviewers can exercise the loop without downloading protected or large Vesuvius data first.
+
+## Dashboard Value
+
+The dashboard is one of the most useful parts of the submission because it makes the research loop inspectable instead of opaque. A reviewer can see which run is being considered, why it is or is not promotable, which fold or segment is blocking progress, whether a full-tile artifact is eligible, and what command should be run next. It surfaces the evidence that normally gets buried across SQLite rows, JSON metrics, threshold CSVs, LOO summaries, and local artifacts.
+
+This matters for Vesuvius work because false positives can look convincing. The dashboard helps prevent accidental overclaiming by exposing positive-rate ratios, AP/prevalence lift, fixed-threshold status, full-tile quality checks, provenance eligibility, and promotion warnings in one place. It is not just a UI; it is a practical safety layer for deciding whether an ink-detection result is ready for more compute, more review, or rejection.
 
 ## Quick Start (Anyone Can Run This)
 
@@ -41,11 +48,20 @@ The synthetic data follows the runner schema used by this repo: `images` are `[N
 
 ## Research Results
 
-This repository has run 1,419+ recorded experiments with full metric/provenance tracking. The infrastructure is hardened: metric contracts, parameter bounds, Vesuvius-specific harnessing, promotion evidence packaging, positive-rate alarms, full-tile inference checks, CI, and synthetic demo generation are all in place.
+This repository has run 1,600+ recorded experiments with full metric/provenance tracking. The infrastructure is hardened: metric contracts, parameter bounds, Vesuvius-specific harnessing, promotion evidence packaging, positive-rate alarms, full-tile inference checks, CI, synthetic demo generation, and dashboard-driven review are all in place.
 
 The ink detector itself is not a champion model. The best eligible tiled result so far is `val_f1=0.2363` on a fragment/full-tile-style validation region, and promotion remains blocked by cross-seed generalization failures. Seeds `11001` and `11018` behaved acceptably in recent checks, while `15050` showed threshold-cliff flooding and replacement seed `15073` produced zero-precision folds. The current bottleneck is model architecture and calibration robustness, not the experiment infrastructure.
 
 The submission claim is therefore intentionally narrow: this is a reusable open-source research automation and evidence-gating tool for the Vesuvius community, not a state-of-the-art ink model.
+
+## Work Completed Since The Initial Prize Package
+
+- Added a reproducible synthetic data generator and quickstart path so reviewers can run the loop without downloading real Vesuvius data first.
+- Prepared and documented the ScrollPrize Community Projects PR: <https://github.com/ScrollPrize/villa/pull/991>.
+- Expanded the health checks to `226 passed` tests and kept the final branch clean after each research cycle.
+- Continued the real-data research loop through positive-rate alarm diagnosis, seed-analysis follow-up, and residual 2.5D architecture exploration.
+- Added CPU-safe residual 2.5D configs and evidence logs. The best sampled residual candidate, `20260529T034850Z_d0ee3406`, reached sampled `val_f1=0.4664` and eligible full-tile `val_f1=0.2132`, but failed 2-seed LOO on zero folds for `20230530172803`, so it remains diagnostic-only.
+- Updated research status docs and best-practice guidance to explain what worked, what failed, and where the next useful work should focus.
 
 ## How To Extend This
 
