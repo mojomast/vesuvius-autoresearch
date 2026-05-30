@@ -1195,6 +1195,40 @@ def _run_automated_promotion(command_args: list[str], candidate_run_id: str, sum
     log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.log"
     status = "FAILED"
     payload: Dict[str, Any] = {"command": command_args, "log_file": str(log_path)}
+    if any(str(part).endswith("scripts/infer_full_tile.py") for part in command_args):
+        try:
+            output_dir = _promotion_output_path(command_args[command_args.index("--output-dir") + 1])
+        except (ValueError, IndexError):
+            output_dir = None
+        if output_dir is not None:
+            existing_outputs = {
+                "metrics_json": str(output_dir / "metrics.json"),
+                "probability_map": str(output_dir / "probability_map.npy"),
+                "threshold_csv": str(output_dir / "metrics_by_threshold.csv"),
+            }
+            if all(_promotion_output_exists(path) for path in existing_outputs.values()):
+                valid_outputs, output_payload = _validate_reported_promotion_outputs(command_args, existing_outputs)
+                payload.update({"returncode": 0, "reused_existing_outputs": True})
+                payload.update(output_payload)
+                if valid_outputs:
+                    status = "SUCCEEDED_ARTIFACTS"
+                    payload["promotion_failure_reasons"] = _promotion_payload_reasons(payload, promotion_failure_reasons)
+                    payload["diagnostic_summary"] = {
+                        "status": status,
+                        "summary_json_verified": False,
+                        "artifacts_verified": True,
+                        "reused_existing_outputs": True,
+                        "reasons": payload["promotion_failure_reasons"],
+                    }
+                    log_path.write_text(
+                        f"$ {_shell_command(command_args)}\n\nREUSED_EXISTING_OUTPUTS\n"
+                        + json.dumps(existing_outputs, indent=2, sort_keys=True)
+                        + "\n\nPROMOTION_DIAGNOSTICS\n"
+                        + json.dumps(payload["diagnostic_summary"], indent=2, sort_keys=True)
+                        + "\n"
+                    )
+                    _record_promotion_status(candidate_run_id, status, payload)
+                    return {"automation_status": status, "promotion_log": str(log_path), "promotion_payload": payload}
     try:
         started_at = time.time()
         completed = subprocess.run(command_args, cwd=ROOT, text=True, capture_output=True, timeout=timeout, check=False)
@@ -1414,7 +1448,51 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHist
         command = _shell_command(command_args)
         reasoning.append("median_over_seeds_and_folds_required")
     else:
-        reasoning.append("full_tile_command_should_come_from_dashboard_candidate_evidence")
+        artifact_dir = Path(str(candidate.get("artifact_dir") or ROOT / "experiments" / "runs" / candidate_run_id))
+        base_config = candidate.get("config", {}) if isinstance(candidate.get("config"), dict) else {}
+        heldout_segment = str(
+            _get_nested(base_config, ("autoresearch", "heldout_segment"), "")
+            or _get_nested(base_config, ("resolved_data", "val", "metadata", "segment_id"), "")
+        )
+        if heldout_segment:
+            output_dir = artifact_dir / f"full_tile_candidate_{heldout_segment}"
+            command_args = [
+                DEFAULT_PYTHON,
+                "scripts/infer_full_tile.py",
+                "--artifact",
+                _repo_arg(artifact_dir),
+                "--segment-id",
+                heldout_segment,
+                "--output-dir",
+                _repo_arg(output_dir),
+                "--catalog-source",
+                "public-directory",
+                "--level",
+                "1",
+                "--z-offsets=-4,0,4",
+                "--patch-size",
+                "64",
+                "--stride",
+                "32",
+                "--batch-size",
+                os.environ.get("AUTORESEARCH_FULL_TILE_BATCH_SIZE", "4"),
+                "--device",
+                "cpu",
+                "--public-retry-count",
+                "5",
+                "--public-retry-delay-sec",
+                "180",
+                "--public-chunk-delay-sec",
+                os.environ.get("AUTORESEARCH_FULL_TILE_CHUNK_DELAY_SEC", "0.5"),
+                "--public-chunk-retry-count",
+                "5",
+                "--public-chunk-retry-delay-sec",
+                "180",
+            ]
+            command = _shell_command(command_args)
+            reasoning.append("candidate_heldout_segment_full_tile_validation")
+        else:
+            reasoning.append("full_tile_command_should_come_from_dashboard_candidate_evidence")
 
     payload = {
         "status": "manual_promotion_action",
@@ -1948,9 +2026,21 @@ def main() -> int:
             return 0
         manual_payload = _promotion_phase_manual_action(runs, history=history)
         if manual_payload:
+            if os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1" and manual_payload.get("command"):
+                try:
+                    command_args = shlex.split(str(manual_payload["command"]))
+                except ValueError as exc:
+                    manual_payload["automation_status"] = "SKIPPED_INVALID_COMMAND"
+                    manual_payload["automation_error"] = str(exc)
+                else:
+                    timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
+                    reasons = [str(item) for item in manual_payload.get("promotion_failure_reasons", [])] if isinstance(manual_payload.get("promotion_failure_reasons"), list) else []
+                    manual_payload.update(_run_automated_promotion(command_args, str(manual_payload.get("candidate_run_id") or "manual_promotion"), LOGS / "manual_promotion_action.summary.json", timeout, promotion_failure_reasons=reasons))
             print(f"AutoResearch promotion action required: {manual_payload.get('next_action')}", flush=True)
             if manual_payload.get("command"):
                 print(f"Command: {manual_payload['command']}", flush=True)
+            if manual_payload.get("automation_status"):
+                print(f"Automation status: {manual_payload['automation_status']}", flush=True)
             return 0
         with profiler.measure("proposal_generation"):
             proposals, source_action = _promotion_or_fallback_proposals(runs, base, ready_payload, proposal_count, history=history)
