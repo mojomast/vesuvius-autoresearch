@@ -1,0 +1,57 @@
+# Group-stratified hard-fold fallback using ScrollPrize/villa cleaned labels
+autoresearch:
+  intent: promotion_candidate
+  promotable: true
+  scope_policy: expanded_leave_one_out_villa_labels_groupstrat
+  heldout_segment: "20230530172803"
+  promotion_required:
+    - seed_repeat_leave_one_out
+    - full_tile_validation
+    - promotion_checks_eligible
+dataset:
+  fold_map: data/fold_map_villa_labels.json
+  patch_size: 64
+  research_scope: expanded_leave_one_out
+  train_npz: data/npz_villa/leaveout_20230530172803/train.npz
+  val_npz: data/npz_villa/segment_20230530172803/val.npz
+  validation_mode: leave-one-segment-out
+  num_workers: 8
+  prefetch_factor: 4
+  pin_memory: false
+evaluation:
+  main_metric: val_f1
+  threshold: 0.35
+  tta_flips: true
+  use_villa_metrics: true
+  max_pred_positive_rate_ratio: 2.75
+  min_pred_positive_rate_ratio: 0.1
+  target_pred_positive_rate: auto_val
+model:
+  name: residual_25d_torch_unet
+  input_mode: z_offsets_as_channels
+  base_channels: 8
+outputs:
+  runs_dir: experiments/runs
+training:
+  allow_cuda: false
+  augment_flips: true
+  batch_size: 28
+  deterministic: true
+  dice_loss_weight: 0.35
+  epochs: 15
+  hard_negative_fraction: 0.75
+  learning_rate: 0.001
+  max_train_pixels: 1200000
+  max_train_samples: 4096
+  negative_patch_max_ink: 0.0
+  num_threads: 16
+  patch_sampling: hard_mining
+  pos_weight: auto
+  positive_patch_fraction: 0.45
+  positive_rate_loss_target: 0.04
+  positive_rate_loss_tolerance: 0.01
+  positive_rate_loss_weight: 0.08
+  seed: 11045
+  stateful_sampler: false
+  group_stratified_sampling: true
+  weight_decay: 0.0001
