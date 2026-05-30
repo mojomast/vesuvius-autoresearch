@@ -10,6 +10,7 @@ MAX_SECONDS="${OVERNIGHT_MAX_SECONDS:-28800}"
 CYCLE_SLEEP_SECONDS="${OVERNIGHT_CYCLE_SLEEP_SECONDS:-900}"
 JOB_TIMEOUT_SECONDS="${OVERNIGHT_JOB_TIMEOUT_SECONDS:-5400}"
 HEARTBEAT_SECONDS="${OVERNIGHT_HEARTBEAT_SECONDS:-300}"
+MAX_STALE_CYCLES="${OVERNIGHT_MAX_STALE_CYCLES:-2}"
 
 mkdir -p "$RUN_ROOT" "$REPO/logs"
 
@@ -23,6 +24,22 @@ cd "$REPO"
 
 log() {
   echo "[$(date -Iseconds)] $*" | tee -a "$RUN_ROOT/orchestrator.log"
+}
+
+latest_run_id() {
+  "$PY" - <<'PY'
+import sqlite3
+from pathlib import Path
+
+db = Path("experiments/experiments.db")
+if not db.exists():
+    raise SystemExit(0)
+con = sqlite3.connect(db)
+row = con.execute("SELECT run_id FROM experiments ORDER BY timestamp DESC LIMIT 1").fetchone()
+con.close()
+if row:
+    print(row[0])
+PY
 }
 
 run_with_heartbeat() {
@@ -173,6 +190,7 @@ fi
 
 started=$(date +%s)
 cycle=0
+stale_cycles=0
 while true; do
   now=$(date +%s)
   if [ $((now - started)) -ge "$MAX_SECONDS" ]; then
@@ -184,6 +202,7 @@ while true; do
     exit 0
   fi
   cycle=$((cycle + 1))
+  before_run_id="$(latest_run_id || true)"
   log "CYCLE $cycle begin"
   if ! run_with_heartbeat "autoresearch_cycle_${cycle}" \
     timeout --foreground "$JOB_TIMEOUT_SECONDS" nice -n 15 ionice -c2 -n7 \
@@ -194,6 +213,18 @@ while true; do
   if ! gate_latest_artifact | tee -a "$RUN_ROOT/orchestrator.log"; then
     log "STOP artifact quality gate failed"
     exit 1
+  fi
+  after_run_id="$(latest_run_id || true)"
+  if [ -n "$before_run_id" ] && [ "$after_run_id" = "$before_run_id" ]; then
+    stale_cycles=$((stale_cycles + 1))
+    log "STALE cycle produced no new run latest_run_id=$after_run_id stale_cycles=$stale_cycles/$MAX_STALE_CYCLES"
+  else
+    stale_cycles=0
+    log "NEW_RUN latest_run_id=$after_run_id previous_run_id=$before_run_id"
+  fi
+  if [ "$stale_cycles" -ge "$MAX_STALE_CYCLES" ]; then
+    log "STOP no new runs after $stale_cycles consecutive cycles; likely waiting for promotion action"
+    exit 0
   fi
   log "CYCLE $cycle complete; sleeping ${CYCLE_SLEEP_SECONDS}s"
   sleep "$CYCLE_SLEEP_SECONDS"
