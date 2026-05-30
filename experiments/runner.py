@@ -833,6 +833,8 @@ def _train_numpy_mlp(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact
 
 
 def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifact_dir: Path) -> Dict[str, Any]:
+    os.environ.setdefault("OMP_NUM_THREADS", "16")
+    os.environ.setdefault("MKL_NUM_THREADS", "16")
     try:
         import torch
         import torch.nn as nn
@@ -848,6 +850,7 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
     eval_cfg = cfg.get("evaluation", {})
+    dataset_cfg = cfg.get("dataset", {})
     model_name = str(model_cfg.get("name", "tiny_torch_unet"))
     base = int(model_cfg.get("base_channels", 8))
     epochs = int(train_cfg.get("epochs", 3))
@@ -856,7 +859,10 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     weight_decay = float(train_cfg.get("weight_decay", 0.0001))
     max_train_samples = int(train_cfg.get("max_train_samples", 0))
     seed = int(train_cfg.get("seed", 1337))
-    num_threads = int(train_cfg.get("num_threads", min(4, os.cpu_count() or 1)))
+    num_threads = int(train_cfg.get("num_threads", min(16, os.cpu_count() or 16)))
+    num_workers = int(os.environ.get("AUTORESEARCH_NUM_WORKERS", dataset_cfg.get("num_workers", 8)))
+    prefetch_factor = int(dataset_cfg.get("prefetch_factor", 4))
+    pin_memory = bool(dataset_cfg.get("pin_memory", False))
     dice_loss_weight = float(train_cfg.get("dice_loss_weight", 0.0))
     focal_loss_weight = float(train_cfg.get("focal_loss_weight", 0.0))
     focal_alpha = float(train_cfg.get("focal_alpha", 0.25))
@@ -889,7 +895,27 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     pos_weight = _resolve_pos_weight(train_cfg.get("pos_weight", "auto"), ytr_img.reshape(-1))
     threshold = float(eval_cfg.get("threshold", 0.5))
     torch.set_num_threads(max(1, num_threads))
+    try:
+        torch.set_num_interop_threads(4)
+    except RuntimeError:
+        pass
     device = torch.device("cuda" if bool(train_cfg.get("allow_cuda", False)) and torch.cuda.is_available() else "cpu")
+
+    def build_loader(dataset: Any, *, shuffle: bool) -> Any:
+        kwargs: Dict[str, Any] = {
+            "batch_size": batch_size,
+            "shuffle": shuffle,
+            "generator": loader_generator if shuffle else None,
+            "num_workers": max(0, num_workers),
+            "pin_memory": pin_memory,
+        }
+        if kwargs["num_workers"] > 0:
+            kwargs["prefetch_factor"] = max(1, prefetch_factor)
+        else:
+            kwargs.pop("prefetch_factor", None)
+        if not shuffle:
+            kwargs.pop("generator", None)
+        return DataLoader(dataset, **kwargs)
 
     def seed_everything(run_seed: int) -> None:
         np.random.seed(run_seed)
@@ -1047,9 +1073,9 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
                     sampling_metrics.update({f"curriculum_last_{key}": value for key, value in epoch_sampling_metrics.items()})
                 X_epoch, y_epoch = _apply_training_augmentation(Xtr_source[idx], ytr_source[idx], augment_flips=augment_flips, augment_rotation=augment_rotation)
                 epoch_ds = TensorDataset(torch.from_numpy(X_epoch), torch.from_numpy(y_epoch))
-                loader = DataLoader(epoch_ds, batch_size=batch_size, shuffle=True, generator=loader_generator, num_workers=0)
+                loader = build_loader(epoch_ds, shuffle=True)
             else:
-                loader = DataLoader(ds, batch_size=batch_size, shuffle=True, generator=loader_generator, num_workers=0)
+                loader = build_loader(ds, shuffle=True)
             model.train()
             epoch_losses = []
             epoch_prior_losses = []
@@ -1104,6 +1130,10 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "torch_version": torch.__version__,
         "train_samples": int(Xtr_img.shape[0]),
         "batch_size": batch_size,
+        "num_threads": num_threads,
+        "num_workers": num_workers,
+        "prefetch_factor": prefetch_factor,
+        "pin_memory": pin_memory,
         "positive_rate_loss_weight": positive_rate_loss_weight,
         "positive_rate_loss_target": positive_rate_loss_target,
         "positive_rate_loss_tolerance": positive_rate_loss_tolerance,
@@ -1127,6 +1157,10 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "train_loss_last": losses_by_seed[-1][-1] if losses_by_seed and losses_by_seed[-1] else None,
         "epochs": epochs,
         "train_samples_used": int(Xtr_img.shape[0]),
+        "num_threads": num_threads,
+        "num_workers": num_workers,
+        "prefetch_factor": prefetch_factor,
+        "pin_memory": pin_memory,
         "ensemble_size": len(ensemble_seeds),
         "ensemble_seeds": ensemble_seeds,
         "dice_loss_weight": dice_loss_weight,

@@ -35,6 +35,9 @@ class DatasetConfig(BaseModel):
     val_scroll_id: str | None = None
     validation_mode: str | None = None
     z_offsets: list[int] | None = None
+    num_workers: int = Field(default=8, ge=0)
+    prefetch_factor: int = Field(default=4, ge=1)
+    pin_memory: bool = False
 
     @field_validator("extra_train_npzs", mode="before")
     @classmethod

@@ -93,6 +93,9 @@ SEARCH_PATHS = (
     ("dataset", "train_npz"),
     ("dataset", "val_npz"),
     ("dataset", "z_offsets"),
+    ("dataset", "num_workers"),
+    ("dataset", "prefetch_factor"),
+    ("dataset", "pin_memory"),
     ("training", "epochs"),
     ("training", "batch_size"),
     ("training", "learning_rate"),
@@ -136,6 +139,9 @@ SIGNATURE_DEFAULTS = {
     ("dataset", "train_npz"): None,
     ("dataset", "val_npz"): None,
     ("dataset", "z_offsets"): None,
+    ("dataset", "num_workers"): 8,
+    ("dataset", "prefetch_factor"): 4,
+    ("dataset", "pin_memory"): False,
     ("training", "epochs"): 5,
     ("training", "batch_size"): None,
     ("training", "learning_rate"): 0.2,
@@ -533,8 +539,10 @@ def _metadata_allows_expensive(cfg: Dict[str, Any]) -> bool:
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
     if path == ("model", "depth") and isinstance(value, int) and value > 3:
         return 3
+    if isinstance(value, dict):
+        return tuple((key, _normalize_signature_value(path + (str(key),), value[key])) for key in sorted(value))
     if isinstance(value, list):
-        return tuple(value)
+        return tuple(_normalize_signature_value(path + (str(index),), item) for index, item in enumerate(value))
     if isinstance(value, float):
         return round(value, 10)
     return value
@@ -1285,12 +1293,33 @@ def _linked_loo_summary_failed(run: Dict[str, Any]) -> bool:
     return not bool(summary.get("promotion_ready"))
 
 
+def _artifact_full_tile_ready(run: Dict[str, Any]) -> bool:
+    artifact_dir = run.get("artifact_dir")
+    if not artifact_dir:
+        return False
+    for path in Path(str(artifact_dir)).glob("full_tile*/metrics.json"):
+        try:
+            metrics = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(metrics, dict):
+            continue
+        checks = metrics.get("promotion_checks") if isinstance(metrics.get("promotion_checks"), dict) else {}
+        region = metrics.get("evaluation_region") if isinstance(metrics.get("evaluation_region"), dict) else {}
+        if checks.get("eligible") is True and region.get("type") == "whole_segment":
+            return True
+    return False
+
+
 def _promotion_next_action_with_evidence(run: Dict[str, Any]) -> str:
+    evidence: dict[str, bool] = {}
     if _linked_loo_summary_ready(run):
-        metrics = run.setdefault("metrics", {})
-        if isinstance(metrics, dict):
-            metrics = {**metrics, "loo_promotion_ready": True}
-            run = {**run, "metrics": metrics}
+        evidence["loo_promotion_ready"] = True
+    if _artifact_full_tile_ready(run):
+        evidence["full_tile_promotion_ready"] = True
+    if evidence:
+        metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+        run = {**run, "metrics": {**metrics, **evidence}}
     return _promotion_next_action(run)
 
 
@@ -1776,7 +1805,10 @@ def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> N
 
 
 def _run_experiment_checked(config_path: Path) -> None:
-    subprocess.run([sys.executable, "run_experiment.py", "--config", str(config_path)], cwd=ROOT, check=True)
+    env = os.environ.copy()
+    env.setdefault("OMP_NUM_THREADS", "16")
+    env.setdefault("MKL_NUM_THREADS", "16")
+    subprocess.run([sys.executable, "run_experiment.py", "--config", str(config_path)], cwd=ROOT, env=env, check=True)
 
 
 def _acquire_autoresearch_lock(lock: Any) -> None:
