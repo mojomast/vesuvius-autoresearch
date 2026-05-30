@@ -74,6 +74,8 @@ class TrainingConfig(BaseModel):
     augment_flips: bool = False
     augment_rotation: bool = False
     sampling_strategy: str | None = None
+    stateful_sampler: bool = False
+    group_stratified_sampling: bool = False
     sampling_curriculum: dict[str, Any] | str | None = None
     patch_sampling: str | None = None
     hard_negative_fraction: float | None = Field(default=None, ge=0.0, le=1.0)

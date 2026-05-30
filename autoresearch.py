@@ -123,6 +123,8 @@ SEARCH_PATHS = (
     ("training", "seeds"),
     ("training", "deterministic"),
     ("training", "sampling_strategy"),
+    ("training", "stateful_sampler"),
+    ("training", "group_stratified_sampling"),
     ("training", "sampling_curriculum"),
     ("training", "hard_negative_fraction"),
     ("evaluation", "threshold"),
@@ -169,6 +171,8 @@ SIGNATURE_DEFAULTS = {
     ("training", "seeds"): None,
     ("training", "deterministic"): None,
     ("training", "sampling_strategy"): None,
+    ("training", "stateful_sampler"): False,
+    ("training", "group_stratified_sampling"): False,
     ("training", "sampling_curriculum"): None,
     ("training", "hard_negative_fraction"): None,
     ("evaluation", "threshold"): 0.5,
@@ -725,7 +729,7 @@ def _mutation_family(path: Tuple[str, ...]) -> str:
         return "optimizer"
     if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "focal_loss_weight"), ("training", "focal_gamma"), ("training", "positive_rate_loss_weight"), ("training", "positive_rate_loss_tolerance"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
         return "loss_calibration"
-    if path in {("training", "sampling_strategy"), ("training", "sampling_curriculum"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips"), ("training", "augment_rotation")}:
+    if path in {("training", "sampling_strategy"), ("training", "stateful_sampler"), ("training", "group_stratified_sampling"), ("training", "sampling_curriculum"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips"), ("training", "augment_rotation")}:
         return "data_sampling"
     if path in {("model", "name"), ("model", "input_mode"), ("model", "base_channels"), ("model", "depth"), ("model", "hidden_units")}:
         return "model_family"

@@ -20,6 +20,7 @@ import numpy as np
 import yaml
 
 from data.vesuvius_data import prepare_training_subset, validate_prepared_npz
+from src.autoresearch.villa_samplers import GroupStratifiedBatchSampler, StatefulShuffledSampler
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "experiments" / "experiments.db"
@@ -187,6 +188,44 @@ def _load_training_arrays(train_npz: str, cfg: Dict[str, Any]) -> tuple[np.ndarr
         "extra_train_samples": int(sum(int(meta.get("samples", 0)) for meta in extra_metas)),
         "extra_train_segments": sorted({segment for meta in extra_metas for segment in _metadata_segment_ids(meta)}),
     }
+
+
+def _segment_group_indices_from_meta(meta: Dict[str, Any], sample_count: int) -> np.ndarray | None:
+    data = meta.get("metadata", {}) if isinstance(meta.get("metadata"), dict) else {}
+    inputs = data.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        return None
+    groups: list[int] = []
+    segment_to_group: dict[str, int] = {}
+    for item in inputs:
+        if not isinstance(item, dict):
+            return None
+        samples = int(item.get("samples") or 0)
+        segments = item.get("source_segments") or item.get("train_segments") or []
+        segment = str(segments[0]) if isinstance(segments, list) and segments else str(item.get("segment_id") or item.get("path") or len(segment_to_group))
+        if segment not in segment_to_group:
+            segment_to_group[segment] = len(segment_to_group)
+        groups.extend([segment_to_group[segment]] * samples)
+    if len(groups) != int(sample_count):
+        return None
+    return np.asarray(groups, dtype=np.int64)
+
+
+def _augment_group_indices(groups: np.ndarray, *, augment_flips: bool) -> np.ndarray:
+    if not augment_flips:
+        return groups
+    return np.concatenate([groups, groups, groups]).astype(np.int64)
+
+
+def _effective_group_batch_size(batch_size: int, n_groups: int) -> int:
+    if n_groups <= 1 or batch_size % n_groups == 0:
+        return batch_size
+    adjusted = batch_size - (batch_size % n_groups)
+    if adjusted >= n_groups:
+        LOGGER.warning("Adjusting group-stratified batch_size from %s to %s for %s groups", batch_size, adjusted, n_groups)
+        return adjusted
+    LOGGER.warning("Adjusting group-stratified batch_size from %s to %s for %s groups", batch_size, n_groups, n_groups)
+    return n_groups
 
 
 def init_db(db_path: Path | str = DB_PATH) -> None:
@@ -887,6 +926,8 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
     augment_rotation = bool(train_cfg.get("augment_rotation", False))
     sampling_curriculum = train_cfg.get("sampling_curriculum")
     use_sampling_curriculum = bool(sampling_curriculum) and max_train_samples > 0
+    use_stateful_sampler = str(train_cfg.get("sampling_strategy") or "") == "stateful_shuffled" or bool(train_cfg.get("stateful_sampler", False))
+    use_group_stratified = bool(train_cfg.get("group_stratified_sampling", False))
     tta_flips = bool(eval_cfg.get("tta_flips", eval_cfg.get("test_time_flips", False)))
     raw_seeds = train_cfg.get("seeds", None)
     ensemble_seeds = [int(s) for s in raw_seeds] if raw_seeds is not None else [seed]
@@ -901,7 +942,27 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         pass
     device = torch.device("cuda" if bool(train_cfg.get("allow_cuda", False)) and torch.cuda.is_available() else "cpu")
 
-    def build_loader(dataset: Any, *, shuffle: bool) -> Any:
+    def build_loader(dataset: Any, *, shuffle: bool, group_indices: np.ndarray | None = None, loader_seed: int | None = None) -> Any:
+        sampler_seed = seed if loader_seed is None else int(loader_seed)
+        if use_group_stratified and group_indices is not None:
+            group_count = int(len(set(int(x) for x in group_indices.tolist())))
+            effective_batch_size = _effective_group_batch_size(batch_size, group_count)
+            return DataLoader(
+                dataset,
+                batch_sampler=GroupStratifiedBatchSampler(group_indices, batch_size=effective_batch_size, seed=sampler_seed, drop_last=True),
+                num_workers=max(0, num_workers),
+                pin_memory=pin_memory,
+                **({"prefetch_factor": max(1, prefetch_factor)} if max(0, num_workers) > 0 else {}),
+            )
+        if use_stateful_sampler:
+            return DataLoader(
+                dataset,
+                batch_size=batch_size,
+                sampler=StatefulShuffledSampler(len(dataset), seed=sampler_seed),
+                num_workers=max(0, num_workers),
+                pin_memory=pin_memory,
+                **({"prefetch_factor": max(1, prefetch_factor)} if max(0, num_workers) > 0 else {}),
+            )
         kwargs: Dict[str, Any] = {
             "batch_size": batch_size,
             "shuffle": shuffle,
@@ -928,16 +989,22 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
             torch.backends.cudnn.deterministic = True
 
     Xtr_source, ytr_source = Xtr_img, ytr_img
+    source_groups = _segment_group_indices_from_meta(cfg.get("resolved_data", {}).get("train", {}), Xtr_source.shape[0])
     if not use_sampling_curriculum and max_train_samples > 0 and Xtr_img.shape[0] > max_train_samples:
         idx, sampling_metrics = _sample_patch_indices(Xtr_img, ytr_img, max_train_samples, seed, train_cfg)
         Xtr_img = Xtr_img[idx]
         ytr_img = ytr_img[idx]
+        selected_groups = source_groups[idx] if source_groups is not None else None
     elif use_sampling_curriculum:
         sampling_metrics = {"patch_sampling": "curriculum", "selected_patches": int(min(max_train_samples, Xtr_img.shape[0])), "sampling_curriculum": sampling_curriculum}
+        selected_groups = None
     else:
         sampling_metrics = {"patch_sampling": "all", "selected_patches": int(Xtr_img.shape[0])}
+        selected_groups = source_groups
     if not use_sampling_curriculum:
         Xtr_img, ytr_img = _apply_training_augmentation(Xtr_img, ytr_img, augment_flips=augment_flips, augment_rotation=augment_rotation)
+        if selected_groups is not None:
+            selected_groups = _augment_group_indices(selected_groups, augment_flips=augment_flips)
 
     class ConvBlock(nn.Module):
         def __init__(self, cin: int, cout: int):
@@ -1073,9 +1140,10 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
                     sampling_metrics.update({f"curriculum_last_{key}": value for key, value in epoch_sampling_metrics.items()})
                 X_epoch, y_epoch = _apply_training_augmentation(Xtr_source[idx], ytr_source[idx], augment_flips=augment_flips, augment_rotation=augment_rotation)
                 epoch_ds = TensorDataset(torch.from_numpy(X_epoch), torch.from_numpy(y_epoch))
-                loader = build_loader(epoch_ds, shuffle=True)
+                epoch_groups = _augment_group_indices(source_groups[idx], augment_flips=augment_flips) if source_groups is not None else None
+                loader = build_loader(epoch_ds, shuffle=True, group_indices=epoch_groups, loader_seed=run_seed + _epoch)
             else:
-                loader = build_loader(ds, shuffle=True)
+                loader = build_loader(ds, shuffle=True, group_indices=selected_groups, loader_seed=run_seed)
             model.train()
             epoch_losses = []
             epoch_prior_losses = []
@@ -1146,6 +1214,8 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "augment_flips": augment_flips,
         "augment_rotation": augment_rotation,
         "sampling_curriculum": sampling_curriculum,
+        "stateful_sampler": use_stateful_sampler,
+        "group_stratified_sampling": use_group_stratified,
     }, indent=2, sort_keys=True))
     metrics_eval_cfg = {**eval_cfg}
     if positive_rate_loss_target is not None:
@@ -1183,6 +1253,8 @@ def _train_torch_unet(train_npz: str, val_npz: str, cfg: Dict[str, Any], artifac
         "augment_flips": augment_flips,
         "augment_rotation": augment_rotation,
         "sampling_curriculum": sampling_curriculum,
+        "stateful_sampler": use_stateful_sampler,
+        "group_stratified_sampling": use_group_stratified,
         "tta_flips": tta_flips,
         **sampling_metrics,
         **extra_train_metrics,
