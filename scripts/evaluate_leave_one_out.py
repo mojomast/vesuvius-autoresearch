@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import copy
 import json
 import os
@@ -280,11 +280,25 @@ def _run_fold_jobs_for_heldout_fold(tasks: list[tuple[str, dict[str, Any]]]) -> 
     return [_run_fold_job(config_path, row) for config_path, row in tasks]
 
 
-def _write_rows_jsonl(output_jsonl: Path, rows: list[dict[str, Any]]) -> None:
+def _write_row_jsonl(output_jsonl: Path, row: dict[str, Any]) -> None:
     with output_jsonl.open("a") as fh:
-        for row in rows:
-            fh.write(json.dumps(row, sort_keys=True) + "\n")
-            print(json.dumps(row, sort_keys=True), flush=True)
+        line = json.dumps(row, sort_keys=True)
+        fh.write(line + "\n")
+        print(line, flush=True)
+
+
+def _print_progress(row: dict[str, Any], completed: int, total: int) -> None:
+    print(
+        "LOO_PROGRESS " + json.dumps({
+            "completed": completed,
+            "heldout_segment": row.get("heldout_segment"),
+            "returncode": row.get("returncode"),
+            "seed": row.get("seed"),
+            "total": total,
+        }, sort_keys=True),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def main() -> int:
@@ -299,11 +313,14 @@ def main() -> int:
     parser.add_argument("--min-seeds-for-promotion", type=int, default=3, help="Distinct successful seeds required before setting promotion_ready")
     parser.add_argument("--jobs", type=int, default=1, help="Parallel fold jobs for non-dry-run execution; default 1")
     parser.add_argument("--execution-mode", choices=("task", "fold-major"), default="task", help="Schedule one worker job per seed task, or group all seeds for a held-out fold in one worker")
-    parser.add_argument("--limit-worker-threads", action="store_true", help="Set common BLAS/OpenMP thread env vars to 1 inside worker processes when unset")
+    parser.add_argument("--limit-worker-threads", action=argparse.BooleanOptionalAction, default=True, help="Set common BLAS/OpenMP thread env vars to 1 inside worker processes when unset")
+    parser.add_argument("--max-tasks", type=int, default=None, help="Optional cap on fold/seed tasks to run")
     parser.add_argument("--dry-run", action="store_true", help="Write planned fold configs without running experiments")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
+    if args.max_tasks is not None and args.max_tasks < 1:
+        parser.error("--max-tasks must be >= 1")
 
     base_path = _resolve(args.base_config)
     fold_map_path = _resolve(args.fold_map)
@@ -354,10 +371,27 @@ def main() -> int:
                 else:
                     tasks.append((str(fold_config), row))
                     tasks_by_fold.setdefault(str(heldout_segment), []).append((str(fold_config), row))
-        if tasks and args.jobs == 1:
+        if args.max_tasks is not None:
+            if args.dry_run:
+                rows = rows[: args.max_tasks]
+            else:
+                tasks = tasks[: args.max_tasks]
+                tasks_by_fold = {}
+                for task in tasks:
+                    tasks_by_fold.setdefault(str(task[1]["heldout_segment"]), []).append(task)
+        total_tasks = len(rows) if args.dry_run else len(tasks)
+        if args.dry_run:
+            for completed, row in enumerate(rows, start=1):
+                _write_row_jsonl(output_jsonl, row)
+                _print_progress(row, completed, total_tasks)
+        elif tasks and args.jobs == 1:
             if args.limit_worker_threads:
                 _limit_worker_threads()
-            rows.extend(_run_fold_job(config_path, row) for config_path, row in tasks)
+            for completed, (config_path, row) in enumerate(tasks, start=1):
+                result_row = _run_fold_job(config_path, row)
+                rows.append(result_row)
+                _write_row_jsonl(output_jsonl, result_row)
+                _print_progress(result_row, completed, total_tasks)
         elif tasks:
             executor_kwargs: dict[str, Any] = {"max_workers": args.jobs}
             if args.limit_worker_threads:
@@ -365,11 +399,22 @@ def main() -> int:
             with ProcessPoolExecutor(**executor_kwargs) as executor:
                 if args.execution_mode == "fold-major":
                     fold_task_groups = [tasks_by_fold[fold] for fold in sorted(tasks_by_fold)]
-                    for fold_rows in executor.map(_run_fold_jobs_for_heldout_fold, fold_task_groups):
+                    future_to_group = {executor.submit(_run_fold_jobs_for_heldout_fold, group): group for group in fold_task_groups}
+                    completed = 0
+                    for future in as_completed(future_to_group):
+                        fold_rows = future.result()
                         rows.extend(fold_rows)
+                        for row in fold_rows:
+                            completed += 1
+                            _write_row_jsonl(output_jsonl, row)
+                            _print_progress(row, completed, total_tasks)
                 else:
-                    rows.extend(executor.map(_run_fold_job, [task[0] for task in tasks], [task[1] for task in tasks]))
-        _write_rows_jsonl(output_jsonl, rows)
+                    future_to_task = {executor.submit(_run_fold_job, config_path, row): (config_path, row) for config_path, row in tasks}
+                    for completed, future in enumerate(as_completed(future_to_task), start=1):
+                        row = future.result()
+                        rows.append(row)
+                        _write_row_jsonl(output_jsonl, row)
+                        _print_progress(row, completed, total_tasks)
 
     summary = _summarize(rows, min_seeds_for_promotion=args.min_seeds_for_promotion)
     summary.update({"label": label, "base_config": str(base_path), "fold_map": str(fold_map_path), "seeds": seeds})

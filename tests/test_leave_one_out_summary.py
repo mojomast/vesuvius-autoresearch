@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from concurrent.futures import Future
 
 from scripts.evaluate_leave_one_out import THREAD_LIMIT_ENV_VARS, _limit_worker_threads, _run_fold_job, _summarize, main
 
@@ -203,6 +204,28 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
 
         self.assertEqual([(row["heldout_segment"], row["seed"]) for row in rows], [("a", 2), ("a", 1), ("b", 2), ("b", 1)])
 
+    def test_dry_run_max_tasks_limits_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = root / "base.yaml"
+            config.write_text("dataset:\n  patch_size: 64\nmodel:\n  name: tiny_torch_unet\ntraining:\n  seed: 7\n")
+            fold_map = root / "fold_map.json"
+            fold_map.write_text(json.dumps({
+                "a": {"train_npz": "train_a.npz", "val_npz": "val_a.npz"},
+                "b": {"train_npz": "train_b.npz", "val_npz": "val_b.npz"},
+            }))
+            output = root / "loo.jsonl"
+            summary = root / "loo.summary.json"
+
+            with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", str(config), "--fold-map", str(fold_map), "--output-jsonl", str(output), "--summary-json", str(summary), "--seeds", "1,2", "--dry-run", "--max-tasks", "3"]):
+                self.assertEqual(main(), 0)
+
+            rows = [json.loads(line) for line in output.read_text().splitlines()]
+            summary_payload = json.loads(summary.read_text())
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(summary_payload["folds_requested"], 3)
+
     def test_fold_major_mode_groups_all_seeds_for_heldout_fold(self) -> None:
         executor_instances = []
 
@@ -218,11 +241,11 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb) -> None:
                 return None
 
-            def map(self, fn, *iterables):
-                if len(iterables) == 1:
-                    self.groups = list(iterables[0])
-                    return [fn(group) for group in self.groups]
-                return [fn(*args) for args in zip(*iterables)]
+            def submit(self, fn, group):
+                self.groups.append(group)
+                future = Future()
+                future.set_result(fn(group))
+                return future
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -243,9 +266,44 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
 
             rows = [json.loads(line) for line in output.read_text().splitlines()]
 
-        self.assertEqual([(row["heldout_segment"], row["seed"]) for row in rows], [("a", 2), ("a", 1), ("b", 2), ("b", 1)])
-        self.assertEqual([[row["heldout_segment"] for _, row in group] for group in executor_instances[0].groups], [["a", "a"], ["b", "b"]])
-        self.assertEqual([[row["seed"] for _, row in group] for group in executor_instances[0].groups], [[2, 1], [2, 1]])
+        self.assertEqual(sorted((row["heldout_segment"], row["seed"]) for row in rows), [("a", 1), ("a", 2), ("b", 1), ("b", 2)])
+        self.assertEqual(sorted([[row["heldout_segment"] for _, row in group] for group in executor_instances[0].groups]), [["a", "a"], ["b", "b"]])
+        self.assertEqual(sorted([[row["seed"] for _, row in group] for group in executor_instances[0].groups]), [[2, 1], [2, 1]])
+        self.assertEqual(executor_instances[0].kwargs, {"max_workers": 2, "initializer": _limit_worker_threads})
+
+    def test_no_limit_worker_threads_omits_executor_initializer(self) -> None:
+        executor_instances = []
+
+        class FakeExecutor:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+                executor_instances.append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def submit(self, fn, config_path, row):
+                future = Future()
+                future.set_result(fn(config_path, row))
+                return future
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = root / "base.yaml"
+            config.write_text("dataset:\n  patch_size: 64\nmodel:\n  name: tiny_torch_unet\ntraining:\n  seed: 7\n")
+            fold_map = root / "fold_map.json"
+            fold_map.write_text(json.dumps({"a": {"train_npz": "train_a.npz", "val_npz": "val_a.npz"}}))
+            output = root / "loo.jsonl"
+            summary = root / "loo.summary.json"
+
+            with patch("scripts.evaluate_leave_one_out.ProcessPoolExecutor", FakeExecutor):
+                with patch("scripts.evaluate_leave_one_out.run_experiment", return_value={"run_id": "run1", "artifact_dir": "artifact", "metrics": _metrics()}):
+                    with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", str(config), "--fold-map", str(fold_map), "--output-jsonl", str(output), "--summary-json", str(summary), "--jobs", "2", "--no-limit-worker-threads"]):
+                        self.assertEqual(main(), 0)
+
         self.assertEqual(executor_instances[0].kwargs, {"max_workers": 2})
 
     def test_rerun_tag_is_written_to_fold_config(self) -> None:
@@ -285,6 +343,11 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
     def test_jobs_must_be_positive(self) -> None:
         with self.assertRaises(SystemExit):
             with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", "x", "--fold-map", "y", "--output-jsonl", "z", "--jobs", "0", "--dry-run"]):
+                main()
+
+    def test_max_tasks_must_be_positive(self) -> None:
+        with self.assertRaises(SystemExit):
+            with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", "x", "--fold-map", "y", "--output-jsonl", "z", "--max-tasks", "0", "--dry-run"]):
                 main()
 
     def test_run_fold_job_returns_metrics_or_error(self) -> None:
