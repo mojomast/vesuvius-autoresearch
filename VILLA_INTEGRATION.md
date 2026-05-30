@@ -59,6 +59,18 @@ The targeted follow-up batch falsified three simple hypotheses for this fold: lo
 
 Built-in probability ensembling did not help on the sampled hard fold: the `11001,11045,11073` ensemble reached AP `0.059997`, below all strong single seeds. The current best path is seed `11071` with 20 epochs, not ensemble averaging.
 
+## Follow-Up Fold Calibration
+
+The next meaningful weak villa-label fold after the hard-fold breakthrough is `20230522215721`; villa-label validation folds `20230522181603` and `20230601193301` contain zero positive pixels in the current fold map and are not meaningful AP/F1 targets.
+
+| Run | Fold | Variant | F1 | AP | Fixed status | Pred/val ratio |
+|---|---|---|---:|---:|---|---:|
+| `20260530T054336Z_b8e15468` | `20230522215721` | hard-fold seed `11071`, 20 epochs | `0.075191` | `0.060314` | weak | `2.349832` |
+| `20260530T055508Z_78c9b225` | `20230522215721` | seed `11018`, PR weight `0.08`, threshold `0.35` | `0.209780` | `0.121645` | weak | `1.624341` |
+| `20260530T060027Z_98d3bb41` | `20230522215721` | seed `11018`, PR weight `0.08`, threshold `0.20` | `0.317771` | `0.203345` | ok | `0.768921` |
+
+Lowering the fixed threshold to `0.20` for this fold converted fixed-threshold evidence from weak to ok and improved sampled AP/F1. This was run with a conservative CPU budget (`OMP_NUM_THREADS=8`, `MKL_NUM_THREADS=8`, `dataset.num_workers=4`).
+
 ## LOO Outcome
 
 No villa-label candidate met the Worker 5 LOO entry criteria (`val_f1 >= 0.42`, fixed-threshold `ok`, pred/val ratio `0.5..3.5`). The expensive 7-seed LOO pass was therefore skipped to avoid promoting or over-validating a weak sampled hard-fold run.

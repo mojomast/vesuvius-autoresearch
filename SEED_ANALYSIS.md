@@ -43,3 +43,16 @@ The most plausible cause is optimizer/initialization sensitivity on a sparse, lo
 Use `configs/seedsweep_hardfold_seed11071_epoch20.yaml` as the current best sampled hard-fold rescue config. Treat `11071` as the new golden seed for `20230530172803`, with `11073` and `11074` as backup seeds. Do not use probability ensembling as the default until a different ensemble method proves it can preserve AP ranking.
 
 Promotion gates should remain unchanged. The next validation step is LOO only if the team accepts spending compute despite sampled F1 still being below the historical LOO entry threshold.
+
+## Follow-Up Fold Calibration
+
+After the hard-fold breakthrough, the next meaningful weak villa-label fold was `20230522215721`; folds `20230522181603` and `20230601193301` currently have zero validation positives in `data/fold_map_villa_labels.json`, so AP/F1 are not meaningful there.
+
+For `20230522215721`, the hard-fold seed `11071` recipe underperformed (`20260530T054336Z_b8e15468`: AP `0.060314`, F1 `0.075191`, fixed threshold `weak`). Restoring that fold's historically stronger seed/loss family and calibrating the fixed threshold produced a clear improvement:
+
+| Run | Fold | Variant | AP | F1 | Fixed F1 | Fixed status | Pred/val ratio |
+|---|---|---|---:|---:|---:|---|---:|
+| `20260530T055508Z_78c9b225` | `20230522215721` | seed `11018`, PR weight `0.08`, threshold `0.35` | `0.121645` | `0.209780` | `0.096339` | weak | `1.624341` |
+| `20260530T060027Z_98d3bb41` | `20230522215721` | seed `11018`, PR weight `0.08`, threshold `0.20` | `0.203345` | `0.317771` | `0.271323` | ok | `0.768921` |
+
+This shows the second weak fold is primarily threshold/calibration-sensitive rather than architecture-limited. The low-load calibration run used 8 compute threads and 4 DataLoader workers to avoid CPU saturation.
