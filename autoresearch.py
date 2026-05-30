@@ -128,6 +128,7 @@ SEARCH_PATHS = (
     ("training", "sampling_curriculum"),
     ("training", "hard_negative_fraction"),
     ("evaluation", "threshold"),
+    ("evaluation", "use_villa_metrics"),
     ("evaluation", "max_pred_positive_rate_ratio"),
     ("evaluation", "tta_flips"),
 )
@@ -176,6 +177,7 @@ SIGNATURE_DEFAULTS = {
     ("training", "sampling_curriculum"): None,
     ("training", "hard_negative_fraction"): None,
     ("evaluation", "threshold"): 0.5,
+    ("evaluation", "use_villa_metrics"): True,
     ("evaluation", "max_pred_positive_rate_ratio"): None,
     ("evaluation", "tta_flips"): None,
 }

@@ -334,6 +334,23 @@ def _binary_metrics(probs: np.ndarray, labels: np.ndarray, threshold: float) -> 
     }
 
 
+def _warn_metric_discrepancy(local_f1: float, villa_f1: float) -> None:
+    if abs(float(local_f1) - float(villa_f1)) > 0.005:
+        LOGGER.warning("METRIC DISCREPANCY: local=%.4f villa=%.4f", local_f1, villa_f1)
+
+
+def _villa_fixed_f1_from_probs(probs: np.ndarray, labels: np.ndarray, threshold: float) -> float:
+    import torch
+
+    from src.autoresearch.villa_metrics import StreamingBinarySegmentationMetrics
+
+    clipped = np.clip(probs.astype(np.float32), 1e-7, 1.0 - 1e-7)
+    logits = np.log(clipped / (1.0 - clipped)).astype(np.float32)
+    metrics = StreamingBinarySegmentationMetrics(threshold=threshold)
+    metrics.update(logits=torch.from_numpy(logits), targets=torch.from_numpy(labels.astype(np.float32)))
+    return float(metrics.compute()["dice"].cpu())
+
+
 def _average_precision(probs: np.ndarray, labels: np.ndarray) -> float:
     positives = float((labels > 0.5).sum())
     if positives <= 0:
@@ -600,6 +617,12 @@ def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_label
     eps = 1e-7
     val_loss = float(-np.mean(yv * np.log(pv + eps) + (1 - yv) * np.log(1 - pv + eps)))
     fixed = _binary_metrics(pv, yv, threshold)
+    villa_fixed_f1 = None
+    use_villa_metrics = bool(eval_cfg.get("use_villa_metrics", True))
+    if use_villa_metrics:
+        villa_fixed_f1 = _villa_fixed_f1_from_probs(pv, yv, threshold)
+        _warn_metric_discrepancy(float(fixed["f1"]), villa_fixed_f1)
+        fixed["f1"] = villa_fixed_f1
     score_quantiles = np.quantile(pv, np.linspace(0.001, 0.999, 160, dtype=np.float32))
     sweep_thresholds = sorted(set(float(x) for x in np.concatenate([
         np.linspace(0.02, 0.95, 48, dtype=np.float32),
@@ -646,6 +669,8 @@ def _pixel_metrics_from_probs(probs: np.ndarray, labels: np.ndarray, train_label
         "recall": float(best_f1_row["recall"]),
         "fixed_threshold": threshold,
         "fixed_threshold_f1": float(fixed["f1"]),
+        "villa_fixed_threshold_f1": villa_fixed_f1,
+        "use_villa_metrics": use_villa_metrics,
         "fixed_threshold_precision": float(fixed["precision"]),
         "fixed_threshold_recall": float(fixed["recall"]),
         "average_precision": average_precision,

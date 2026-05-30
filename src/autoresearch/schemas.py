@@ -112,6 +112,7 @@ class EvaluationConfig(BaseModel):
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     tta_flips: bool = False
     test_time_flips: bool | None = None
+    use_villa_metrics: bool = True
     calibration_bins: int = Field(default=15, ge=1)
     max_pred_positive_rate_ratio: float | None = Field(default=None, gt=0.0)
     min_pred_positive_rate_ratio: float | None = Field(default=None, ge=0.0)
