@@ -60,12 +60,16 @@ run_with_heartbeat() {
   local pid=$!
   local started
   started=$(date +%s)
+  local next_heartbeat=$HEARTBEAT_SECONDS
   while kill -0 "$pid" 2>/dev/null; do
-    sleep "$HEARTBEAT_SECONDS"
+    sleep 5
     local now elapsed
     now=$(date +%s)
     elapsed=$((now - started))
-    log "HEARTBEAT $label pid=$pid elapsed_sec=$elapsed logfile=$logfile"
+    if [ "$elapsed" -ge "$next_heartbeat" ]; then
+      log "HEARTBEAT $label pid=$pid elapsed_sec=$elapsed logfile=$logfile"
+      next_heartbeat=$((next_heartbeat + HEARTBEAT_SECONDS))
+    fi
   done
   wait "$pid"
   local rc=$?
@@ -244,15 +248,23 @@ while true; do
   if [ "$evidence_only_cycles" -ge "$MAX_EVIDENCE_ONLY_CYCLES" ]; then
     log "EVIDENCE_LIMIT reached; next cycle will allow exploration past promotion action"
     export SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1
+    export AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0
     export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1
     evidence_only_cycles=0
   else
     export SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE="${SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE:-0}"
-    export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION="${AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION:-0}"
+    if [ "$SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE" = "1" ]; then
+      export AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0
+      export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1
+    else
+      export AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=1
+      export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=0
+    fi
   fi
   if [ "$stale_cycles" -ge "$MAX_STALE_CYCLES" ]; then
     log "STALE_LIMIT reached; enabling one exploration override cycle instead of stopping"
     export SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1
+    export AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0
     export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1
     stale_cycles=0
   fi

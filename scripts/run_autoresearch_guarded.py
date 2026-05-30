@@ -138,7 +138,10 @@ def main() -> int:
         ),
     })
     env.setdefault("AUTORESEARCH_PROPOSALS", str(proposals))
-    if env.get("SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE") != "1":
+    if env.get("SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE") == "1":
+        env["AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY"] = "0"
+        env["AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION"] = "1"
+    else:
         env["AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY"] = "1"
         env["AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION"] = "0"
 

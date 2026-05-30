@@ -1505,9 +1505,8 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHist
         "promotion_required": ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"],
         "proposals": [],
     }
-    if command_args and os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1":
-        timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
-        payload.update(_run_automated_promotion(command_args, candidate_run_id, summary_json or LOGS / "promotion.summary.json", timeout, promotion_failure_reasons=gate_warnings))
+    if summary_json is not None:
+        payload["summary_json"] = str(summary_json)
     return payload
 
 
@@ -2035,7 +2034,8 @@ def main() -> int:
                 else:
                     timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
                     reasons = [str(item) for item in manual_payload.get("promotion_failure_reasons", [])] if isinstance(manual_payload.get("promotion_failure_reasons"), list) else []
-                    manual_payload.update(_run_automated_promotion(command_args, str(manual_payload.get("candidate_run_id") or "manual_promotion"), LOGS / "manual_promotion_action.summary.json", timeout, promotion_failure_reasons=reasons))
+                    summary_json = Path(str(manual_payload.get("summary_json") or LOGS / "manual_promotion_action.summary.json"))
+                    manual_payload.update(_run_automated_promotion(command_args, str(manual_payload.get("candidate_run_id") or "manual_promotion"), summary_json, timeout, promotion_failure_reasons=reasons))
             print(f"AutoResearch promotion action required: {manual_payload.get('next_action')}", flush=True)
             if manual_payload.get("command"):
                 print(f"Command: {manual_payload['command']}", flush=True)
