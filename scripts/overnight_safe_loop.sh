@@ -11,6 +11,7 @@ CYCLE_SLEEP_SECONDS="${OVERNIGHT_CYCLE_SLEEP_SECONDS:-900}"
 JOB_TIMEOUT_SECONDS="${OVERNIGHT_JOB_TIMEOUT_SECONDS:-5400}"
 HEARTBEAT_SECONDS="${OVERNIGHT_HEARTBEAT_SECONDS:-300}"
 MAX_STALE_CYCLES="${OVERNIGHT_MAX_STALE_CYCLES:-2}"
+MAX_EVIDENCE_ONLY_CYCLES="${OVERNIGHT_MAX_EVIDENCE_ONLY_CYCLES:-3}"
 
 mkdir -p "$RUN_ROOT" "$REPO/logs"
 
@@ -40,6 +41,14 @@ con.close()
 if row:
     print(row[0])
 PY
+}
+
+latest_promotion_log() {
+  local latest
+  latest=$(ls -t logs/promotion_*.log 2>/dev/null | sed -n '1p' || true)
+  if [ -n "$latest" ]; then
+    printf '%s\n' "$latest"
+  fi
 }
 
 run_with_heartbeat() {
@@ -191,6 +200,7 @@ fi
 started=$(date +%s)
 cycle=0
 stale_cycles=0
+evidence_only_cycles=0
 while true; do
   now=$(date +%s)
   if [ $((now - started)) -ge "$MAX_SECONDS" ]; then
@@ -203,6 +213,7 @@ while true; do
   fi
   cycle=$((cycle + 1))
   before_run_id="$(latest_run_id || true)"
+  before_promotion_log="$(latest_promotion_log || true)"
   log "CYCLE $cycle begin"
   if ! run_with_heartbeat "autoresearch_cycle_${cycle}" \
     timeout --foreground "$JOB_TIMEOUT_SECONDS" nice -n 15 ionice -c2 -n7 \
@@ -215,16 +226,35 @@ while true; do
     exit 1
   fi
   after_run_id="$(latest_run_id || true)"
+  after_promotion_log="$(latest_promotion_log || true)"
   if [ -n "$before_run_id" ] && [ "$after_run_id" = "$before_run_id" ]; then
-    stale_cycles=$((stale_cycles + 1))
-    log "STALE cycle produced no new run latest_run_id=$after_run_id stale_cycles=$stale_cycles/$MAX_STALE_CYCLES"
+    if [ -n "$after_promotion_log" ] && [ "$after_promotion_log" != "$before_promotion_log" ]; then
+      stale_cycles=0
+      evidence_only_cycles=$((evidence_only_cycles + 1))
+      log "EVIDENCE_PROGRESS latest_run_id=$after_run_id promotion_log=$after_promotion_log evidence_only_cycles=$evidence_only_cycles/$MAX_EVIDENCE_ONLY_CYCLES"
+    else
+      stale_cycles=$((stale_cycles + 1))
+      log "STALE cycle produced no new run or evidence latest_run_id=$after_run_id stale_cycles=$stale_cycles/$MAX_STALE_CYCLES"
+    fi
   else
     stale_cycles=0
+    evidence_only_cycles=0
     log "NEW_RUN latest_run_id=$after_run_id previous_run_id=$before_run_id"
   fi
+  if [ "$evidence_only_cycles" -ge "$MAX_EVIDENCE_ONLY_CYCLES" ]; then
+    log "EVIDENCE_LIMIT reached; next cycle will allow exploration past promotion action"
+    export SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1
+    export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1
+    evidence_only_cycles=0
+  else
+    export SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE="${SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE:-0}"
+    export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION="${AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION:-0}"
+  fi
   if [ "$stale_cycles" -ge "$MAX_STALE_CYCLES" ]; then
-    log "STOP no new runs after $stale_cycles consecutive cycles; likely waiting for promotion action"
-    exit 0
+    log "STALE_LIMIT reached; enabling one exploration override cycle instead of stopping"
+    export SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1
+    export AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1
+    stale_cycles=0
   fi
   log "CYCLE $cycle complete; sleeping ${CYCLE_SLEEP_SECONDS}s"
   sleep "$CYCLE_SLEEP_SECONDS"
