@@ -534,6 +534,31 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIsNone(payload["command"])
         self.assertNotIn("use_public_directory_backoff_and_chunk_pacing", payload["reasoning"])
 
+    def test_promotion_ready_payload_generates_review_blocker_command(self) -> None:
+        snapshot = {
+            "research_summary": {
+                "decision": {
+                    "next_action": "Review positive-rate ratio",
+                    "promotion_gate": {"ready": True},
+                    "candidate_evidence": {
+                        "candidate_run_id": "candidate",
+                        "candidate_artifact_dir": str(Path("experiments/runs/candidate")),
+                        "loo": {"worst_fold_id": "weakseg"},
+                    },
+                    "promotion_actions": [{"id": "review_positive_rate", "label": "Review positive-rate ratio", "kind": "quality", "writes_artifacts": False}],
+                }
+            }
+        }
+
+        with patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+            payload = _promotion_ready_payload()
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["action_id"], "review_positive_rate")
+        self.assertIn("scripts/plan_hard_negative_retrain.py", payload["command"])
+        self.assertIn("--heldout-segment weakseg", payload["command"])
+
     def test_recent_winner_followups_prefer_expanded_robust_over_focused_residual_score(self) -> None:
         robust = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
         _set_nested(robust, ("training", "learning_rate"), 0.003)

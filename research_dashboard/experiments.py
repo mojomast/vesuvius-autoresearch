@@ -260,7 +260,7 @@ def _quality_blocks_promotion(item: dict[str, Any]) -> bool:
         return True
     quality = item.get("quality_verdict") if isinstance(item.get("quality_verdict"), dict) else {}
     has_quality_metrics = any(item.get(key) is not None for key in ("val_f1", "average_precision", "pred_positive_rate", "val_positive_rate", "fixed_threshold_f1"))
-    return quality.get("verdict") == "fail" and has_quality_metrics
+    return quality.get("verdict") in {"fail", "review"} and has_quality_metrics
 
 
 def _quality_promotion_actions(full_tiles: list[dict[str, Any]], loo_full_tiles: dict[str, Any]) -> list[dict[str, Any]]:

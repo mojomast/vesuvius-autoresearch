@@ -1255,6 +1255,13 @@ def _run_automated_promotion(command_args: list[str], candidate_run_id: str, sum
                     payload.update(output_payload)
                     if valid_outputs:
                         status = "SUCCEEDED_ARTIFACTS"
+                elif any(str(part).endswith(("scripts/plan_hard_negative_retrain.py", "scripts/compare_threshold_caps.py")) for part in command_args):
+                    try:
+                        diagnostic = json.loads(completed.stdout)
+                    except Exception:
+                        diagnostic = {"stdout": completed.stdout[-4000:]}
+                    payload["diagnostic"] = diagnostic
+                    status = "SUCCEEDED_DIAGNOSTIC"
                 else:
                     payload.update({"error": "promotion command succeeded but produced no current summary_json or validated outputs", "path": str(summary_json)})
         else:
@@ -1642,6 +1649,8 @@ _AUTO_ACTIONS: set[str] = {
     "improve_ranking_signal",
     "mine_hard_negatives",
     "repair_precision_recall",
+    "review_positive_rate",
+    "inspect_full_tile_errors",
 }
 
 
@@ -1790,6 +1799,10 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
             command = top_action.get("command_text")
             if not command and top_action.get("id") == "weak_fold_full_tile" and weak_tile.get("status") != "done":
                 command = weak_tile.get("command_text")
+            if not command and top_action.get("id") in {"review_positive_rate", "inspect_full_tile_errors"}:
+                command = _review_blocker_command(evidence)
+                if command:
+                    next_action = "Run blocker remediation plan"
             # Compressed probabilities producing no fixed-threshold positives is expected;
             # do not pause exploration for this alone.
             if top_action.get("id") == "calibrate_probability_scale":
@@ -1838,6 +1851,27 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
     return None
 
 
+def _review_blocker_command(evidence: dict[str, Any]) -> str | None:
+    """Return a safe local diagnostic command for review-only promotion blockers."""
+    candidate_run_id = str(evidence.get("candidate_run_id") or "candidate")
+    candidate_artifact = Path(str(evidence.get("candidate_artifact_dir") or ROOT / "experiments" / "runs" / candidate_run_id))
+    weak_id = str((evidence.get("loo") or {}).get("worst_fold_id") or "")
+    args = [
+        DEFAULT_PYTHON,
+        "scripts/plan_hard_negative_retrain.py",
+        "--max-commands",
+        "4",
+        "--ratio-threshold",
+        "2.0",
+        "--base-config",
+        _repo_arg(candidate_artifact / "config.json"),
+        "--pretty",
+    ]
+    if weak_id:
+        args.extend(["--heldout-segment", weak_id])
+    return _shell_command(args)
+
+
 def _auto_execute_ready_payload_command(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Run a dashboard-provided promotion evidence command when explicitly enabled."""
     if os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") != "1":
@@ -1854,7 +1888,7 @@ def _auto_execute_ready_payload_command(payload: dict[str, Any]) -> dict[str, An
     command_text = " ".join(command_args)
     allowed_evidence_command = any(
         token in command_text
-        for token in ("scripts/evaluate_leave_one_out.py", "scripts/infer_full_tile.py")
+        for token in ("scripts/evaluate_leave_one_out.py", "scripts/infer_full_tile.py", "scripts/plan_hard_negative_retrain.py", "scripts/compare_threshold_caps.py")
     )
     if payload.get("safe_to_execute_from_dashboard") is False:
         if not allowed_evidence_command:
