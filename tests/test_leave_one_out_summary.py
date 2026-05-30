@@ -345,10 +345,41 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
             with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", "x", "--fold-map", "y", "--output-jsonl", "z", "--jobs", "0", "--dry-run"]):
                 main()
 
+    def test_empty_fold_map_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = root / "base.yaml"
+            config.write_text("dataset:\n  patch_size: 64\nmodel:\n  name: tiny_torch_unet\ntraining:\n  seed: 7\n")
+            fold_map = root / "fold_map.json"
+            fold_map.write_text("{}")
+            output = root / "loo.jsonl"
+
+            with self.assertRaises(SystemExit):
+                with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", str(config), "--fold-map", str(fold_map), "--output-jsonl", str(output), "--dry-run"]):
+                    main()
+
     def test_max_tasks_must_be_positive(self) -> None:
         with self.assertRaises(SystemExit):
             with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", "x", "--fold-map", "y", "--output-jsonl", "z", "--max-tasks", "0", "--dry-run"]):
                 main()
+
+    def test_output_jsonl_is_truncated_before_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = root / "base.yaml"
+            config.write_text("dataset:\n  patch_size: 64\nmodel:\n  name: tiny_torch_unet\ntraining:\n  seed: 7\n")
+            fold_map = root / "fold_map.json"
+            fold_map.write_text(json.dumps({"a": {"train_npz": "train_a.npz", "val_npz": "val_a.npz"}}))
+            output = root / "loo.jsonl"
+            output.write_text('{"stale": true}\n')
+
+            with patch("sys.argv", ["evaluate_leave_one_out.py", "--base-config", str(config), "--fold-map", str(fold_map), "--output-jsonl", str(output), "--dry-run"]):
+                self.assertEqual(main(), 0)
+
+            rows = [json.loads(line) for line in output.read_text().splitlines()]
+
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("stale", rows[0])
 
     def test_run_fold_job_returns_metrics_or_error(self) -> None:
         with patch("scripts.evaluate_leave_one_out.run_experiment", return_value={"run_id": "run1", "artifact_dir": "artifact", "metrics": {"val_f1": 0.2, "val_f05": 0.1, "average_precision": 0.3, "precision": 0.4, "recall": 0.5, "best_threshold": 0.6, "val_positive_rate": 0.07, "pred_positive_rate": 0.08, "brier_score": 0.12, "expected_calibration_error": 0.03, "ap_prevalence_lift": 4.2, "fixed_threshold_f1": 0.0, "fixed_threshold_status": "weak", "threshold_selection": "positive_rate_constrained"}}):

@@ -4,7 +4,7 @@
 
 The hard fold `20230530172803` is extremely seed-sensitive under the villa-label focal hard-mining recipe. The original useful seed `11001` reached AP `0.064540` and F1 `0.142771`; local seed search found a stronger seed, `11071`, and a 20-epoch refinement reached AP `0.121940` and F1 `0.199885`.
 
-This is real sampled progress, but not promotion evidence. The result still needs LOO and full-tile validation before it can support promotion.
+This is real sampled progress, but not promotion evidence. Low-load full-tile validation for `20260530T032140Z_d4d69b0f` on the same hard fold reached AP `0.100025`, F1 `0.180540`, fixed-threshold status `ok`, and pred/val ratio `2.672241`. The result still needs valid-fold LOO before it can support promotion.
 
 ## Best Runs
 

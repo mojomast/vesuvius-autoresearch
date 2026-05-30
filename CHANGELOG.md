@@ -4,8 +4,14 @@
 
 - Ran a targeted seed sweep around the hard fold `20230530172803` using the villa-label focal hard-mining recipe.
 - Found seed `11071` as the new strongest sampled hard-fold seed; the 20-epoch variant `20260530T032140Z_d4d69b0f` reached AP `0.121940`, F1 `0.199885`, and fixed-threshold status `ok`.
+- Added low-load full-tile evidence for `20260530T032140Z_d4d69b0f` on `20230530172803`: AP `0.100025`, F1 `0.180540`, fixed-threshold status `ok`.
 - Confirmed probability ensembling did not help: the `11001,11045,11073` ensemble reached AP `0.059997`, below the best single seeds.
 - Preserved promotion gates: sampled AP above `0.1` is progress, but not promotion evidence without LOO and full-tile validation.
+
+## Loop Safety
+
+- Added `scripts/audit_villa_fold_map.py` to detect zero-positive villa validation folds before promotion LOO.
+- Made leave-one-out evaluation stream JSONL rows and `LOO_PROGRESS` status as jobs complete, default worker thread limiting on, and support `--max-tasks` smoke runs.
 
 ## Villa Integration
 

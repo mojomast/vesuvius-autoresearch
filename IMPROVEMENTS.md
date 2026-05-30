@@ -88,6 +88,8 @@ Bayesian mode now persists Optuna studies in `logs/optuna.db`, backfills histori
 - Relative sampled improvement on `20230530172803`: AP improved by `0.057400` absolute (`1.89x`) and F1 improved by `0.057113` absolute (`1.40x`) versus seed `11001`.
 - The lower-LR seed `11071` run `20260530T032140Z_386d0c85` also crossed AP `0.1`, reaching AP `0.106733` and `val_f1=0.198718`.
 - Built-in probability ensembling underperformed: ensemble `11001,11045,11073` reached AP `0.059997`, so the current best path is seed/epoch refinement rather than probability averaging.
+- New hard-fold full-tile evidence: run `20260530T032140Z_d4d69b0f` on `20230530172803` reached AP `0.100025`, selected F1 `0.180540`, fixed-threshold status `ok`, and pred/val ratio `2.672241`, improving over prior weak-fold full-tile AP `0.027372` and F1 `0.014940`.
+- Villa promotion LOO now requires data-quality filtering or regeneration because `20230522181603` and `20230601193301` have zero positive validation pixels in `data/fold_map_villa_labels.json`; use `scripts/audit_villa_fold_map.py` before LOO.
 
 ## Remaining Limitations
 
@@ -96,4 +98,4 @@ Bayesian mode now persists Optuna studies in `logs/optuna.db`, backfills histori
 - Bayesian mode persists proposal trials and historical backfill, but still uses existing bounded proposal execution instead of a standalone ask/tell worker.
 - Resource warnings from existing SQLite test fixtures remain visible in coverage runs but do not fail tests.
 - The current LOO-backed focal family is still hard-fold-limited; `20230530172803` should remain the first target for additional robustness work.
-- Villa labels improved the hard fold but did not reach AP `0.1`; next work should focus on feature separability and hard-negative/threshold behavior, not gate relaxation.
+- Villa labels plus seed/epoch refinement now reach sampled AP above `0.1` and full-tile AP `0.100025` on the hard fold, but full promotion still needs valid-fold LOO and broader full-tile evidence.

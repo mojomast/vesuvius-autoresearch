@@ -330,10 +330,13 @@ def main() -> int:
 
     base_cfg = load_config(base_path)
     fold_map = json.loads(fold_map_path.read_text())
+    if not fold_map:
+        raise SystemExit("fold map contains no folds")
     base_seed = base_cfg.get("training", {}).get("seed")
     seeds = _parse_seeds(args.seeds, int(base_seed) if base_seed is not None else None)
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     summary_json.parent.mkdir(parents=True, exist_ok=True)
+    output_jsonl.write_text("")
 
     rows: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="vesuvius_loo_") as tmpdir:
@@ -380,6 +383,8 @@ def main() -> int:
                 for task in tasks:
                     tasks_by_fold.setdefault(str(task[1]["heldout_segment"]), []).append(task)
         total_tasks = len(rows) if args.dry_run else len(tasks)
+        if total_tasks == 0:
+            raise SystemExit("no fold/seed tasks were planned")
         if args.dry_run:
             for completed, row in enumerate(rows, start=1):
                 _write_row_jsonl(output_jsonl, row)
