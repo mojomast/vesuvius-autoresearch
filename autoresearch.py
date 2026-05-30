@@ -1193,6 +1193,11 @@ def _run_automated_promotion(command_args: list[str], candidate_run_id: str, sum
     """Run promotion evidence and record summary or artifact-output status."""
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / f"promotion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.log"
+    if any(str(part).endswith("scripts/evaluate_leave_one_out.py") for part in command_args):
+        try:
+            summary_json = _promotion_output_path(command_args[command_args.index("--summary-json") + 1])
+        except (ValueError, IndexError):
+            pass
     status = "FAILED"
     payload: Dict[str, Any] = {"command": command_args, "log_file": str(log_path)}
     if any(str(part).endswith("scripts/infer_full_tile.py") for part in command_args):

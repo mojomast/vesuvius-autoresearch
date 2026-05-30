@@ -34,6 +34,40 @@ def test_automated_promotion_writes_log_and_db(tmp_path, monkeypatch):
     assert json.loads(row[1])["summary"]["promotion_ready"] is True
 
 
+def test_automated_promotion_uses_loo_command_summary_path(tmp_path, monkeypatch):
+    db_path = tmp_path / "experiments.db"
+    logs = tmp_path / "logs"
+    command_summary = logs / "candidate_seedrepeat_loo.summary.json"
+    stale_summary = logs / "manual_promotion_action.summary.json"
+    monkeypatch.setattr(autoresearch, "DB_PATH", db_path)
+    monkeypatch.setattr(autoresearch, "LOGS", logs)
+    init_db(db_path)
+
+    def run_and_write_summary(*_args, **_kwargs):
+        command_summary.parent.mkdir(parents=True, exist_ok=True)
+        command_summary.write_text(json.dumps({"promotion_ready": True, "run_ids": ["candidate"]}))
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    command = [
+        "python",
+        "scripts/evaluate_leave_one_out.py",
+        "--base-config",
+        "experiments/runs/candidate/config.json",
+        "--fold-map",
+        "data/fold_map.json",
+        "--output-jsonl",
+        str(logs / "candidate_seedrepeat_loo.jsonl"),
+        "--summary-json",
+        str(command_summary),
+    ]
+    with patch("autoresearch.subprocess.run", side_effect=run_and_write_summary):
+        result = autoresearch._run_automated_promotion(command, "candidate", stale_summary, timeout=5)
+
+    assert result["automation_status"] == "SUCCEEDED"
+    assert result["promotion_payload"]["summary_json"] == str(command_summary)
+    assert result["promotion_payload"]["diagnostic_summary"]["summary_json_verified"] is True
+
+
 def test_automated_promotion_records_failure(tmp_path, monkeypatch):
     db_path = tmp_path / "experiments.db"
     logs = tmp_path / "logs"
