@@ -81,6 +81,14 @@ Bayesian mode now persists Optuna studies in `logs/optuna.db`, backfills histori
 - Group-stratified fallback `20260530T013847Z_eb682e02` reached AP `0.044858` and `val_f1=0.096390`; it did not beat the focal villa-label run.
 - LOO was not launched for villa-label candidates because none met the LOO entry rule (`val_f1 >= 0.42`, fixed-threshold `ok`, ratio `0.5..3.5`); this avoids treating a weak sampled hard-fold run as promotion evidence.
 
+## Seed Sensitivity Results
+
+- Hard-fold sampled before local seed search: seed `11001` run `20260530T020142Z_4e5cb820` reached AP `0.064540`, `val_f1=0.142771`, and fixed-threshold status `ok`.
+- New best hard-fold sampled run: seed `11071`, 20 epochs, run `20260530T032140Z_d4d69b0f`, reached AP `0.121940`, `val_f1=0.199885`, fixed-threshold status `ok`, and pred/val ratio `1.841176`.
+- Relative sampled improvement on `20230530172803`: AP improved by `0.057400` absolute (`1.89x`) and F1 improved by `0.057113` absolute (`1.40x`) versus seed `11001`.
+- The lower-LR seed `11071` run `20260530T032140Z_386d0c85` also crossed AP `0.1`, reaching AP `0.106733` and `val_f1=0.198718`.
+- Built-in probability ensembling underperformed: ensemble `11001,11045,11073` reached AP `0.059997`, so the current best path is seed/epoch refinement rather than probability averaging.
+
 ## Remaining Limitations
 
 - The package split is transitional: modules expose legacy implementation boundaries without fully moving all logic out of `autoresearch.py` yet.

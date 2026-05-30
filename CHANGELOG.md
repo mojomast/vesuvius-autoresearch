@@ -1,5 +1,12 @@
 # Changelog
 
+## Seed Sensitivity Analysis
+
+- Ran a targeted seed sweep around the hard fold `20230530172803` using the villa-label focal hard-mining recipe.
+- Found seed `11071` as the new strongest sampled hard-fold seed; the 20-epoch variant `20260530T032140Z_d4d69b0f` reached AP `0.121940`, F1 `0.199885`, and fixed-threshold status `ok`.
+- Confirmed probability ensembling did not help: the `11001,11045,11073` ensemble reached AP `0.059997`, below the best single seeds.
+- Preserved promotion gates: sampled AP above `0.1` is progress, but not promotion evidence without LOO and full-tile validation.
+
 ## Villa Integration
 
 - Added ScrollPrize/villa attribution in `CREDITS.md` and integrated villa-derived samplers and streaming fixed-threshold Dice metrics with inline source comments.

@@ -47,10 +47,17 @@ The runner now computes villa fixed-threshold F1 when `evaluation.use_villa_metr
 | `20260530T020142Z_4e5cb820` | villa | focal, seed `11001` | `0.142771` | `0.064540` | ok | `2.554911` |
 | `20260530T020403Z_5883d17b` | villa | focal, seed `11018` | `0.032896` | `0.026957` | weak | `2.554911` |
 | `20260530T020633Z_b6dbe53e` | villa | focal, positive patches `0.60` | `0.057402` | `0.046106` | ok | `2.731593` |
+| `20260530T023312Z_26f70635` | villa | focal, seed `11073` | `0.171957` | `0.096917` | ok | `2.554911` |
+| `20260530T030713Z_af36e8c5` | villa | focal, seed `11071` | `0.185276` | `0.098751` | ok | `1.526962` |
+| `20260530T032140Z_386d0c85` | villa | focal, seed `11071`, LR `0.0006` | `0.198718` | `0.106733` | ok | `1.902428` |
+| `20260530T032140Z_d4d69b0f` | villa | focal, seed `11071`, 20 epochs | `0.199885` | `0.121940` | ok | `1.841176` |
+| `20260530T024329Z_530c2561` | villa | focal ensemble `11001,11045,11073` | `0.130830` | `0.059997` | ok | `1.038905` |
 
-Seed `11001` is the best hard-fold sampled result from this pass, edging the previous `11045` focal run (`AP 0.064540` vs `0.062981`, `F1 0.142771` vs `0.136424`). However, AP remains below `0.1` and F1 remains far below the LOO entry threshold, so it is progress, not promotion evidence.
+Seed `11071` with the same focal recipe and 20 epochs is now the best hard-fold sampled result from this pass, improving AP from seed `11001`'s `0.064540` to `0.121940` and F1 from `0.142771` to `0.199885`. This clears the sampled AP `0.1` target, but F1 remains far below the LOO entry threshold, so it is progress, not promotion evidence.
 
-The targeted follow-up batch falsified three simple hypotheses for this fold: lower positive patch pressure (`0.30`), higher positive patch pressure (`0.60`), group-stratified batches, and wider base channels all underperformed the original focal recipe. The dominant remaining signal is seed sensitivity under the same focal/hard-mining setup.
+The targeted follow-up batch falsified three simple hypotheses for this fold: lower positive patch pressure (`0.30`), higher positive patch pressure (`0.60`), group-stratified batches, and wider base channels all underperformed the original focal recipe. The dominant useful signal is seed sensitivity under the same focal/hard-mining setup; local seeds around `11073` found `11071`, and refining that seed with lower LR or longer training pushed sampled AP above `0.1`.
+
+Built-in probability ensembling did not help on the sampled hard fold: the `11001,11045,11073` ensemble reached AP `0.059997`, below all strong single seeds. The current best path is seed `11071` with 20 epochs, not ensemble averaging.
 
 ## LOO Outcome
 
