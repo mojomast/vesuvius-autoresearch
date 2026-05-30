@@ -1,0 +1,34 @@
+{
+  "20230520175435": {
+    "train_npz": "data/npz_villa/leaveout_20230520175435/train.npz",
+    "val_npz": "data/npz_villa/segment_20230520175435/val.npz"
+  },
+  "20230522181603": {
+    "train_npz": "data/npz_villa/leaveout_20230522181603/train.npz",
+    "val_npz": "data/npz_villa/segment_20230522181603/val.npz"
+  },
+  "20230522215721": {
+    "train_npz": "data/npz_villa/leaveout_20230522215721/train.npz",
+    "val_npz": "data/npz_villa/segment_20230522215721/val.npz"
+  },
+  "20230530172803": {
+    "train_npz": "data/npz_villa/leaveout_20230530172803/train.npz",
+    "val_npz": "data/npz_villa/segment_20230530172803/val.npz"
+  },
+  "20230530212931": {
+    "train_npz": "data/npz_villa/leaveout_20230530212931/train.npz",
+    "val_npz": "data/npz_villa/segment_20230530212931/val.npz"
+  },
+  "20230531121653": {
+    "train_npz": "data/npz_villa/leaveout_20230531121653/train.npz",
+    "val_npz": "data/npz_villa/segment_20230531121653/val.npz"
+  },
+  "20230601193301": {
+    "train_npz": "data/npz_villa/leaveout_20230601193301/train.npz",
+    "val_npz": "data/npz_villa/segment_20230601193301/val.npz"
+  },
+  "20230611014200": {
+    "train_npz": "data/npz_villa/leaveout_20230611014200/train.npz",
+    "val_npz": "data/npz_villa/segment_20230611014200/val.npz"
+  }
+}
