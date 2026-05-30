@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import Sampler
 
 
-class StatefulShuffledSampler(Sampler[int]):
+class StatefulShuffledSampler(Sampler[int]):  # type: ignore[misc]
     """Shuffle once, then keep sampling from a persistent cursor across iterators."""
 
     def __init__(self, num_samples: int, *, seed: int = 0):
@@ -37,7 +37,7 @@ class StatefulShuffledSampler(Sampler[int]):
             yield idx
 
 
-class GroupStratifiedBatchSampler(Sampler[List[int]]):
+class GroupStratifiedBatchSampler(Sampler[List[int]]):  # type: ignore[misc]
     def __init__(
         self,
         group_indices: Sequence[int],

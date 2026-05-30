@@ -1,5 +1,22 @@
 # Changelog
 
+## Villa Integration
+
+- Added ScrollPrize/villa attribution in `CREDITS.md` and integrated villa-derived samplers and streaming fixed-threshold Dice metrics with inline source comments.
+- Added `scripts/rebuild_npz_with_villa_labels.py`, `data/fold_map_villa_labels.json`, and villa-label hard-fold rescue configs.
+- Rebuilt local villa-label NPZs without overwriting originals; hard-fold `20230530172803` validation label IoU against current labels is `0.974698`.
+- Ran hard-fold rescue experiments on `20230530172803`: best villa-label focal run `20260530T013457Z_1df6dddd` reached sampled F1 `0.136424`, AP `0.062981`, fixed-threshold status `ok`, and pred/val ratio `0.882`.
+- Did not run LOO for villa-label candidates because all remained below the configured LOO entry threshold (`val_f1 >= 0.42`) and AP stayed below `0.1`.
+
+## High-Compute ML Pass
+
+- Audited `experiments/experiments.db` and documented calibrated, AP-leading, and LOO-backed candidates in `DB_AUDIT.md`.
+- Validated the focal promotion candidate with existing 24/24 seed-repeat LOO evidence and full-tile inference on `20230520175435`.
+- Ran weak-fold full-tile inference for `20230530172803`; promotion checks were eligible but full-tile F1 remained weak, confirming hard-fold robustness as the blocker.
+- Ran three high-compute Bayesian autoresearch cycles with expensive-tier settings; 10 new sampled runs were added, but all retained weak fixed-threshold behavior.
+- Fixed search-signature normalization for dict/list-valued config fields such as `training.sampling_curriculum`.
+- Added `EXPERIMENT_REPORT.md` summarizing DB audit, LOO evidence, full-tile metrics, autonomous-cycle results, and next actions.
+
 ## Watch Item Fixes
 
 - Watch Item 1: audited new focal/augmentation/curriculum search paths, widened `training.focal_gamma` bounds to `0.5..5.0`, classified new mutation families, and added torch proposals for focal loss, focal gamma, rotation augmentation, and sampling curriculum.

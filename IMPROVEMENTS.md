@@ -40,7 +40,7 @@ Subprocess experiment launches now clean up generated proposal configs on `Calle
 
 ## Test Coverage
 
-Current coverage from `TEST_COVERAGE.md`: `273 passed`, `89.38%` total coverage for `src/autoresearch`.
+Current coverage from `TEST_COVERAGE.md`: `291 passed`, `92.20%` total coverage for `src/autoresearch`.
 
 ## Bayesian Search Mode
 
@@ -62,9 +62,30 @@ Bayesian mode now persists Optuna studies in `logs/optuna.db`, backfills histori
 - Rebalanced quality scoring toward fixed-threshold and calibration reliability with AP/F0.5 weights plus an explicit capped predicted-positive-rate penalty.
 - Kept promotion gates intact: targeted configs still require seed-repeat LOO evidence, full-tile validation, and promotion-check eligibility before release consideration.
 
+## High-Compute Pass Results
+
+- Completed a DB audit in `DB_AUDIT.md`; the top overall audit-score run was diagnostic-only, while the strongest calibrated sampled base remained `20260529T035158Z_8f01550f` / `20260529T035202Z_8f01550f`.
+- Reused complete seed-repeat LOO evidence for focal candidate `20260530T003819Z_6b3111c8`: `24/24` folds, 3 seeds, `promotion_ready=true`, median F1 `0.163957`, mean F1 `0.187498`, and worst fold `20230530172803=0.039621`.
+- Completed full-tile validation for `20260530T004030Z_1d9489f1`: promotion checks eligible, AP `0.162021`, selected tile F1 `0.242266`, fixed-threshold status `ok`, and selected pred/val ratio `2.740630` under the configured `2.75` cap.
+- Completed weak-fold full-tile validation for `20260530T004150Z_0b659aec` on `20230530172803`: promotion checks eligible and fixed-threshold status `ok`, but selected tile F1 was only `0.014940`, confirming this fold as the main blocker.
+- Ran 10 additional high-compute Bayesian sampled proposals; none displaced the focal candidate because all reported `fixed_threshold_status=weak`.
+- Fixed recursive search-signature normalization so dict/list-valued config fields do not crash dedupe or Bayesian proposal paths.
+
+## Villa Integration Results
+
+- Integrated `StatefulShuffledSampler` and `GroupStratifiedBatchSampler` adapted from ScrollPrize/villa with explicit MIT attribution.
+- Integrated `StreamingBinarySegmentationMetrics` as a fixed-threshold F1/Dice cross-check; local threshold semantics match villa for sigmoid probabilities, while AP and threshold-swept `val_f1` remain local metrics.
+- Rebuilt local label NPZs from villa cleaned labels without overwriting originals; `20230530172803` validation IoU is `0.974698`, so label cleanup alone does not explain the catastrophic full-tile blocker.
+- Hard-fold before: weak-fold full-tile `20260530T004150Z_0b659aec` on `20230530172803` had AP `0.027372` and selected F1 `0.014940`.
+- Best villa-label sampled rescue: focal run `20260530T013457Z_1df6dddd` reached AP `0.062981`, `val_f1=0.136424`, fixed-threshold status `ok`, and pred/val ratio `0.882`.
+- Group-stratified fallback `20260530T013847Z_eb682e02` reached AP `0.044858` and `val_f1=0.096390`; it did not beat the focal villa-label run.
+- LOO was not launched for villa-label candidates because none met the LOO entry rule (`val_f1 >= 0.42`, fixed-threshold `ok`, ratio `0.5..3.5`); this avoids treating a weak sampled hard-fold run as promotion evidence.
+
 ## Remaining Limitations
 
 - The package split is transitional: modules expose legacy implementation boundaries without fully moving all logic out of `autoresearch.py` yet.
 - `schemas.py` is permissive to preserve historical config compatibility.
 - Bayesian mode persists proposal trials and historical backfill, but still uses existing bounded proposal execution instead of a standalone ask/tell worker.
 - Resource warnings from existing SQLite test fixtures remain visible in coverage runs but do not fail tests.
+- The current LOO-backed focal family is still hard-fold-limited; `20230530172803` should remain the first target for additional robustness work.
+- Villa labels improved the hard fold but did not reach AP `0.1`; next work should focus on feature separability and hard-negative/threshold behavior, not gate relaxation.

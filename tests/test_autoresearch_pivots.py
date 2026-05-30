@@ -735,6 +735,44 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertNotEqual(_search_signature(cfg), _search_signature(ensemble))
         self.assertNotEqual(_search_signature(cfg), _search_signature(thresholded))
 
+    def test_signature_accepts_nested_search_values(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg.setdefault("training", {})["sampling_curriculum"] = {"switch_epoch_fraction": 0.5, "final_sampling": "hard_mining"}
+
+        signature = _search_signature(cfg)
+
+        self.assertIsInstance(hash(signature), int)
+
+    def test_next_action_uses_artifact_full_tile_evidence(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg.setdefault("dataset", {})["research_scope"] = "expanded_multi_segment"
+        cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir)
+            full_tile_dir = artifact / "full_tile_segment"
+            full_tile_dir.mkdir()
+            (full_tile_dir / "metrics.json").write_text(json.dumps({
+                "promotion_checks": {"eligible": True},
+                "evaluation_region": {"type": "whole_segment", "segment_id": "seg"},
+            }))
+            run = {
+                "run_id": "run-1",
+                "artifact_dir": str(artifact),
+                "config": cfg,
+                "metrics": {
+                    "val_f1": 0.4,
+                    "average_precision": 0.2,
+                    "precision": 0.2,
+                    "recall": 0.8,
+                    "pred_positive_rate": 0.2,
+                    "val_positive_rate": 0.1,
+                    "fixed_threshold_status": "ok",
+                    "loo_promotion_ready": True,
+                },
+            }
+
+            self.assertEqual(autoresearch._promotion_next_action_with_evidence(run), "promotion_review")
+
     def test_best_path_uses_recent_winners_after_static_bases_are_exhausted(self) -> None:
         base = load_config("configs/baseline.yaml")
         runs = []

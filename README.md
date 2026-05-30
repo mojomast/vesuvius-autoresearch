@@ -111,6 +111,8 @@ The incremental package layout under `src/autoresearch/` separates the monolithi
 - `strategy`: plateau/phase detection, pivot handling, recent-winner follow-up, and promotion-or-fallback orchestration.
 - `schemas`: pydantic v2 `ExperimentConfig` and `load_typed_config()` for incremental typed config adoption.
 - `search_strategy`: heuristic and optional Optuna-backed Bayesian candidate ordering.
+- `villa_samplers`: ScrollPrize/villa-derived stateful shuffled and group-stratified samplers used as opt-in torch DataLoader integrations.
+- `villa_metrics`: ScrollPrize/villa-derived streaming fixed-threshold Dice/F1 metrics used to cross-check local fixed-threshold F1 semantics.
 - `cli`: package-level CLI entry point delegating to the backwards-compatible top-level runner.
 
 ```mermaid
@@ -144,6 +146,29 @@ SQLite state is initialized by `experiments.runner.init_db`: `experiments` store
 | `evaluation` | `main_metric`, `threshold`, `max_pred_positive_rate_ratio` | Main scoring metric, fixed-threshold diagnostic, and positive-rate cap; proposal search includes `2.5`, `2.75`, `3.0`, and balanced calibration with tolerance `0.008`. |
 | `autoresearch` | `scope_policy`, `promotable`, `promotion_required` | Search metadata and promotion gating intent. |
 | `outputs` | `runs_dir` | Experiment artifact root. |
+
+## Data Credits
+
+Cleaned ink labels and selected training/evaluation utilities are adapted from ScrollPrize/villa, the 2023 Grand Prize winning solution by Youssef Nader, Luke Farritor, and Julian Schilliger, under the MIT License. See `CREDITS.md` and `VILLA_INTEGRATION.md` for component-level attribution and integration notes.
+
+Villa cleaned labels can be downloaded and applied to local prepared NPZs without overwriting originals:
+
+```bash
+.venv/bin/python scripts/rebuild_npz_with_villa_labels.py
+```
+
+The generated heavy NPZ/PNG data remains under ignored `data/` paths; the committed `data/fold_map_villa_labels.json` and `data/npz_villa/rebuild_summary.json` document expected local paths and rebuild statistics.
+
+## Compute
+
+For 16-core CPU training runs, use explicit thread settings and the high-compute configs:
+
+```bash
+OMP_NUM_THREADS=16 MKL_NUM_THREADS=16 AUTORESEARCH_NUM_WORKERS=8 \
+  .venv/bin/python run_experiment.py --config configs/highcompute_baseline.yaml
+```
+
+Torch training sets `torch.set_num_threads(16)` by default for high-compute configs and uses `torch.set_num_interop_threads(4)` when possible. Dataset-level `num_workers`, `prefetch_factor`, and `pin_memory` are configurable, with `AUTORESEARCH_NUM_WORKERS` overriding config for local saturation tests.
 
 ## Development
 

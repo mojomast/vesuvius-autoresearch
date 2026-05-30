@@ -28,6 +28,23 @@ def test_confusion_counts_handles_masked_pixels() -> None:
     assert float(counts.fn) == 1.0
 
 
+def test_confusion_counts_rejects_mask_shape_mismatch() -> None:
+    with pytest.raises(ValueError, match="mask/targets shape mismatch"):
+        confusion_counts(torch.tensor([True]), torch.tensor([True]), mask=torch.ones((1, 1), dtype=torch.bool))
+
+
+def test_streaming_metrics_rejects_invalid_inputs_and_empty_mask() -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        StreamingBinarySegmentationMetrics(threshold=2.0)
+    metrics = StreamingBinarySegmentationMetrics(threshold=0.5)
+    with pytest.raises(ValueError, match="logits/targets shape mismatch"):
+        metrics.update(logits=torch.ones(2), targets=torch.ones(1))
+    with pytest.raises(ValueError, match="mask/targets shape mismatch"):
+        metrics.update(logits=torch.ones(1), targets=torch.ones(1), mask=torch.ones((1, 1), dtype=torch.bool))
+    metrics.update(logits=torch.ones(1), targets=torch.ones(1), mask=torch.zeros(1, dtype=torch.bool))
+    assert float(metrics.compute()["dice"]) == 0.0
+
+
 def test_metric_discrepancy_warning_fires(caplog) -> None:
     caplog.set_level(logging.WARNING, logger="experiments.runner")
     _warn_metric_discrepancy(0.1, 0.2)
