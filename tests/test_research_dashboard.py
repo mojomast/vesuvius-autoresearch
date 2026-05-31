@@ -14,11 +14,12 @@ from unittest import mock
 import numpy as np
 
 from research_dashboard.artifacts import list_artifact_files, preview_artifact
-from research_dashboard.app import HTML, make_handler
+from research_dashboard.app import HTML, _agent_chat, _visual_artifact_analysis, make_handler
 from research_dashboard.experiments import _full_tile_ready, _positive_rate_risk_summary
 from research_dashboard.inventory import build_inventory
 from research_dashboard.quality import decoded_output_quality
 from research_dashboard.snapshot import build_snapshot, reset_snapshot_cache
+from research_dashboard.settings import load_dashboard_settings
 
 
 class ResearchDashboardTest(unittest.TestCase):
@@ -957,9 +958,11 @@ class ResearchDashboardTest(unittest.TestCase):
             inventory = build_inventory(root)
 
         self.assertGreaterEqual(len(inventory["features"]), 5)
+        safe_ids = {feature["id"] for feature in inventory["features"] if feature["safe_to_execute_from_dashboard"]}
+        self.assertIn("seed_repeat_loo_dry_run", safe_ids)
+        self.assertIn("full_tile_self_test", safe_ids)
         for feature in inventory["features"]:
             self.assertIsInstance(feature["command"], list)
-            self.assertFalse(feature["safe_to_execute_from_dashboard"])
             self.assertNotIn("/home/mojo/.hermes", feature["command_text"])
 
     def test_research_dashboard_package_has_no_hermes_specific_terms(self) -> None:
@@ -987,6 +990,141 @@ class ResearchDashboardTest(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_dashboard_post_controls_require_auth_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root, None))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                req = urllib.request.Request(base + "/api/agent/chat", data=json.dumps({"message": "hi"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req, timeout=5)
+                self.assertEqual(ctx.exception.code, 403)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_dashboard_safe_command_endpoint_is_allowlisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"VESUVIUS_DASHBOARD_ENABLE_RUNS": "1"}, clear=False):
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "configs").mkdir()
+            (root / "scripts" / "evaluate_leave_one_out.py").write_text("")
+            (root / "configs" / "robust_multisegment_dice035_expanded.yaml").write_text("")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root, "secret-token"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                with mock.patch("research_dashboard.app.subprocess.run") as run_mock:
+                    run_mock.return_value = mock.Mock(returncode=0, stdout="planned", stderr="")
+                    body = json.dumps({"id": "seed_repeat_loo_dry_run"}).encode()
+                    req = urllib.request.Request(base + "/api/run-command?token=secret-token", data=body, headers={"Content-Type": "application/json"}, method="POST")
+                    data = json.loads(urllib.request.urlopen(req, timeout=5).read().decode())
+                self.assertTrue(data["ok"])
+                self.assertIn("planned", data["stdout"])
+                self.assertEqual(run_mock.call_args.kwargs["cwd"], root)
+                self.assertFalse(run_mock.call_args.kwargs["check"])
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_dashboard_agent_chat_proxy_does_not_expose_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"VESUVIUS_DASHBOARD_AGENT_ENABLED": "1", "VESUVIUS_DASHBOARD_AGENT_API_KEY": "server-secret"}, clear=False):
+            root = Path(tmp)
+            with mock.patch("research_dashboard.app.urlrequest.urlopen") as open_mock:
+                open_mock.return_value.__enter__.return_value.read.return_value = json.dumps({"reply": "ok"}).encode()
+                data = _agent_chat(root, {"message": "summarize blockers", "base_url": "http://agent.local/chat"})
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["reply"], "ok")
+            self.assertNotIn("server-secret", json.dumps(data))
+            outbound = open_mock.call_args.args[0]
+            self.assertEqual(outbound.headers.get("Authorization"), "Bearer server-secret")
+
+    def test_dashboard_settings_apply_snapshots_and_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root, "secret-token"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                before = load_dashboard_settings(root)["version"]
+                body = json.dumps({"patch": {"decoded_gallery_limit": 7}, "base_version": before, "reason": "test update"}).encode()
+                req = urllib.request.Request(base + "/api/settings/apply?token=secret-token", data=body, headers={"Content-Type": "application/json"}, method="POST")
+                data = json.loads(urllib.request.urlopen(req, timeout=5).read().decode())
+                self.assertTrue(data["ok"])
+                self.assertEqual(data["settings"]["values"]["decoded_gallery_limit"], 7)
+                pre_snapshot = data["pre_change_snapshot"]["id"]
+
+                rollback = json.dumps({"snapshot_id": pre_snapshot, "reason": "test rollback"}).encode()
+                req = urllib.request.Request(base + "/api/settings/rollback?token=secret-token", data=rollback, headers={"Content-Type": "application/json"}, method="POST")
+                rolled = json.loads(urllib.request.urlopen(req, timeout=5).read().decode())
+                self.assertTrue(rolled["ok"])
+                self.assertEqual(rolled["settings"]["values"]["decoded_gallery_limit"], 12)
+                self.assertNotEqual(rolled["settings"]["version"], before)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_agent_settings_apply_requires_explicit_enablement_and_rejects_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root, "secret-token"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                body = json.dumps({"actor": "agent", "patch": {"decoded_gallery_limit": 8}}).encode()
+                req = urllib.request.Request(base + "/api/settings/apply?token=secret-token", data=body, headers={"Content-Type": "application/json"}, method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req, timeout=5)
+                self.assertEqual(ctx.exception.code, 403)
+
+                with mock.patch.dict("os.environ", {"VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE": "1"}, clear=False):
+                    secret_body = json.dumps({"actor": "agent", "patch": {"agent_base_url": "http://agent.local/chat?token=leaked"}}).encode()
+                    req = urllib.request.Request(base + "/api/settings/apply?token=secret-token", data=secret_body, headers={"Content-Type": "application/json"}, method="POST")
+                    with self.assertRaises(urllib.error.HTTPError) as ctx2:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx2.exception.code, 400)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_agent_chat_can_return_validated_settings_proposal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"VESUVIUS_DASHBOARD_AGENT_ENABLED": "1", "VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE": "1"}, clear=False):
+            root = Path(tmp)
+            agent_reply = {"reply": json.dumps({"reply": "Use a smaller gallery for slower browsers.", "settings_patch": {"decoded_gallery_limit": 6}, "reason": "reduce dashboard load"})}
+            with mock.patch("research_dashboard.app.urlrequest.urlopen") as open_mock:
+                open_mock.return_value.__enter__.return_value.read.return_value = json.dumps(agent_reply).encode()
+                data = _agent_chat(root, {"message": "fix dashboard settings", "action_mode": True, "base_url": "http://agent.local/chat"})
+            self.assertTrue(data["ok"])
+            self.assertTrue(data["settings_action_mode"])
+            self.assertEqual(data["settings_proposal"]["patch"], {"decoded_gallery_limit": 6})
+            self.assertTrue(data["settings_proposal"]["valid"])
+            self.assertEqual(load_dashboard_settings(root)["values"]["decoded_gallery_limit"], 12)
+
+    def test_visual_artifact_analysis_is_opt_in_and_secret_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED": "1", "VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_API_KEY": "vision-secret"}, clear=False):
+            root = Path(tmp)
+            run_dir = root / "experiments" / "runs" / "run1"
+            run_dir.mkdir(parents=True)
+            arr = np.zeros((16, 16), dtype=np.float32)
+            arr[4:12, 4:12] = 0.9
+            np.save(run_dir / "probability_map.npy", arr)
+            with mock.patch("research_dashboard.app.urlrequest.urlopen") as open_mock:
+                open_mock.return_value.__enter__.return_value.read.return_value = json.dumps({"reply": "coherent structure"}).encode()
+                data = _visual_artifact_analysis(root, {"path": str(run_dir / "probability_map.npy"), "base_url": "http://agent.local/chat"})
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["image_count"], 2)
+            self.assertNotIn("vision-secret", json.dumps(data))
+            outbound = open_mock.call_args.args[0]
+            self.assertEqual(outbound.headers.get("Authorization"), "Bearer vision-secret")
+            sent = json.loads(outbound.data.decode())
+            self.assertEqual({img["label"] for img in sent["images"]}, {"probability_heatmap", "threshold_mask"})
 
 
     def test_fixed_threshold_f1_low_detects_zero_value(self) -> None:

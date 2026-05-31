@@ -31,6 +31,7 @@ def build_inventory(project_root: Path) -> dict[str, Any]:
             "Plans repeated leave-one-segment-out folds without launching training.",
             ["scripts/evaluate_leave_one_out.py", "configs/robust_multisegment_dice035_expanded.yaml"],
             ["validation", "dry-run", "promotion-gate"],
+            safe_to_execute=True,
         ),
         _command_item(
             project_root,
@@ -40,6 +41,7 @@ def build_inventory(project_root: Path) -> dict[str, Any]:
             "Checks local prepared NPZ schema and metadata before fold promotion.",
             ["scripts/verify_prepared_segments.py"],
             ["data", "validation"],
+            safe_to_execute=True,
         ),
         _command_item(
             project_root,
@@ -49,6 +51,7 @@ def build_inventory(project_root: Path) -> dict[str, Any]:
             "Validates leave-one-segment-out fold construction without writing repo artifacts.",
             ["scripts/build_segment_fold_map.py"],
             ["data", "dry-run"],
+            safe_to_execute=True,
         ),
         _command_item(
             project_root,
@@ -58,6 +61,7 @@ def build_inventory(project_root: Path) -> dict[str, Any]:
             "Runs synthetic stitched-tile inference checks before promotion full-tile runs.",
             ["scripts/infer_full_tile.py", "data/tile_inference.py"],
             ["inference", "test"],
+            safe_to_execute=True,
         ),
         _command_item(
             project_root,

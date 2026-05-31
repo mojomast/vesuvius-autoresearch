@@ -42,6 +42,26 @@ Reviewer-facing docs:
 - `CITATION.cff`: citation metadata for this repo and required dataset attribution.
 - `artifacts/README.md`, `weights/README.md`, and `submission/`: templates for external artifacts and prize package metadata.
 
+## Dashboard Controls And Agent Chat
+
+The dashboard is the main control room for reviewing promotion blockers and running safe diagnostics. By default it is read-only. Enable interactive controls only with token auth:
+
+```bash
+VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_ENABLE_RUNS=1 \
+  .venv/bin/python run_dashboard.py --host 127.0.0.1 --port 8765
+```
+
+Run buttons are allowlisted and reject arbitrary shell input; artifact-writing commands stay copy-only. Optional Agent Chat defaults to a Hermes-style local provider, while non-Hermes users can configure their own endpoint/API key:
+
+```bash
+VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_AGENT_ENABLED=1 \
+VESUVIUS_DASHBOARD_AGENT_PROVIDER=hermes \
+VESUVIUS_DASHBOARD_AGENT_BASE_URL=http://127.0.0.1:8766/api/agent/chat \
+  .venv/bin/python run_dashboard.py
+```
+
+For custom providers, set `VESUVIUS_DASHBOARD_AGENT_BASE_URL`, `VESUVIUS_DASHBOARD_AGENT_MODEL`, and `VESUVIUS_DASHBOARD_AGENT_API_KEY`, or enter a session-only key in the dashboard UI. When `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, the agent can propose allowlisted dashboard settings fixes; users must review and apply them, and every apply creates a reversible snapshot under `.dashboard/`. Optional decoded-output visual analysis is enabled with `VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED=1` or the versioned dashboard setting. See `docs/dashboard.md` for the safety model.
+
 Quick setup from a clean clone:
 
 ```bash

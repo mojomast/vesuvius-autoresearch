@@ -18,6 +18,7 @@ from .inventory import build_inventory
 from .mining import build_hard_negative_plan
 from .operations import operations_snapshot
 from .progress import build_progress
+from .settings import list_settings_snapshots, load_dashboard_settings, redact_dashboard_settings
 
 
 def _harness_metadata() -> dict[str, Any]:
@@ -84,6 +85,8 @@ def _build_snapshot_uncached(root: Path) -> dict[str, Any]:
     harness = _harness_metadata()
     latest = experiments.get("latest") if isinstance(experiments.get("latest"), dict) else {}
     latest_config = latest.get("config", {}) if isinstance(latest.get("config"), dict) else {}
+    dashboard_settings = redact_dashboard_settings(load_dashboard_settings(root))
+    settings_values = dashboard_settings.get("values", {})
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -98,7 +101,23 @@ def _build_snapshot_uncached(root: Path) -> dict[str, Any]:
         "param_drift": {"current_config": latest_config, "bounds": harness.get("param_bounds", {})},
         "mining": mining,
         "operations": operations,
-        "capabilities": {"enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1", "artifact_preview": True, "standalone": True},
+        "dashboard_settings": dashboard_settings,
+        "settings_snapshots": list_settings_snapshots(root, limit=10),
+        "capabilities": {
+            "enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1",
+            "agent_chat": os.getenv("VESUVIUS_DASHBOARD_AGENT_ENABLED") == "1",
+            "agent_settings_write": os.getenv("VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE") == "1",
+            "agent_provider": os.getenv("VESUVIUS_DASHBOARD_AGENT_PROVIDER") or settings_values.get("agent_provider", "hermes"),
+            "agent_model": os.getenv("VESUVIUS_DASHBOARD_AGENT_MODEL") or settings_values.get("agent_model", ""),
+            "agent_api_key_configured": bool(os.getenv("VESUVIUS_DASHBOARD_AGENT_API_KEY")),
+            "settings_write": True,
+            "visual_analysis": os.getenv("VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED") == "1" or settings_values.get("visual_analysis_enabled") is True,
+            "visual_analysis_provider": os.getenv("VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_PROVIDER") or settings_values.get("visual_analysis_provider", "hermes"),
+            "visual_analysis_model": os.getenv("VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_MODEL") or settings_values.get("visual_analysis_model", ""),
+            "visual_analysis_api_key_configured": bool(os.getenv("VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_API_KEY") or os.getenv("VESUVIUS_DASHBOARD_AGENT_API_KEY")),
+            "artifact_preview": True,
+            "standalone": True,
+        },
     }
 
 
@@ -106,7 +125,8 @@ def build_snapshot(project_root: str | os.PathLike[str] | None = None, *, use_ca
     root = resolve_project_root(project_root)
     ttl_sec = _snapshot_cache_ttl_sec()
     cache_enabled = use_cache and ttl_sec > 0 and os.getenv("VESUVIUS_DASHBOARD_DISABLE_SNAPSHOT_CACHE") != "1"
-    cache_key = f"{root}\0enable_runs={os.getenv('VESUVIUS_DASHBOARD_ENABLE_RUNS') == '1'}"
+    settings_version = load_dashboard_settings(root).get("version")
+    cache_key = f"{root}\0enable_runs={os.getenv('VESUVIUS_DASHBOARD_ENABLE_RUNS') == '1'}\0agent={os.getenv('VESUVIUS_DASHBOARD_AGENT_ENABLED') == '1'}\0settings={settings_version}\0visual={os.getenv('VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED') == '1'}"
     now = time.monotonic()
 
     if cache_enabled:

@@ -1,6 +1,6 @@
-# Standalone Dashboard
+# Interactive Dashboard
 
-The standalone dashboard is a Vesuvius-native view of configs, experiment runs, prepared-data metadata, fold maps, logs, and promotion commands. It does not depend on Hermes and does not include Hermes chat, sessions, memory, skills, cron management, or self-improvement panels.
+The standalone dashboard is a Vesuvius-native view of configs, experiment runs, prepared-data metadata, fold maps, logs, promotion commands, safe controls, and optional agent chat.
 
 ## Launch
 
@@ -42,7 +42,95 @@ The dashboard does not load model weights, NPZ arrays, or full tile probability 
 
 The default dashboard is read-only. Feature cards show copyable commands for terminal use, including seed-repeat LOO dry-runs, prepared-segment verification, fold-map dry-runs, full-tile self-tests, residual 2.5D smoke runs, and safe data expansion.
 
-Run controls are intentionally not wired into the first standalone version. If future execution controls are added, they should be gated behind `VESUVIUS_DASHBOARD_ENABLE_RUNS=1`, use fixed allowlisted commands, and reject arbitrary shell input.
+Interactive run controls are available only when `VESUVIUS_DASHBOARD_ENABLE_RUNS=1` and the server is launched with token auth. The backend accepts command IDs, not shell strings; it resolves IDs from the snapshot, requires `safe_to_execute_from_dashboard: true`, rejects artifact-writing commands, runs with `shell=False`, and captures stdout/stderr for display. Unsafe commands remain copy-only.
+
+Example launch with controls:
+
+```bash
+VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_ENABLE_RUNS=1 \
+  .venv/bin/python run_dashboard.py --host 127.0.0.1 --port 8765
+```
+
+Then open `http://127.0.0.1:8765?token=change-me`.
+
+## Agent Chat
+
+The dashboard includes an optional Agent Chat panel for asking about promotion blockers, next experiments, evidence triage, or dashboard settings. It is disabled by default and does not execute commands. The server sends a compact dashboard context to the configured agent endpoint and returns the reply.
+
+Hermes is the default provider name for local users of this workspace:
+
+```bash
+VESUVIUS_DASHBOARD_TOKEN=change-me \
+VESUVIUS_DASHBOARD_AGENT_ENABLED=1 \
+VESUVIUS_DASHBOARD_AGENT_PROVIDER=hermes \
+VESUVIUS_DASHBOARD_AGENT_BASE_URL=http://127.0.0.1:8766/api/agent/chat \
+  .venv/bin/python run_dashboard.py
+```
+
+Users outside Hermes can point the same proxy at their own agent endpoint and supply a key either as an environment variable or in the UI's session-only API-key field:
+
+```bash
+VESUVIUS_DASHBOARD_TOKEN=change-me \
+VESUVIUS_DASHBOARD_AGENT_ENABLED=1 \
+VESUVIUS_DASHBOARD_AGENT_PROVIDER=openai-compatible \
+VESUVIUS_DASHBOARD_AGENT_BASE_URL=https://example.com/v1/chat/completions \
+VESUVIUS_DASHBOARD_AGENT_MODEL=my-agent-model \
+VESUVIUS_DASHBOARD_AGENT_API_KEY=... \
+  .venv/bin/python run_dashboard.py
+```
+
+Secrets are not included in `/api/research`, snapshots, command inventories, URLs, settings files, or logs. Browser-entered API keys are sent only with the chat or visual-analysis request and are not persisted by the dashboard beyond the current page/session.
+
+### Agent Settings Fixes
+
+Agent settings writes are a separate action mode. Enable them only when you want the agent to propose fixes to dashboard preferences:
+
+```bash
+VESUVIUS_DASHBOARD_TOKEN=change-me \
+VESUVIUS_DASHBOARD_AGENT_ENABLED=1 \
+VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1 \
+  .venv/bin/python run_dashboard.py
+```
+
+The agent still cannot edit files, run shell commands, or mutate experiment configs. In action mode it may return a structured `settings_patch` over a server-side allowlist of non-secret dashboard settings. The dashboard validates the patch, shows the diff-like proposal, and requires the user to click `Apply after review`. Unknown keys, secret-like values, embedded URL credentials, stale base versions, and invalid values are rejected by the backend.
+
+Mutable settings currently cover only dashboard behavior: polling interval, decoded-gallery limit, default agent endpoint/model labels, and visual-analysis defaults. API keys, tokens, and passwords are never accepted as settings.
+
+### Versioning And Recovery
+
+Dashboard settings are stored under `.dashboard/settings.json` and `.dashboard/settings_snapshots/`. `.dashboard/` is ignored by git because it is local runtime state.
+
+Every settings apply creates an immutable pre-change snapshot before writing the new version. Manual `Snapshot Now` creates an explicit recovery point. Rollback restores a selected snapshot and first snapshots the current settings, so rollback is itself reversible. The settings file includes a version id, update timestamp, and actor; the audit stream is appended to `.dashboard/settings_audit.jsonl`.
+
+Relevant endpoints:
+
+- `GET /api/settings`
+- `GET /api/settings/snapshots`
+- `POST /api/settings/apply`
+- `POST /api/settings/snapshot`
+- `POST /api/settings/rollback`
+
+All settings mutation endpoints require dashboard token auth.
+
+### Visual Analysis
+
+Decoded-output visual analysis is opt-in and token-gated. It lets the configured agent inspect the guarded preview images already generated by the dashboard, such as `probability_map.npy` heatmaps and threshold masks, and return advisory feedback about coherent ink structure, blockiness, flooding, speckles, or noise.
+
+Enable it with either the environment flag or the versioned dashboard setting:
+
+```bash
+VESUVIUS_DASHBOARD_TOKEN=change-me \
+VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED=1 \
+VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_PROVIDER=hermes \
+VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_BASE_URL=http://127.0.0.1:8766/api/agent/chat \
+  .venv/bin/python run_dashboard.py
+```
+
+The visual request uses the same secret policy as chat. Set `VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_API_KEY` for a server-side key, reuse `VESUVIUS_DASHBOARD_AGENT_API_KEY`, or enter a session-only key in the UI. The backend reuses the artifact path guard, strips the request down to preview data URLs plus metrics/context, caps image payload size, and treats image contents as untrusted. Visual replies are advisory and cannot apply settings or run commands.
+
+### Design Basis
+
+The May 2026 safety posture follows current LLM application guidance: keep tools least-privileged, treat model output as untrusted input, use strict server-side schemas, require human approval before writes, avoid sending secrets to models, and keep rollback/audit paths outside the agent path. Useful references include the OWASP Top 10 for LLM Applications, the OWASP Prompt Injection Prevention Cheat Sheet, OpenAI structured-output/function-calling guidance, Anthropic Claude Code security guidance, NIST AI RMF, and Azure App Configuration snapshot guidance for immutable configuration rollback.
 
 Artifact preview is path-guarded: files must resolve under `experiments/runs`.
 
@@ -61,6 +149,8 @@ progress
 research_summary
 operations
 mining
+dashboard_settings
+settings_snapshots
 capabilities
 ```
 

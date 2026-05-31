@@ -6,7 +6,7 @@ Research timestamp: 2026-05-28. Public web sources were fetched on this date. Fa
 
 The Progress Prize is active on the official Open Prizes page, with the next monthly deadline listed as **11:59pm Pacific, May 31st, 2026**. Submission is through the Progress Prize Google Form at <https://forms.gle/LrpQmSAqdwGpTczLA>. Current Progress Prize award tiers are **Gold Aureus: $20,000**, **Denarius: $10,000**, **Sestertius: $2,500**, and **Papyrus: $1,000**. The official criteria favor open-sourced early tools that are actually used by the community and are well documented.
 
-For the autoresearch tool, the strongest framing is: an open-source, reproducible research automation contribution that directly targets ink-detection generalization and accelerates scroll-reading experiments. The submission should include a standalone demo, run instructions, result screenshots/plots, clear standard-format inputs/outputs, and evidence that community members can run or adapt it.
+For the autoresearch tool, the strongest framing is: an open-source, reproducible research automation contribution that directly targets ink-detection generalization and accelerates scroll-reading experiments. The submission should include a standalone demo, run instructions, result screenshots/plots, clear standard-format inputs/outputs, and evidence that community members can run or adapt it. The interactive dashboard strengthens this framing by exposing safe diagnostic controls and optional agent chat in the same reviewer-facing interface as the promotion evidence.
 
 ## Current Open Prize Tiers and Amounts
 
@@ -86,6 +86,15 @@ The page lists these requirements verbatim:
 >    - Accept standard community formats (e.g. OME-Zarr or Zarr arrays, quadmeshes, triangular meshes)
 >    - Maintain consistent output formats
 >    - Designed for modular integration
+
+Dashboard integration notes for the submission package:
+
+- Safe run controls are gated by `VESUVIUS_DASHBOARD_ENABLE_RUNS=1` and token auth, so reviewers can use the dashboard without enabling execution.
+- The Agent Chat panel defaults to a Hermes-style local provider for this workspace but is configurable through `VESUVIUS_DASHBOARD_AGENT_BASE_URL`, `VESUVIUS_DASHBOARD_AGENT_MODEL`, and `VESUVIUS_DASHBOARD_AGENT_API_KEY` for non-Hermes users.
+- Agent output is advisory and cannot execute commands; artifact-writing research commands remain copy-only.
+- Optional agent settings action mode is limited to allowlisted non-secret dashboard preferences, requires `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, validates every patch server-side, and requires a user click before apply.
+- Settings versioning creates immutable local recovery snapshots before every apply and before rollback, making broken dashboard settings rewindable without relying on the agent.
+- Optional decoded-output visual analysis is opt-in through `VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED=1` or the versioned dashboard setting, sends only guarded preview images/metrics, and cannot mutate settings or run commands.
 
 ### Terms Relevant to Submission
 
