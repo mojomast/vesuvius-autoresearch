@@ -2224,6 +2224,8 @@ HTML = """<!doctype html>
 
 
 def make_handler(project_root: Path, auth_token: str | None = None):
+    allow_unauthenticated_posts = os.getenv("VESUVIUS_DASHBOARD_ALLOW_UNAUTHENTICATED_POSTS") == "1"
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             parsed = urlparse(self.path)
@@ -2252,7 +2254,7 @@ def make_handler(project_root: Path, auth_token: str | None = None):
         def do_POST(self):
             parsed = urlparse(self.path)
             try:
-                if not auth_token:
+                if not auth_token and not allow_unauthenticated_posts:
                     self._json(403, {"ok": False, "error": "interactive dashboard controls require --auth-token or VESUVIUS_DASHBOARD_TOKEN"})
                     return
                 if not self._authorized(parsed):
@@ -2289,7 +2291,7 @@ def make_handler(project_root: Path, auth_token: str | None = None):
             self._send(status, json.dumps(payload, sort_keys=True, default=str).encode(), "application/json")
 
         def _authorized(self, parsed) -> bool:
-            if not auth_token:
+            if not auth_token or allow_unauthenticated_posts:
                 return True
             query_token = parse_qs(parsed.query).get("token", [""])[0]
             header = self.headers.get("Authorization", "")

@@ -1007,6 +1007,22 @@ class ResearchDashboardTest(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_dashboard_post_controls_can_be_private_mode_tokenless(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"VESUVIUS_DASHBOARD_ALLOW_UNAUTHENTICATED_POSTS": "1"}, clear=False):
+            root = Path(tmp)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root, None))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                req = urllib.request.Request(base + "/api/settings/snapshot", data=json.dumps({"reason": "tokenless private mode test"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+                data = json.loads(urllib.request.urlopen(req, timeout=5).read().decode())
+                self.assertTrue(data["ok"])
+                self.assertEqual(data["snapshot"]["reason"], "tokenless private mode test")
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_dashboard_safe_command_endpoint_is_allowlisted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {"VESUVIUS_DASHBOARD_ENABLE_RUNS": "1"}, clear=False):
             root = Path(tmp)
