@@ -386,6 +386,75 @@ HTML = """<!doctype html>
       box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
     }
     
+    details.panel {
+      padding: 0;
+    }
+    details.panel > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    details.panel > summary::-webkit-details-marker {
+      display: none;
+    }
+    details.panel > summary::after {
+      content: 'Expand';
+      color: var(--accent);
+      font-size: 0.65rem;
+      font-family: var(--font-mono);
+      text-transform: none;
+      letter-spacing: 0;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.15rem 0.45rem;
+      background: rgba(7, 9, 19, 0.5);
+    }
+    details.panel[open] > summary::after {
+      content: 'Collapse';
+    }
+    .panel-body {
+      padding: 0 1.25rem 1.25rem;
+    }
+    .panel-toolbar {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      align-items: end;
+      margin: 0.75rem 0;
+    }
+    .filter-field {
+      display: grid;
+      gap: 0.2rem;
+      min-width: 9rem;
+      flex: 1 1 9rem;
+    }
+    .filter-field label {
+      color: var(--muted);
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .filter-field input,
+    .filter-field select {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .filter-status {
+      color: var(--muted);
+      font-size: 0.68rem;
+      font-family: var(--font-mono);
+    }
+
     .panel h2 {
       font-size: 0.8rem;
       font-weight: 700;
@@ -476,7 +545,7 @@ HTML = """<!doctype html>
       border-radius: 4px;
       padding: 0.5rem;
       text-align: center;
-      cursor: pointer;
+      cursor: default;
       transition: all 0.15s ease;
       min-width: 60px;
     }
@@ -503,6 +572,30 @@ HTML = """<!doctype html>
       padding: 0.5rem;
       font-family: var(--font-mono);
     }
+    .matrix-cell-actions {
+      display: flex;
+      gap: 0.25rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 0.35rem;
+    }
+    .matrix-cell-actions button {
+      padding: 0.12rem 0.28rem;
+      font-size: 0.55rem;
+      border-color: rgba(255,255,255,0.18);
+    }
+    .matrix-actions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+    .matrix-action-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.65rem;
+      background: rgba(7, 9, 19, 0.35);
+    }
     
     .table-container {
       width: 100%;
@@ -510,6 +603,20 @@ HTML = """<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       background: rgba(7, 9, 19, 0.25);
+    }
+    .ledger-scroll-container {
+      max-height: 34rem;
+      overflow: auto;
+    }
+    .leaderboard-scroll-container {
+      max-height: 26rem;
+      overflow: auto;
+    }
+    .ledger-scroll-container thead th,
+    .leaderboard-scroll-container thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
     }
     
     table {
@@ -858,12 +965,49 @@ HTML = """<!doctype html>
         </div>
 
         <!-- Usefulness-ranked candidates -->
-        <div class="panel">
-          <h2>Research Usefulness Leaderboard</h2>
-          <div id="quality-leaderboard-container">
-            <div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">Scoring candidates by full-tile quality and promotion evidence...</div>
+        <details class="panel" id="quality-leaderboard-panel">
+          <summary>Research Usefulness Leaderboard</summary>
+          <div class="panel-body">
+            <div class="panel-toolbar" aria-label="Research usefulness leaderboard controls">
+              <div class="filter-field">
+                <label for="leaderboard-search">Search leaderboard</label>
+                <input type="search" id="leaderboard-search" class="console-input" placeholder="run, scope, reason" oninput="renderQualityLeaderboard(rawData?.experiments?.leaderboard)">
+              </div>
+              <div class="filter-field" style="max-width:9rem;">
+                <label for="leaderboard-quality-filter">Quality</label>
+                <select id="leaderboard-quality-filter" class="console-input" onchange="renderQualityLeaderboard(rawData?.experiments?.leaderboard)">
+                  <option value="">Any quality</option>
+                  <option value="pass">Pass</option>
+                  <option value="review">Review</option>
+                  <option value="fail">Fail</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </div>
+              <div class="filter-field" style="max-width:10rem;">
+                <label for="leaderboard-promotion-filter">Promotion</label>
+                <select id="leaderboard-promotion-filter" class="console-input" onchange="renderQualityLeaderboard(rawData?.experiments?.leaderboard)">
+                  <option value="">Any status</option>
+                  <option value="eligible">Eligible</option>
+                  <option value="blocked">Blocked</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </div>
+              <div class="filter-field" style="max-width:8rem;">
+                <label for="leaderboard-limit">Show</label>
+                <select id="leaderboard-limit" class="console-input" onchange="renderQualityLeaderboard(rawData?.experiments?.leaderboard)">
+                  <option value="12">Top 12</option>
+                  <option value="25">Top 25</option>
+                  <option value="50">Top 50</option>
+                </select>
+              </div>
+              <button style="font-size:0.68rem;" onclick="resetLeaderboardFilters()">Reset</button>
+            </div>
+            <div id="quality-leaderboard-status" class="filter-status" aria-live="polite"></div>
+            <div id="quality-leaderboard-container">
+              <div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">Scoring candidates by full-tile quality and promotion evidence...</div>
+            </div>
           </div>
-        </div>
+        </details>
 
         <!-- 2D Validation Segment heat-map matrix -->
         <div class="panel">
@@ -874,27 +1018,56 @@ HTML = """<!doctype html>
         </div>
 
         <!-- Decoded full-tile output gallery -->
-        <div class="panel">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.5rem;">
-            <h2 style="margin:0;">Decoded Output Gallery</h2>
-            <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
-              <button style="padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="decodeVisibleOutputs()">Decode Visible</button>
-              <button style="padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="decodeAllOutputs()">Decode All</button>
+        <details class="panel" id="decoded-output-gallery-panel">
+          <summary>Decoded Output Gallery</summary>
+          <div class="panel-body">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.5rem;">
+              <div style="color:var(--muted);font-size:0.72rem;">Review full-tile <code>probability_map.npy</code> outputs across recent runs. Cards show decoded probability heatmaps only after loading.</div>
+              <div style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+                <button style="padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="decodeVisibleOutputs()">Decode Visible</button>
+                <button style="padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="decodeAllOutputs()">Decode All</button>
+              </div>
+            </div>
+            <div id="decoded-output-gallery">
+              <div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">Scanning recent run artifacts for decoded outputs...</div>
             </div>
           </div>
-          <div style="color:var(--muted);font-size:0.72rem;">Review full-tile <code>probability_map.npy</code> outputs across recent runs. Cards show the decoded probability heatmap when loaded; click a card for the larger heatmap plus threshold mask.</div>
-          <div id="decoded-output-gallery">
-            <div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">Scanning recent run artifacts for decoded outputs...</div>
-          </div>
-        </div>
+        </details>
 
         <!-- Table Ledger of Runs -->
         <div class="panel">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.75rem;">
             <h2 style="margin:0;">Experiment Runs Ledger <span id="ledger-filter-badge" style="display:none;margin-left:0.5rem;" class="indicator-badge badge-warning">Filter Active</span></h2>
-            <button id="clear-filter-btn" style="display:none; padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="clearSegmentFilter()">Clear Filter</button>
+            <button id="clear-filter-btn" style="display:none; padding:0.25rem 0.5rem; font-size:0.7rem;" onclick="resetLedgerFilters()">Clear Filters</button>
           </div>
-          <div class="table-container">
+          <div class="panel-toolbar" aria-label="Experiment runs ledger filters">
+            <div class="filter-field" style="flex:2 1 16rem;">
+              <label for="ledger-search">Search runs</label>
+              <input type="search" id="ledger-search" class="console-input" placeholder="run, model, status, artifact, blocker" oninput="renderRecentRuns(rawData?.experiments?.recent)">
+            </div>
+            <div class="filter-field">
+              <label for="ledger-status-filter">Promotion</label>
+              <select id="ledger-status-filter" class="console-input" onchange="renderRecentRuns(rawData?.experiments?.recent)">
+                <option value="">Any status</option>
+                <option value="eligible">Eligible</option>
+                <option value="blocked">Blocked</option>
+              </select>
+            </div>
+            <div class="filter-field">
+              <label for="ledger-train-filter">Train segment</label>
+              <select id="ledger-train-filter" class="console-input" onchange="setSegmentFilterFromControls()"><option value="">Any train</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="ledger-val-filter">Validate segment</label>
+              <select id="ledger-val-filter" class="console-input" onchange="setSegmentFilterFromControls()"><option value="">Any validation</option></select>
+            </div>
+            <div class="filter-field" style="max-width:8rem;">
+              <label for="ledger-min-f1-filter">Min F1</label>
+              <input type="number" id="ledger-min-f1-filter" class="console-input" min="0" max="1" step="0.01" placeholder="0.00" oninput="renderRecentRuns(rawData?.experiments?.recent)">
+            </div>
+          </div>
+          <div id="ledger-result-count" class="filter-status" aria-live="polite" style="margin-bottom:0.5rem;"></div>
+          <div class="table-container ledger-scroll-container">
             <table>
               <thead>
                 <tr>
@@ -904,10 +1077,12 @@ HTML = """<!doctype html>
                   <th>Avg Precision</th>
                   <th>Ink Prevalence Ratio</th>
                   <th>Val Split</th>
+                  <th>Status</th>
+                  <th>Blockers</th>
                 </tr>
               </thead>
               <tbody id="runs-table-body">
-                <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem;">Acquiring experiment SQLite parameters...</td></tr>
+                <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">Acquiring experiment SQLite parameters...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1032,7 +1207,7 @@ HTML = """<!doctype html>
         <div class="panel">
           <div class="terminal-header">
             <span>Terminal tail: autoresearch.log</span>
-            <input type="text" id="log-search" class="console-input" placeholder="Regex filter..." oninput="filterLogs()">
+            <input type="search" id="log-search" class="console-input" placeholder="Text filter..." oninput="filterLogs()">
           </div>
           <pre class="terminal-body" id="log-tail-console">Streaming workspace logtail lines...</pre>
         </div>
@@ -1040,7 +1215,7 @@ HTML = """<!doctype html>
     </div>
   </main>
 
-  <div id="toast-wrapper"></div>
+  <div id="toast-wrapper" aria-live="polite" aria-atomic="true"></div>
 
   <script>
     let rawData = null;
@@ -1060,6 +1235,8 @@ HTML = """<!doctype html>
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
+
+    const jsArg = (s) => esc(JSON.stringify(String(s ?? '')));
 
     const dashboardToken = new URLSearchParams(window.location.search).get('token') || sessionStorage.getItem('vesuvius_dashboard_token') || '';
     if (dashboardToken) sessionStorage.setItem('vesuvius_dashboard_token', dashboardToken);
@@ -1271,13 +1448,33 @@ HTML = """<!doctype html>
 
     function renderQualityLeaderboard(rows) {
       const container = document.getElementById('quality-leaderboard-container');
+      const status = document.getElementById('quality-leaderboard-status');
       if (!container) return;
       if (!rows || rows.length === 0) {
         container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">No candidate quality rows available yet.</div>';
+        if (status) status.textContent = '0 candidates available.';
+        return;
+      }
+      const query = (document.getElementById('leaderboard-search')?.value || '').trim().toLowerCase();
+      const quality = document.getElementById('leaderboard-quality-filter')?.value || '';
+      const promotion = document.getElementById('leaderboard-promotion-filter')?.value || '';
+      const limit = Math.max(1, Math.min(50, Number(document.getElementById('leaderboard-limit')?.value || 12)));
+      const filtered = rows.filter(row => {
+        const q = row.quality_verdict || {};
+        const reasons = (row.quality_reasons || q.reasons || row.top_blockers || []).join(' ');
+        const haystack = [row.run_id, row.research_scope, row.scope_policy, row.promotion_status, q.verdict, reasons, row.quality_next_action].join(' ').toLowerCase();
+        if (query && !haystack.includes(query)) return false;
+        if (quality && String(q.verdict || 'unknown') !== quality) return false;
+        if (promotion && String(row.promotion_status || 'unknown') !== promotion) return false;
+        return true;
+      });
+      if (status) status.textContent = `Showing ${Math.min(filtered.length, limit)} of ${rows.length} candidate(s).`;
+      if (!filtered.length) {
+        container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:1.5rem;font-size:0.75rem;">No leaderboard candidates match the current filters.</div>';
         return;
       }
       container.innerHTML = `
-        <div class="table-container">
+        <div class="table-container leaderboard-scroll-container">
           <table>
             <thead>
               <tr>
@@ -1285,7 +1482,7 @@ HTML = """<!doctype html>
               </tr>
             </thead>
             <tbody>
-              ${rows.slice(0, 12).map(row => {
+              ${filtered.slice(0, limit).map(row => {
                   const q = row.quality_verdict || {};
                   const reason = (row.quality_reasons || q.reasons || row.top_blockers || [])[0] || 'none';
                   const nextAction = row.quality_next_action || (row.quality_next_actions || [])[0]?.label || 'promotion review';
@@ -1309,6 +1506,17 @@ HTML = """<!doctype html>
           </table>
         </div>
       `;
+    }
+
+    function resetLeaderboardFilters() {
+      const ids = ['leaderboard-search', 'leaderboard-quality-filter', 'leaderboard-promotion-filter'];
+      ids.forEach(id => {
+        const node = document.getElementById(id);
+        if (node) node.value = '';
+      });
+      const limit = document.getElementById('leaderboard-limit');
+      if (limit) limit.value = '12';
+      renderQualityLeaderboard(rawData?.experiments?.leaderboard);
     }
 
     function collectDecodedOutputs(recent) {
@@ -1564,6 +1772,26 @@ HTML = """<!doctype html>
       `;
     }
 
+    function inventoryCommand(commandId) {
+      return (rawData?.inventory?.features || []).find(item => item.id === commandId) || null;
+    }
+
+    function matrixCommandCard(commandId) {
+      const item = inventoryCommand(commandId);
+      if (!item) return '';
+      return `
+        <div class="matrix-action-card">
+          <div style="display:flex;justify-content:space-between;gap:0.5rem;align-items:center;">
+            <strong style="font-size:0.72rem;color:var(--text);">${esc(item.title)}</strong>
+            <span class="indicator-badge ${item.available ? 'badge-success' : 'badge-error'}">${item.available ? 'Ready' : 'Unavailable'}</span>
+          </div>
+          <div style="color:var(--muted);font-size:0.65rem;margin-top:0.25rem;">${esc(item.description)}</div>
+          <button style="margin-top:0.5rem;width:100%;font-size:0.65rem;" onclick="copyToClipboard(${jsArg(item.command_text)})">Copy command</button>
+          ${runButtonHtml(item)}
+        </div>
+      `;
+    }
+
     // C. 2D Fold Matrix Heatmap Grid
     function renderFoldMatrix(matrix) {
       const container = document.getElementById('segment-matrix-container');
@@ -1576,7 +1804,8 @@ HTML = """<!doctype html>
       const trains = [...new Set(matrix.map(cell => cell.train_segment_id))].sort();
       const vals = [...new Set(matrix.map(cell => cell.val_segment_id))].sort();
       
-      let html = `<div class="matrix-grid" style="grid-template-columns: 85px repeat(${vals.length}, 1fr);">`;
+      let html = `<div style="color:var(--muted);font-size:0.7rem;margin-bottom:0.5rem;">Use cells to filter the ledger or jump to the best run for a train/validation fold. Safe validation actions below reuse the dashboard command allowlist.</div>`;
+      html += `<div class="matrix-grid" role="grid" aria-label="Validation fold matrix" style="grid-template-columns: 85px repeat(${vals.length}, 1fr);">`;
       
       // Matrix Header Row
       html += `<div></div>`;
@@ -1612,9 +1841,13 @@ HTML = """<!doctype html>
             const style = `background: hsl(${hue}, ${sat}%, ${light}%); border-color: ${isCurrentFilter ? 'var(--text)' : 'var(--line)'}; font-family:var(--font-mono);`;
             
             html += `
-              <div class="matrix-cell" style="${style}" onclick="toggleSegmentFilter('${esc(t)}', '${esc(v)}')" title="F1 Score: ${f1.toFixed(4)} over ${cell.run_count} runs. Click to filter ledger.">
+              <div class="matrix-cell" role="gridcell" style="${style}" title="F1 Score: ${f1.toFixed(4)} over ${cell.run_count} runs.">
                 <div style="font-size:0.75rem; font-weight:700; color:#fff;">${f1.toFixed(3)}</div>
                 <div style="font-size:0.55rem; color:rgba(255,255,255,0.7);">runs: ${cell.run_count}</div>
+                <div class="matrix-cell-actions">
+                  <button aria-pressed="${isCurrentFilter ? 'true' : 'false'}" aria-label="Filter ledger to train ${esc(t)} validate ${esc(v)}" onclick="toggleSegmentFilter(${jsArg(t)}, ${jsArg(v)})">Filter</button>
+                  <button aria-label="Select best run ${esc(cell.best_run_id || '')} for train ${esc(t)} validate ${esc(v)}" onclick="selectBestMatrixRun(${jsArg(cell.best_run_id || '')}, ${jsArg(t)}, ${jsArg(v)})">Best</button>
+                </div>
               </div>
             `;
           } else {
@@ -1624,6 +1857,11 @@ HTML = """<!doctype html>
       });
       
       html += `</div>`;
+      html += `<div class="matrix-actions" aria-label="Validation fold matrix actions">
+        ${matrixCommandCard('seed_repeat_loo_dry_run')}
+        ${matrixCommandCard('verify_prepared_segments')}
+        ${matrixCommandCard('build_fold_map_dry_run')}
+      </div>`;
       container.innerHTML = html;
     }
 
@@ -1634,9 +1872,12 @@ HTML = """<!doctype html>
       } else {
         selectedTrainSegment = train;
         selectedValSegment = val;
-        document.getElementById('ledger-filter-badge').style.display = 'inline-flex';
-        document.getElementById('clear-filter-btn').style.display = 'inline-block';
+        const trainControl = document.getElementById('ledger-train-filter');
+        const valControl = document.getElementById('ledger-val-filter');
+        if (trainControl) trainControl.value = train;
+        if (valControl) valControl.value = val;
         renderRecentRuns(rawData.experiments.recent);
+        renderFoldMatrix(rawData.experiments.validation_matrix);
         showToast(`Table Filtered: Segment ${train} → ${val}`);
       }
     }
@@ -1644,27 +1885,123 @@ HTML = """<!doctype html>
     function clearSegmentFilter() {
       selectedTrainSegment = null;
       selectedValSegment = null;
-      document.getElementById('ledger-filter-badge').style.display = 'none';
-      document.getElementById('clear-filter-btn').style.display = 'none';
+      const trainControl = document.getElementById('ledger-train-filter');
+      const valControl = document.getElementById('ledger-val-filter');
+      if (trainControl) trainControl.value = '';
+      if (valControl) valControl.value = '';
       renderRecentRuns(rawData.experiments.recent);
       renderFoldMatrix(rawData.experiments.validation_matrix);
+      showToast("Segment filter cleared");
+    }
+
+    function setSegmentFilterFromControls() {
+      selectedTrainSegment = document.getElementById('ledger-train-filter')?.value || null;
+      selectedValSegment = document.getElementById('ledger-val-filter')?.value || null;
+      renderRecentRuns(rawData?.experiments?.recent);
+      renderFoldMatrix(rawData?.experiments?.validation_matrix);
+    }
+
+    function selectBestMatrixRun(runId, train, val) {
+      if (!runId) return;
+      ['ledger-search', 'ledger-status-filter', 'ledger-min-f1-filter'].forEach(id => {
+        const node = document.getElementById(id);
+        if (node) node.value = '';
+      });
+      selectedTrainSegment = train || null;
+      selectedValSegment = val || null;
+      selectedRunId = runId;
+      const trainControl = document.getElementById('ledger-train-filter');
+      const valControl = document.getElementById('ledger-val-filter');
+      if (trainControl) trainControl.value = selectedTrainSegment || '';
+      if (valControl) valControl.value = selectedValSegment || '';
+      renderRecentRuns(rawData?.experiments?.recent);
+      renderTrendChart(rawData?.experiments?.metric_trends);
+      updateDiffView();
+      renderFoldMatrix(rawData?.experiments?.validation_matrix);
+      document.getElementById('runs-table-body')?.closest('.panel')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+      showToast(`Selected best matrix run: ${runId.slice(0, 8)}`);
+    }
+
+    function updateLedgerSegmentOptions(recent) {
+      const trainControl = document.getElementById('ledger-train-filter');
+      const valControl = document.getElementById('ledger-val-filter');
+      if (!trainControl || !valControl) return;
+      const trains = [...new Set((recent || []).map(run => String(run.validation_setup?.train_segment_id || '')).filter(Boolean))].sort();
+      const vals = [...new Set((recent || []).map(run => String(run.validation_setup?.val_segment_id || '')).filter(Boolean))].sort();
+      const renderOptions = (values, selected, label) => `<option value="">${label}</option>` + values.map(value => `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(value)}</option>`).join('');
+      trainControl.innerHTML = renderOptions(trains, selectedTrainSegment || '', 'Any train');
+      valControl.innerHTML = renderOptions(vals, selectedValSegment || '', 'Any validation');
+    }
+
+    function resetLedgerFilters() {
+      ['ledger-search', 'ledger-status-filter', 'ledger-min-f1-filter'].forEach(id => {
+        const node = document.getElementById(id);
+        if (node) node.value = '';
+      });
+      selectedTrainSegment = null;
+      selectedValSegment = null;
+      const trainControl = document.getElementById('ledger-train-filter');
+      const valControl = document.getElementById('ledger-val-filter');
+      if (trainControl) trainControl.value = '';
+      if (valControl) valControl.value = '';
+      renderRecentRuns(rawData?.experiments?.recent);
+      renderFoldMatrix(rawData?.experiments?.validation_matrix);
       showToast("Ledger filters cleared");
     }
 
     // D. Runs Ledger Table
     function renderRecentRuns(recent) {
       const tbody = document.getElementById('runs-table-body');
+      const resultCount = document.getElementById('ledger-result-count');
+      updateLedgerSegmentOptions(recent);
       let filtered = recent || [];
+      const query = (document.getElementById('ledger-search')?.value || '').trim().toLowerCase();
+      const statusFilter = document.getElementById('ledger-status-filter')?.value || '';
+      const minF1Raw = document.getElementById('ledger-min-f1-filter')?.value || '';
+      const minF1 = minF1Raw === '' ? null : Number(minF1Raw);
+      const hasTextFilter = query.length > 0;
+      const hasStatusFilter = Boolean(statusFilter);
+      const hasMinF1Filter = Number.isFinite(minF1);
       
       if (selectedTrainSegment && selectedValSegment) {
         filtered = filtered.filter(run => 
           String(run.validation_setup?.train_segment_id) === selectedTrainSegment &&
           String(run.validation_setup?.val_segment_id) === selectedValSegment
         );
+      } else if (selectedTrainSegment) {
+        filtered = filtered.filter(run => String(run.validation_setup?.train_segment_id) === selectedTrainSegment);
+      } else if (selectedValSegment) {
+        filtered = filtered.filter(run => String(run.validation_setup?.val_segment_id) === selectedValSegment);
       }
+
+      if (hasStatusFilter) {
+        filtered = filtered.filter(run => String(run.promotion_status || '') === statusFilter);
+      }
+
+      if (hasMinF1Filter) {
+        filtered = filtered.filter(run => Number(run.metrics?.val_f1 ?? run.main_metric ?? -Infinity) >= minF1);
+      }
+
+      if (hasTextFilter) {
+        filtered = filtered.filter(run => {
+          const m = run.metrics || {};
+          const s = run.validation_setup || {};
+          const blockers = (run.promotion_blockers || []).map(b => `${b.code || ''} ${b.detail || ''}`).join(' ');
+          const artifacts = (run.artifacts || []).map(f => `${f.name || ''} ${f.relative_path || ''}`).join(' ');
+          const haystack = [run.run_id, m.model_name, run.config?.model?.name, run.promotion_status, s.mode, s.train_segment_id, s.val_segment_id, blockers, artifacts].join(' ').toLowerCase();
+          return haystack.includes(query);
+        });
+      }
+
+      const anyFilter = Boolean(selectedTrainSegment || selectedValSegment || hasTextFilter || hasStatusFilter || hasMinF1Filter);
+      const badge = document.getElementById('ledger-filter-badge');
+      const clearButton = document.getElementById('clear-filter-btn');
+      if (badge) badge.style.display = anyFilter ? 'inline-flex' : 'none';
+      if (clearButton) clearButton.style.display = anyFilter ? 'inline-block' : 'none';
+      if (resultCount) resultCount.textContent = `Showing ${filtered.length} of ${(recent || []).length} run(s).`;
       
       if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem;">No runs match current filter segment coordinates.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">No runs match the current ledger filters.</td></tr>`;
         return;
       }
       
@@ -1673,13 +2010,15 @@ HTML = """<!doctype html>
         const m = run.metrics || {};
         const s = run.validation_setup || {};
         const ratioVal = m.pred_positive_rate && m.val_positive_rate ? (parseFloat(m.pred_positive_rate) / Math.max(parseFloat(m.val_positive_rate), 1e-12)) : 1.0;
+        const blockers = (run.promotion_blockers || []).filter(b => b.severity !== 'warning');
+        const blockerText = blockers.slice(0, 2).map(b => b.code || 'blocker').join(', ') || 'none';
         
         let drawerHtml = '';
         if (isSelected) {
           const files = run.artifacts || [];
           drawerHtml = `
             <tr class="drawer-row">
-              <td colspan="6" style="padding:0;">
+              <td colspan="8" style="padding:0;">
                 <div class="drawer">
                   <div style="font-weight:700; font-size:0.75rem; color:var(--accent); margin-bottom:0.4rem;">Run Directory Artifact Explorer</div>
                   <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.5rem;">Open <code>probability_map.npy</code> to inspect decoded heatmaps and threshold masks from full-tile inference.</div>
@@ -1705,6 +2044,8 @@ HTML = """<!doctype html>
             <td style="font-family:var(--font-mono);">${fmt(m.average_precision)}</td>
             <td style="font-family:var(--font-mono);" class="${ratioVal > 3.0 || ratioVal < 0.3 ? 'warn':''}">${ratioVal.toFixed(2)}x</td>
             <td><span class="run-pill">${esc(s.train_segment_id)} → ${esc(s.val_segment_id)}</span></td>
+            <td><span class="indicator-badge ${run.promotion_status === 'eligible' ? 'badge-success' : 'badge-warning'}">${esc(run.promotion_status || 'unknown')}</span></td>
+            <td style="font-size:0.68rem;color:var(--muted);font-family:var(--font-mono);">${esc(blockerText)}</td>
           </tr>
           ${drawerHtml}
         `;
@@ -1712,6 +2053,7 @@ HTML = """<!doctype html>
     }
 
     function selectRun(runId, event) {
+      if (!runId) return;
       if (event && event.target.closest('.pill')) return; // ignore clicks inside drawer pills
       selectedRunId = runId;
       renderRecentRuns(rawData.experiments.recent);
@@ -2082,7 +2424,7 @@ HTML = """<!doctype html>
       if (!item || !item.id || item.safe_to_execute_from_dashboard !== true || item.writes_artifacts === true) return '';
       const enabled = rawData?.capabilities?.enable_runs === true;
       const label = enabled ? 'Run safe control' : 'Run controls disabled';
-      return `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" ${enabled ? '' : 'disabled'} onclick="runDashboardCommand('${esc(item.id)}')">${label}</button>`;
+      return `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" ${enabled ? '' : 'disabled'} onclick="runDashboardCommand(${jsArg(item.id)})">${label}</button>`;
     }
 
     // I. Feature Script CommandsAccordion
@@ -2193,7 +2535,9 @@ HTML = """<!doctype html>
         
         // Highlight search queries in orange
         if (query.trim() !== '') {
-          const regex = new RegExp(`(${query})`, 'gi');
+          const regexSpecialChars = new Set(['.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\\\']);
+          const safeQuery = Array.from(query).map(ch => regexSpecialChars.has(ch) ? '\\\\' + ch : ch).join('');
+          const regex = new RegExp(`(${safeQuery})`, 'gi');
           escLine = escLine.replace(regex, '<span style="background:rgba(245, 158, 11, 0.35);color:#fff;border-radius:2px;padding:0 2px;">$1</span>');
         }
         

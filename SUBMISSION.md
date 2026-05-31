@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Vesuvius AutoResearch is an autonomous ML research loop for Vesuvius ink-detection experiments: it proposes bounded experiment changes, runs them against Vesuvius-style prepared segment data, records metrics and provenance, and blocks promotion unless candidates pass evidence-gated validation.
+Vesuvius AutoResearch is an evidence-gated ML research automation system for Vesuvius ink-detection experiments: it proposes bounded experiment changes, runs them against Vesuvius-style prepared segment data, records metrics and provenance, and blocks promotion unless candidates pass validation gates that are visible in a reviewer-safe dashboard.
 
 ## Why It Matters For The Challenge
 
@@ -15,7 +15,7 @@ The Progress Prize criteria favor open-source tools that solve a concrete Vesuvi
 - Autonomous experiment proposal with `PARAM_BOUNDS` clamping and duplicate-config avoidance.
 - `MetricContract` enforcement across 1,600+ recorded experiments.
 - Evidence-gated promotion: leave-one-out seed-repeat checks, full-tile inference, positive-rate alarms, fixed-threshold diagnostics, and eligibility checks.
-- An interactive standalone dashboard that turns the experiment database, configs, fold maps, full-tile artifacts, LOO summaries, promotion gates, quality verdicts, safe diagnostic controls, and recommended next actions into one reviewer-facing control room.
+- An interactive standalone dashboard that turns the experiment database, configs, fold maps, full-tile artifacts, LOO summaries, promotion gates, quality verdicts, safe diagnostic controls, and recommended next actions into one reviewer-facing control room with collapsed long panels, fold-matrix actions, folded decoded outputs, and a filterable scroll-contained run ledger.
 - `VesuviusHarness` abstraction so the same propose/evaluate/promote loop can pivot to other scroll research workflows.
 - GitHub Actions CI with 222+ tests, a 30-minute cron workflow, baseline guards, and artifact upload.
 - Synthetic demo data generator so reviewers can exercise the loop without downloading protected or large Vesuvius data first.
@@ -26,7 +26,7 @@ The dashboard is one of the most useful parts of the submission because it makes
 
 This matters for Vesuvius work because false positives can look convincing. The dashboard helps prevent accidental overclaiming by exposing positive-rate ratios, AP/prevalence lift, fixed-threshold status, full-tile quality checks, provenance eligibility, and promotion warnings in one place. It is not just a UI; it is a practical safety layer for deciding whether an ink-detection result is ready for more compute, more review, or rejection.
 
-The dashboard now includes gated interactive controls and an optional Agent Chat panel. Controls require token auth plus `VESUVIUS_DASHBOARD_ENABLE_RUNS=1`, execute only allowlisted non-artifact-writing commands, and reject arbitrary shell input. Agent Chat defaults to a Hermes-style local provider for this workspace, while reviewers outside Hermes can configure their own agent endpoint and API key through `VESUVIUS_DASHBOARD_AGENT_*` settings or a session-only UI key. With `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, the agent can propose allowlisted dashboard settings fixes that the user must review and apply. Every settings apply creates a local recovery snapshot, and rollback snapshots the current state first so recovery is reversible. Optional visual analysis lets the agent inspect decoded-output previews when explicitly enabled; those replies are advisory and cannot execute commands or modify settings.
+The dashboard now includes gated interactive controls and an optional Agent Chat panel. Controls require token auth plus `VESUVIUS_DASHBOARD_ENABLE_RUNS=1`, execute only allowlisted non-artifact-writing commands, and reject arbitrary shell input. The reviewer UI keeps long research surfaces manageable: the usefulness leaderboard is collapsed by default with search/status controls, the validation matrix includes filter and best-run actions plus safe validation command cards, the decoded-output gallery is folded until needed, and the experiment ledger is a sticky-header scroll window with text, status, segment, and F1 filters. Agent Chat defaults to a Hermes-style local provider for this workspace, while reviewers outside Hermes can configure their own agent endpoint and API key through `VESUVIUS_DASHBOARD_AGENT_*` settings or a session-only UI key. With `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, the agent can propose allowlisted dashboard settings fixes that the user must review and apply. Every settings apply creates a local recovery snapshot, and rollback snapshots the current state first so recovery is reversible. Optional visual analysis lets the agent inspect decoded-output previews when explicitly enabled; those replies are advisory and cannot execute commands or modify settings.
 
 ## Quick Start (Anyone Can Run This)
 

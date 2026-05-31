@@ -40,7 +40,7 @@ Primary public sources:
 | Project | Date signal | Category | What it does | Relevance to AutoResearch |
 | --- | --- | --- | --- | --- |
 | `jonmarrs/vesuvius-autoresearch` / `bountyhunter` | Created 2026, pushed 2026 | Direct competitor | Autonomous research loop for Vesuvius, sampling architectures, losses, augmentations, and hyperparameters; integrates TimeSformer, ResNet3D-101, Inception-I3D, topology metrics, calibration baselines, and GPU training. | Most direct competitor. More aggressive and GPU/model-search oriented. Differentiation for this repo must be validation safety, CPU-safe reproducibility, promotion gates, full-tile checks, and one-change interpretability. |
-| `mojomast/vesuvius-autoresearch` | Created 2026, pushed 2026 | This submission | Minimal continuous experiment pipeline with real-data-only execution, bounded one-change proposals, SQLite experiment records, LOO/full-tile promotion evidence, positive-rate alarms, dashboard, and no synthetic fallback. | Differentiated by conservative reviewability and false-positive controls rather than model scale. |
+| `mojomast/vesuvius-autoresearch` | Created 2026, pushed 2026 | This submission | Minimal continuous experiment pipeline with real-data-only execution, bounded one-change proposals, SQLite experiment records, LOO/full-tile promotion evidence, positive-rate alarms, reviewer-safe dashboard controls, folded artifact review, and no synthetic fallback. | Differentiated by conservative reviewability and false-positive controls rather than model scale. |
 | `mvrcii/vesuvius_first_title_prize` | 2025 | Model/prize winner | First Title Prize winner using MiniUNETR, 3D chunks, manual annotations, ignore masks, and rapid retraining for Scroll 5 title detection. | Strong model evidence, not an AutoML/search framework. Shows high-performing teams optimize data quality and annotation loops more than blind hyperparameter search. |
 | `ryanchesler/3d-ink-detection` | 2024, still relevant | Model/inference tooling | 3D U-Net ink detector trained on mapped 2D labels, sparse-label masking, validation distance exclusion, and sliding-window scroll inference. | Strong adjacent ink model pipeline. Competes as model infrastructure, not autonomous experiment steering. |
 | `ainatersol/Vesuvius-InkDetection` | 2023, still public baseline | Kaggle winner model | 2023 Kaggle winning ensemble: 3D CNN/3D U-Net/UNETR features flattened to 2D SegFormer; 9-model ensemble; trained on 3 A6000 GPUs. | SOTA model lineage for fragment competition. AutoResearch is not currently competitive on model performance. |
@@ -106,7 +106,7 @@ Clear differentiation:
 - Conservative autonomy: one-change proposal generation, parameter bounds, pending-config dedupe, and plan mode make the loop inspectable.
 - Safety gates: promotion requires LOO/full-tile evidence, positive precision/recall, AP/prevalence lift, positive-rate ratio control, fixed-threshold diagnostics, and no fold leakage.
 - Real-data-only execution: missing real NPZs fail loudly instead of silently falling back to fake data.
-- Reviewability: SQLite experiment records, metrics JSON, threshold CSVs, run summaries, dashboards, and reproducibility docs are first-class outputs.
+- Reviewability: SQLite experiment records, metrics JSON, threshold CSVs, run summaries, filterable/collapsible dashboards, and reproducibility docs are first-class outputs.
 - CPU-safe baseline: useful for unattended cron and reviewer reproduction even without large GPU resources.
 
 Weak or non-differentiated areas:

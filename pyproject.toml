@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vesuvius-autoresearch"
 version = "0.1.0"
-description = "CPU-safe Vesuvius Scroll Prize ink-detection research, validation, and dashboard tooling."
+description = "Evidence-gated Vesuvius ink-detection research automation with reviewer-safe dashboards, validation gates, and full-tile diagnostics."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

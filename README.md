@@ -2,7 +2,7 @@
 
 [![AutoResearch Tests](https://github.com/mojomast/vesuvius-autoresearch/actions/workflows/autoresearch_test.yml/badge.svg)](https://github.com/mojomast/vesuvius-autoresearch/actions/workflows/autoresearch_test.yml) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 
-Autonomous, evidence-gated experiment search for Vesuvius Challenge ink-detection research.
+Evidence-gated Vesuvius Challenge ink-detection research automation with reviewer-safe dashboards, validation gates, and full-tile diagnostics.
 
 Prize reviewers should start with [`SUBMISSION.md`](SUBMISSION.md), which summarizes the Progress Prize submission, honest research results, and extension path.
 
@@ -51,7 +51,7 @@ VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_ENABLE_RUNS=1 \
   .venv/bin/python run_dashboard.py --host 127.0.0.1 --port 8765
 ```
 
-Run buttons are allowlisted and reject arbitrary shell input; artifact-writing commands stay copy-only. Optional Agent Chat defaults to a Hermes-style local provider, while non-Hermes users can configure their own endpoint/API key:
+Run buttons are allowlisted and reject arbitrary shell input; artifact-writing commands stay copy-only. The dashboard keeps high-signal scorecards visible while folding long review surfaces by default: the research usefulness leaderboard has search/status controls, the validation fold matrix includes filter/best-run actions plus safe validation command cards, the decoded-output gallery starts folded, and the experiment runs ledger is contained in a sticky-header scroll window with run/model/status/blocker/artifact search and segment/F1 filters. Optional Agent Chat defaults to a Hermes-style local provider, while non-Hermes users can configure their own endpoint/API key:
 
 ```bash
 VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_AGENT_ENABLED=1 \
@@ -322,6 +322,8 @@ Launch the read-only Vesuvius dashboard without Hermes:
 ```bash
 python3 run_dashboard.py --host 127.0.0.1 --port 8765
 ```
+
+Reviewer workflow is intentionally compact: long secondary panels start folded, the usefulness leaderboard can be searched and narrowed by quality/promotion status, the validation matrix offers fold-specific ledger filtering and best-run jumps with allowlisted diagnostic commands, decoded outputs load only after the folded gallery is opened, and the experiment ledger stays inside a scrollable window with sticky headers and filters for text, promotion status, train/validation segment, and minimum F1.
 
 The shared snapshot contract can also be exported with:
 

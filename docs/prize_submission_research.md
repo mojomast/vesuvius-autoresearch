@@ -6,7 +6,7 @@ Research timestamp: 2026-05-28. Public web sources were fetched on this date. Fa
 
 The Progress Prize is active on the official Open Prizes page, with the next monthly deadline listed as **11:59pm Pacific, May 31st, 2026**. Submission is through the Progress Prize Google Form at <https://forms.gle/LrpQmSAqdwGpTczLA>. Current Progress Prize award tiers are **Gold Aureus: $20,000**, **Denarius: $10,000**, **Sestertius: $2,500**, and **Papyrus: $1,000**. The official criteria favor open-sourced early tools that are actually used by the community and are well documented.
 
-For the autoresearch tool, the strongest framing is: an open-source, reproducible research automation contribution that directly targets ink-detection generalization and accelerates scroll-reading experiments. The submission should include a standalone demo, run instructions, result screenshots/plots, clear standard-format inputs/outputs, and evidence that community members can run or adapt it. The interactive dashboard strengthens this framing by exposing safe diagnostic controls and optional agent chat in the same reviewer-facing interface as the promotion evidence.
+For the autoresearch tool, the strongest framing is: an open-source, reproducible research automation contribution that directly targets ink-detection generalization and accelerates scroll-reading experiments. The submission should include a standalone demo, run instructions, result screenshots/plots, clear standard-format inputs/outputs, and evidence that community members can run or adapt it. The interactive dashboard strengthens this framing by exposing safe diagnostic controls, fold-matrix actions, folded decoded-output review, a filterable scroll-contained experiment ledger, and optional agent chat in the same reviewer-facing interface as the promotion evidence.
 
 ## Current Open Prize Tiers and Amounts
 
@@ -95,6 +95,7 @@ Dashboard integration notes for the submission package:
 - Optional agent settings action mode is limited to allowlisted non-secret dashboard preferences, requires `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, validates every patch server-side, and requires a user click before apply.
 - Settings versioning creates immutable local recovery snapshots before every apply and before rollback, making broken dashboard settings rewindable without relying on the agent.
 - Optional decoded-output visual analysis is opt-in through `VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED=1` or the versioned dashboard setting, sends only guarded preview images/metrics, and cannot mutate settings or run commands.
+- Long dashboard surfaces are reviewer-safe by default: the usefulness leaderboard and decoded-output gallery start folded, the validation matrix includes explicit filter/best-run and safe-command actions, and the experiment ledger is scroll-contained with text, status, segment, and F1 filters.
 
 ### Terms Relevant to Submission
 
@@ -232,7 +233,7 @@ The official criteria explicitly ask for "comprehensive documentation" and "usag
 - One command to run a small demo.
 - A documented example using Vesuvius data or a small included/mock fixture where raw data cannot be bundled.
 - Sample outputs: experiment database rows, artifacts, plots, generated hypotheses, model cards, and logs.
-- A dashboard walkthrough or screenshot set showing the reviewer-facing state: current candidate, promotion gate, LOO/full-tile evidence, quality verdicts, and next recommended command.
+- A dashboard walkthrough or screenshot set showing the reviewer-facing state: current candidate, promotion gate, LOO/full-tile evidence, quality verdicts, collapsed usefulness leaderboard controls, validation fold-matrix actions, folded decoded-output gallery, filterable run ledger, and next recommended command.
 - Reproducibility notes: exact configs, seeds where relevant, hardware assumptions, expected runtime, and dependencies.
 - A short technical report explaining what specific scroll-reading bottleneck it solves and what measurable improvement it produced.
 
@@ -254,13 +255,13 @@ Tie it directly to the official requirements:
 
 - A concise benchmark table showing baseline vs autoresearch-discovered configuration or architecture.
 - If available, a cross-scroll metric such as validation Dice improvement on one scroll when training on another.
-- Screenshots of the dashboard or artifact viewer. For this submission, the dashboard should be treated as first-class evidence because it turns scattered experiment artifacts into an actionable review surface.
+- Screenshots of the dashboard or artifact viewer. For this submission, the dashboard should be treated as first-class evidence because it turns scattered experiment artifacts into an actionable review surface; include the compact default view and expanded examples of the leaderboard, fold matrix actions, decoded gallery, and filtered ledger.
 - Links to logs/artifacts that show the full chain from hypothesis to run to result.
 - A short failure analysis section explaining hallucination/overfitting risks, especially if model outputs could be interpreted as ink.
 
 ### Dashboard Framing
 
-The dashboard is a strong Progress Prize asset, not a minor convenience. It gives reviewers and future contributors a fast, read-only way to understand the state of the research loop: which candidate is best, what evidence supports it, which folds failed, whether full-tile provenance is eligible, whether positive-rate caps are binding, and what action should happen next. This is exactly the kind of practical tooling that reduces wasted scroll-research cycles.
+The dashboard is a strong Progress Prize asset, not a minor convenience. It gives reviewers and future contributors a fast, read-only way to understand the state of the research loop: which candidate is best, what evidence supports it, which folds failed, whether full-tile provenance is eligible, whether positive-rate caps are binding, and what action should happen next. It now keeps the page usable for large histories by collapsing long leaderboards/gallery panels by default, adding actions to the validation fold matrix, and containing the experiment run ledger in a searchable scroll window. This is exactly the kind of practical tooling that reduces wasted scroll-research cycles.
 
 The dashboard also helps with hallucination control. It makes unsafe-looking wins visible by showing positive-rate ratios, AP/prevalence lift, fixed-threshold diagnostics, full-tile checks, and promotion warnings together. That makes it harder to accidentally promote a pretty but inflated patch result, and easier for community reviewers to reproduce the reasoning behind a rejection.
 

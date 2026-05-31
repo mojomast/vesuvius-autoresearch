@@ -1,6 +1,6 @@
 # Method Summary
 
-Vesuvius AutoResearch is a small, CPU-safe research loop for ink-detection experiments on public Vesuvius data. It is designed to make false-positive control and validation evidence visible before any promotion claim.
+Vesuvius AutoResearch is a CPU-safe, evidence-gated research loop for ink-detection experiments on public Vesuvius data. It is designed to make false-positive control and validation evidence visible in a reviewer-safe dashboard before any promotion claim.
 
 ## Pipeline
 
