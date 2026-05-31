@@ -46,6 +46,7 @@ The main page is optimized for long-running research histories:
 - The Validation Fold Matrix includes per-cell actions to filter the run ledger or jump to the best run for a train/validation pair. It also surfaces allowlisted validation commands such as seed-repeat LOO dry-run, prepared-segment verification, and fold-map dry-run; runnable controls still obey the backend safety gate.
 - The Decoded Output Gallery starts folded so available `probability_map.npy` cards do not occupy the page by default. Heatmaps are decoded only when the reviewer clicks `Decode`, `Decode Visible`, or `Decode All`.
 - The Experiment Runs Ledger stays in a bounded scroll container with sticky headers. Filters cover free-text search across run IDs, models, statuses, blockers, and artifacts; promotion status; train segment; validation segment; and minimum F1. Matrix actions update the same segment filters.
+- Candidate evidence includes a hard-fold profile for `20230530172803` when linked LOO rows expose that fold. Low AP/prevalence lift is treated as a separability blocker, not a threshold-selection win; the next action becomes a read-only LOO fold audit before promotion or mining claims.
 
 ## Safety Model
 
@@ -179,9 +180,13 @@ Full-tile evidence and leaderboard rows include `quality_next_actions` and `qual
 
 `experiments.recent` drives the bounded Experiment Runs Ledger. Host dashboards should preserve equivalent text/status/segment/F1 filtering and scroll containment because active research histories can be much longer than a useful page-length table.
 
+`research_summary.candidate_evidence.hard_fold_profile` summarizes the known hard fold `20230530172803` when linked LOO evidence is available. It reports mean/min F1, AP, AP/prevalence lift, full-tile AP when present, fixed-threshold statuses, a failure mode, and a recommended action. `low_ap_near_prevalence` is promotion-blocking because it means the model is not ranking hard-fold ink substantially above prevalence; do not clear that blocker by changing selected threshold alone.
+
 `mining` exposes a dry-run hard-negative retrain and calibration plan. It inventories `data/mined/**/*.npz`, rejects mined files whose provenance matches the held-out segment, and emits both read-only cap comparison commands and artifact-writing mining commands. `cap_comparison_commands` run `scripts/compare_threshold_caps.py` against existing `metrics.json`/`metrics_by_threshold.csv` artifacts, are marked `writes_artifacts: false` and `safe_to_execute_from_dashboard: true`, and include 2.0x, 2.5x, 3.0x, and 3.5x retention checks by default. Mining commands run `scripts/infer_full_tile.py --mine-output ...`, keep `--mine-output` under `data/mined/`, use a fresh `mining_refresh_<segment_id>` output directory, and omit `--overwrite` so prior full-tile evidence is not replaced; they are marked `writes_artifacts: true` and `safe_to_execute_from_dashboard: false`. `fold_safe_extra_train_npzs_by_heldout` is the fold-scoped safety map; top-level `eligible_extra_train_npzs` is only the active weak-fold shortcut. The UI renders this as the Mining & Calibration Plan panel with read-only cap commands, artifact-writing mine commands, fold-safe inventory, and config-preview safety summaries. The dashboard never executes artifact-writing commands.
 
 `mining.calibration_mining_decisions` connects threshold-risk evidence to the next action: tighten the positive-rate cap when lower ratio caps preserve about 95% of selected F1 and F0.5, mine hard negatives when lower caps collapse F1 or F0.5, or review threshold risk when evidence is incomplete. Each decision may include `cap_comparison_command_text` so reviewers can rerun the read-only cap check before mining or retraining.
+
+When threshold-risk evidence is missing but a `metrics_by_threshold.csv` exists, the dashboard planner chooses `run_cap_comparison` before artifact-writing hard-negative mining. Mining remains available when no cap report can be generated or when cap evidence shows lower caps collapse retained F1/F0.5.
 
 When `config_preview` is present, `valid: false` is blocking. The dashboard may show warnings, but unsafe held-out overrides omit the YAML preview so the JSON output does not look runnable.
 

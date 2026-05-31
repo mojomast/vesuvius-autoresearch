@@ -11,6 +11,11 @@ import yaml
 from .artifacts import list_artifact_files
 from .quality import metrics_quality_verdict, quality_next_actions
 
+HARD_FOLD_ID = "20230530172803"
+HARD_FOLD_LOW_F1_THRESHOLD = 0.04
+HARD_FOLD_LOW_AP_LIFT_THRESHOLD = 2.0
+HARD_FOLD_LOW_AP_THRESHOLD = 0.05
+
 
 def _get_nested(obj: dict[str, Any], path: tuple[str, ...], default: Any = None) -> Any:
     cur: Any = obj
@@ -426,6 +431,119 @@ def _positive_rate_risk_summary(run: dict[str, Any], full_tiles: list[dict[str, 
     }
 
 
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _hard_fold_profile(summary: dict[str, Any] | None, loo_full_tiles: dict[str, Any]) -> dict[str, Any] | None:
+    if not summary:
+        return None
+    rows = [row for row in summary.get("rows", []) if isinstance(row, dict) and str(row.get("heldout_segment")) == HARD_FOLD_ID]
+    per_fold_f1 = summary.get("per_fold_val_f1") if isinstance(summary.get("per_fold_val_f1"), dict) else {}
+    per_fold_ap = summary.get("per_fold_average_precision") if isinstance(summary.get("per_fold_average_precision"), dict) else {}
+    weak_lift_flags = {str(item) for item in summary.get("folds_with_weak_ap_prevalence_lift", []) if item is not None}
+    hard_fold_weak_lift = any(flag == HARD_FOLD_ID or flag.startswith(f"{HARD_FOLD_ID}:") for flag in weak_lift_flags)
+    if not rows and HARD_FOLD_ID not in per_fold_f1 and HARD_FOLD_ID not in per_fold_ap and str(summary.get("worst_fold_id") or "") != HARD_FOLD_ID and not hard_fold_weak_lift:
+        return None
+
+    f1_values = [_as_float(row.get("val_f1")) for row in rows]
+    ap_values = [_as_float(row.get("average_precision")) for row in rows]
+    lift_values = [_as_float(row.get("ap_prevalence_lift")) for row in rows]
+    val_rate_values = [_as_float(row.get("val_positive_rate")) for row in rows]
+    pred_rate_values = [_as_float(row.get("pred_positive_rate")) for row in rows]
+    f1_values = [value for value in f1_values if value is not None]
+    ap_values = [value for value in ap_values if value is not None]
+    lift_values = [value for value in lift_values if value is not None]
+    val_rate_values = [value for value in val_rate_values if value is not None]
+    pred_rate_values = [value for value in pred_rate_values if value is not None]
+    pooled_f1 = _as_float(per_fold_f1.get(HARD_FOLD_ID))
+    pooled_ap = _as_float(per_fold_ap.get(HARD_FOLD_ID))
+    if pooled_f1 is not None:
+        f1_values.append(pooled_f1)
+    if pooled_ap is not None:
+        ap_values.append(pooled_ap)
+    fixed_statuses = sorted({str(row.get("fixed_threshold_status") or "unknown") for row in rows})
+    full_tile_evidence = [item for item in loo_full_tiles.get("evidence", []) if isinstance(item, dict) and str(item.get("segment_id") or item.get("heldout_segment") or "") == HARD_FOLD_ID]
+    full_tile_ap = [_as_float(item.get("average_precision")) for item in full_tile_evidence]
+    full_tile_ap = [value for value in full_tile_ap if value is not None]
+
+    mean_f1 = _mean(f1_values)
+    min_f1 = min(f1_values) if f1_values else _as_float(summary.get("worst_fold_val_f1"))
+    mean_ap = _mean(ap_values)
+    mean_lift = _mean(lift_values)
+    mean_val_rate = _mean(val_rate_values)
+    mean_pred_rate = _mean(pred_rate_values)
+    low_f1 = min_f1 is not None and min_f1 < HARD_FOLD_LOW_F1_THRESHOLD
+    low_lift = mean_lift is not None and mean_lift < HARD_FOLD_LOW_AP_LIFT_THRESHOLD
+    low_ap = mean_ap is not None and mean_ap < HARD_FOLD_LOW_AP_THRESHOLD
+    near_prevalence = hard_fold_weak_lift or low_lift or (mean_ap is not None and mean_val_rate is not None and mean_ap < mean_val_rate * HARD_FOLD_LOW_AP_LIFT_THRESHOLD)
+    fixed_weak = any(status and status not in {"ok", "unknown"} for status in fixed_statuses)
+
+    if near_prevalence or low_ap:
+        failure_mode = "low_ap_near_prevalence"
+        recommended_action = "audit_hard_fold_labels_and_sampling"
+        label = f"Audit labels and sampling pressure for hard fold {HARD_FOLD_ID}"
+        reason = "AP is near prevalence; threshold changes are unlikely to fix fold separability."
+        severity = "blocker"
+    elif low_f1:
+        failure_mode = "weak_fold_low_f1"
+        recommended_action = "lower_positive_patch_pressure"
+        label = f"Lower positive patch pressure for hard fold {HARD_FOLD_ID}"
+        reason = "Hard-fold F1 is below promotion floor even when AP is not prevalence-limited."
+        severity = "blocker"
+    elif fixed_weak:
+        failure_mode = "fixed_threshold_weak"
+        recommended_action = "calibrate_probability_scale"
+        label = f"Calibrate probability scale for hard fold {HARD_FOLD_ID}"
+        reason = "Hard-fold fixed-threshold status is weak."
+        severity = "warning"
+    else:
+        failure_mode = "review"
+        recommended_action = "review_hard_fold_evidence"
+        label = f"Review hard fold {HARD_FOLD_ID} evidence"
+        reason = "Hard-fold evidence is present; confirm it is not the active blocker."
+        severity = "info"
+
+    summary_path = summary.get("path")
+    command = None
+    command_text = None
+    if summary_path:
+        command = [".venv/bin/python", "scripts/analyze_loo_folds.py", "--summary-json", str(summary_path), "--markdown"]
+        command_text = " ".join(command)
+
+    action: dict[str, Any] = {
+        "id": "audit_hard_fold_labels",
+        "label": label,
+        "kind": "diagnostic",
+        "reason": reason,
+        "segment_id": HARD_FOLD_ID,
+        "writes_artifacts": False,
+        "safe_to_execute_from_dashboard": bool(command),
+    }
+    if command:
+        action["command"] = command
+        action["command_text"] = command_text
+
+    return {
+        "fold_id": HARD_FOLD_ID,
+        "failure_mode": failure_mode,
+        "severity": severity,
+        "recommended_action": recommended_action,
+        "recommended_action_label": label,
+        "reason": reason,
+        "mean_val_f1": mean_f1,
+        "min_val_f1": min_f1,
+        "mean_average_precision": mean_ap,
+        "mean_ap_prevalence_lift": mean_lift,
+        "mean_val_positive_rate": mean_val_rate,
+        "mean_pred_positive_rate": mean_pred_rate,
+        "full_tile_average_precision": _mean(full_tile_ap),
+        "fixed_threshold_statuses": fixed_statuses,
+        "row_count": len(rows),
+        "action": action,
+    }
+
+
 def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {"candidate_run_id": None, "promotion_actions": []}
@@ -433,6 +551,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
     summary = _linked_loo_summary(run, loo_summaries, project_root)
     full_tiles = _full_tile_metrics(run, project_root)
     loo_full_tiles = _loo_full_tile_diagnostics(summary, project_root)
+    hard_fold_profile = _hard_fold_profile(summary, loo_full_tiles)
     full_tile_quality_actions = _quality_promotion_actions(full_tiles, {})
     artifact_dir = Path(str(run.get("artifact_dir") or ""))
     weak_fold_id = str((summary or {}).get("worst_fold_id") or "")
@@ -478,6 +597,9 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
         command_text = " ".join(command)
 
     actions: list[dict[str, Any]] = []
+    hard_fold_action = hard_fold_profile.get("action") if isinstance(hard_fold_profile, dict) else None
+    if isinstance(hard_fold_action, dict) and hard_fold_profile.get("severity") == "blocker":
+        actions.append(hard_fold_action)
     if not summary:
         actions.append({"id": "seed_repeat_loo", "label": "Run linked seed-repeat LOO", "kind": "validation", "writes_artifacts": True})
     elif weak_fold_id and weak_status != "done":
@@ -512,6 +634,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
             "quality_next_action": full_tile_quality_actions[0].get("label") if full_tile_quality_actions else None,
         },
         "loo_full_tile": loo_full_tiles,
+        "hard_fold_profile": hard_fold_profile,
         "risk_summary": _positive_rate_risk_summary(run, full_tiles, loo_full_tiles),
         "weak_fold_full_tile": {
             "weak_fold_id": weak_fold_id or None,
@@ -576,7 +699,11 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
         elif any(_quality_blocks_promotion(item) for item in _full_tile_metrics(run, project_root)):
             add("full_tile_quality_fail", "quality")
         summary = _linked_loo_summary(run, loo_summaries or [], project_root)
-        if any(_quality_blocks_promotion(item) for item in _loo_full_tile_diagnostics(summary, project_root).get("evidence", [])):
+        loo_tile_diagnostics = _loo_full_tile_diagnostics(summary, project_root)
+        hard_profile = _hard_fold_profile(summary, loo_tile_diagnostics)
+        if isinstance(hard_profile, dict) and hard_profile.get("severity") == "blocker":
+            add("hard_fold_low_ap" if hard_profile.get("failure_mode") == "low_ap_near_prevalence" else "hard_fold_low_f1", "validation")
+        if any(_quality_blocks_promotion(item) for item in loo_tile_diagnostics.get("evidence", [])):
             add("loo_full_tile_quality_fail", "quality")
     best_threshold = metrics.get("best_threshold")
     if best_threshold is not None:
@@ -726,7 +853,7 @@ def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, An
                         rows.append({key: row.get(key) for key in ("run_id", "artifact_dir", "heldout_segment", "seed", "val_f1", "average_precision", "best_threshold", "pred_positive_rate", "val_positive_rate", "brier_score", "expected_calibration_error", "ap_prevalence_lift", "prob_mean", "prob_p95", "prob_max", "fixed_threshold", "fixed_threshold_f1", "fixed_threshold_status", "threshold_selection", "selected_threshold_reason", "returncode")})
             except Exception:
                 rows = []
-        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids"), "rows": rows})
+        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "folds_with_weak_ap_prevalence_lift": data.get("folds_with_weak_ap_prevalence_lift", []), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids"), "rows": rows})
         if len(summaries) >= limit:
             break
     return summaries

@@ -1345,6 +1345,7 @@ HTML = """<!doctype html>
       const full = evidence.full_tile || {};
       const looFull = evidence.loo_full_tile || {};
       const risk = evidence.risk_summary || {};
+      const hardFold = evidence.hard_fold_profile || {};
       const actions = evidence.promotion_actions || [];
       const action = actions[0] || {};
       const cmd = action.command_text || weak.command_text;
@@ -1358,6 +1359,7 @@ HTML = """<!doctype html>
         <div class="milestone-item"><span class="milestone-label">Candidate</span><span class="run-pill" style="cursor:pointer;" onclick="selectRun('${esc(evidence.candidate_run_id)}')">${esc(String(evidence.candidate_run_id).slice(0, 8))}</span></div>
         <div class="milestone-item"><span class="milestone-label">Research scope</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(scopeText)}</span></div>
         <div class="milestone-item"><span class="milestone-label">LOO weak fold</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(loo.worst_fold_id || 'unknown')} · F1 ${fmt(loo.worst_fold_val_f1, 4)}</span></div>
+        ${hardFold.fold_id ? `<div class="milestone-item"><span class="milestone-label">Hard-fold profile</span><span class="indicator-badge ${hardFold.severity === 'blocker' ? 'badge-error' : 'badge-warning'}">${esc(hardFold.failure_mode || 'review')}</span></div><div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);">${esc(hardFold.fold_id)} · AP ${fmt(hardFold.mean_average_precision, 4)} · lift ${fmt(hardFold.mean_ap_prevalence_lift, 2)} · ${esc(hardFold.recommended_action_label || hardFold.reason || 'review hard fold')}</div>` : ''}
         <div class="milestone-item"><span class="milestone-label">Full-tile coverage</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((full.segments_covered || []).join(', ') || 'none')}</span></div>
         <div class="milestone-item"><span class="milestone-label">LOO tile panel</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc((looFull.segments_covered || []).join(', ') || 'none')} · ${esc(String(looFull.coverage_count || 0))} runs</span></div>
         <div class="milestone-item"><span class="milestone-label">Positive-rate risk</span><span class="indicator-badge ${risk.risk_level === 'warning' ? 'badge-warning' : 'badge-success'}">${esc(risk.risk_level || 'unknown')}</span></div>

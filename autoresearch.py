@@ -1706,15 +1706,35 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
         name = f"auto_{stamp}_promotion_{action_id}_{len(proposals)+1}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
         return (name, cfg, reason)
 
+    def _float_config(path: Tuple[str, ...], default: float) -> float:
+        try:
+            return float(_get_nested(base, path, default) or default)
+        except (TypeError, ValueError):
+            return default
+
     if action_id == "calibrate_probability_scale":
-        thresholds = [0.31, 0.33, 0.35, 0.37] if is_torch else [0.33, 0.35, 0.4]
+        if is_torch:
+            prloss = _float_config(("training", "positive_rate_loss_weight"), 0.0)
+            prtol = _float_config(("training", "positive_rate_loss_tolerance"), 0.01)
+            pos_weight = _float_config(("training", "pos_weight"), 2.0)
+            scale_moves = [
+                (("training", "positive_rate_loss_weight"), round(min(0.1, max(0.02, prloss + 0.02)), 4), "increase positive-rate loss so fixed 0.5 threshold keeps calibrated positives"),
+                (("training", "positive_rate_loss_tolerance"), round(max(0.001, min(0.02, prtol * 0.5)), 4), "tighten positive-rate tolerance for fixed-threshold probability scale"),
+                (("training", "pos_weight"), round(max(0.25, pos_weight * 0.85), 4), "reduce positive class pressure when swept F1 exists but fixed 0.5 threshold fails"),
+            ]
+            for path, value, detail in scale_moves:
+                if len(proposals) >= count:
+                    break
+                p = _make_proposal(path, value, f"promotion action {action_id}: {detail}")
+                if p:
+                    proposals.append(p)
+        thresholds = [0.35] if is_torch else [0.33, 0.35]
         for thresh in thresholds:
             if len(proposals) >= count:
                 break
-            p = _make_proposal(("evaluation", "threshold"), thresh, f"promotion action {action_id}: evaluate threshold={thresh}")
+            p = _make_proposal(("evaluation", "threshold"), thresh, f"promotion action {action_id}: diagnostic threshold={thresh}; fixed-threshold gate still requires calibration")
             if p:
                 proposals.append(p)
-        # Also try seed repeats to confirm threshold robustness
         seed = int(_get_nested(base, ("training", "seed"), DEFAULT_SEED))
         for seed_delta in SEED_REPEAT_DELTAS:
             if len(proposals) >= count:

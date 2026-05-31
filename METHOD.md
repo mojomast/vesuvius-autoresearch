@@ -9,7 +9,7 @@ Vesuvius AutoResearch is a CPU-safe, evidence-gated research loop for ink-detect
 3. Evaluate by threshold sweep, average precision, calibration diagnostics, and positive-rate ratio.
 4. Run leave-one-segment-out validation for robust candidates.
 5. Run full-tile inference on candidate and weak-fold segments.
-6. Use dashboard quality verdicts and read-only evidence packages to select next actions such as cap calibration, full-tile regression review, or fold-safe hard-negative mining.
+6. Use dashboard quality verdicts and read-only evidence packages to select next actions such as cap calibration, hard-fold AP/separability audit, full-tile regression review, or fold-safe hard-negative mining.
 
 ## Models
 

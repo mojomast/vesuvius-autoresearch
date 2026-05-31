@@ -159,6 +159,41 @@ class HardNegativePlannerTest(unittest.TestCase):
         self.assertIn("scripts/compare_threshold_caps.py", plan["cap_comparison_commands"][0]["command_text"])
         self.assertIn("--min-retained-f05", plan["calibration_mining_decisions"][0]["cap_comparison_command_text"])
 
+    def test_missing_threshold_risk_requests_cap_comparison_before_mining(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "experiments" / "runs" / "run1"
+            full_tile = artifact / "full_tile_seg-a"
+            full_tile.mkdir(parents=True)
+            metrics = full_tile / "metrics.json"
+            metrics.write_text("{}")
+            (full_tile / "metrics_by_threshold.csv").write_text("threshold,precision,recall,f05,f1,pred_positive_rate\n")
+            snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [{"path": str(metrics), "segment_id": "seg-a", "pred_positive_rate": 0.3, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.0}]}}}}
+
+            plan = build_hard_negative_plan(root, snapshot)
+
+        self.assertEqual(plan["calibration_mining_decisions"][0]["action"], "run_cap_comparison")
+        self.assertEqual(plan["calibration_mining_decisions"][0]["reason"], "missing_threshold_risk_summary")
+        self.assertEqual(plan["mine_commands"], [])
+        self.assertIn("scripts/compare_threshold_caps.py", plan["cap_comparison_commands"][0]["command_text"])
+
+    def test_partial_threshold_risk_requests_cap_comparison_before_mining(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "experiments" / "runs" / "run1"
+            full_tile = artifact / "full_tile_seg-a"
+            full_tile.mkdir(parents=True)
+            metrics = full_tile / "metrics.json"
+            metrics.write_text("{}")
+            (full_tile / "metrics_by_threshold.csv").write_text("threshold,precision,recall,f05,f1,pred_positive_rate\n")
+            snapshot = {"research_summary": {"candidate_evidence": {"loo": {"worst_fold_id": "seg-b"}, "full_tile": {"evidence": [{"path": str(metrics), "segment_id": "seg-a", "val_f1": 0.3, "pred_positive_rate": 0.3, "val_positive_rate": 0.1, "fixed_threshold_f1": 0.0, "threshold_risk_summary": {"cap_binding": True}}]}}}}
+
+            plan = build_hard_negative_plan(root, snapshot)
+
+        self.assertEqual(plan["calibration_mining_decisions"][0]["action"], "run_cap_comparison")
+        self.assertEqual(plan["calibration_mining_decisions"][0]["reason"], "partial_threshold_risk_summary")
+        self.assertEqual(plan["mine_commands"], [])
+
     def test_refreshed_threshold_risk_supersedes_stale_same_artifact_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -183,6 +183,22 @@ class AutoResearchPivotTest(unittest.TestCase):
         run["metrics"]["loo_promotion_ready"] = True
         self.assertEqual(_promotion_next_action(run), "run_full_tile_validation")
 
+    def test_probability_scale_action_prioritizes_loss_calibration_over_threshold_sweep(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        _set_nested(cfg, ("training", "positive_rate_loss_weight"), 0.03)
+        _set_nested(cfg, ("training", "positive_rate_loss_tolerance"), 0.01)
+        run = {"run_id": "candidate", "config": cfg, "main_metric": 0.3, "metrics": {"val_f1": 0.3, "average_precision": 0.2, "precision": 0.3, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}}
+
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            proposals = autoresearch._generate_promotion_action_proposals([run], {"action_id": "calibrate_probability_scale", "candidate_run_id": "candidate"}, count=3)
+
+        paths = [tuple(proposal[1]["autoresearch"]["changed_path"].split(".")) for proposal in proposals]
+        self.assertTrue(proposals)
+        self.assertIn(("training", "positive_rate_loss_weight"), paths)
+        self.assertIn(("training", "positive_rate_loss_tolerance"), paths)
+        self.assertNotEqual(paths[0], ("evaluation", "threshold"))
+        self.assertTrue(all(proposal[1]["autoresearch"]["promotable"] is False for proposal in proposals))
+
     def test_proposal_plan_exposes_safe_metadata(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
 
@@ -444,14 +460,14 @@ class AutoResearchPivotTest(unittest.TestCase):
                 run_mock.assert_called()
                 call_args = run_mock.call_args_list[0][0][0]
                 self.assertIn("run_experiment.py", call_args)
-                # Verify the generated config has the threshold changed
-                generated_paths = list(autoresearch.CONFIGS.glob("auto_*promotion*threshold*.yaml"))
+                # Verify the generated configs tune probability scale, not just selected threshold.
+                generated_paths = list(autoresearch.CONFIGS.glob("auto_*promotion*positive_rate_loss*.yaml"))
                 self.assertTrue(generated_paths)
                 for path in generated_paths:
                     generated_cfg = load_config(path)
-                    self.assertIn(generated_cfg["evaluation"]["threshold"], [0.31, 0.33, 0.35, 0.37])
                     self.assertEqual(generated_cfg["autoresearch"]["promotion_action_id"], "calibrate_probability_scale")
                     self.assertEqual(generated_cfg["autoresearch"]["intent"], "promotion_action")
+                    self.assertIn(generated_cfg["autoresearch"]["changed_path"], {"training.positive_rate_loss_weight", "training.positive_rate_loss_tolerance"})
             finally:
                 autoresearch.CONFIGS = old_configs
 

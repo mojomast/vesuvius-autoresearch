@@ -228,7 +228,9 @@ def _threshold_risk_decision(tile: dict[str, Any]) -> dict[str, Any]:
     selected_f1 = float(selected.get("f1") or tile.get("val_f1") or 0.0)
     selected_ratio = selected.get("pred_to_val_ratio") or _safe_ratio(tile.get("pred_positive_rate"), tile.get("val_positive_rate"))
     if not summary or selected_f1 <= 0.0:
-        return {"action": "review_threshold_risk", "reason": "missing_threshold_risk_summary", "selected_pred_to_val_ratio": selected_ratio}
+        return {"action": "run_cap_comparison", "reason": "missing_threshold_risk_summary", "selected_pred_to_val_ratio": selected_ratio}
+    if not selected or selected.get("f1") is None:
+        return {"action": "run_cap_comparison", "reason": "partial_threshold_risk_summary", "selected_pred_to_val_ratio": selected_ratio}
 
     def kept_fraction(key: str, metric: str) -> float | None:
         row = summary.get(key) if isinstance(summary.get(key), dict) else None
@@ -314,7 +316,7 @@ def build_hard_negative_plan(project_root: Path, snapshot: dict[str, Any], *, ma
             decision["cap_comparison_command_text"] = cap_command["command_text"]
         decisions.append(decision)
         explicit_mine = any(action.get("id") == "mine_hard_negatives" for action in tile.get("quality_next_actions") or [] if isinstance(action, dict))
-        if not _tile_needs_mining(tile, ratio_threshold) or (decision.get("action") == "tighten_positive_rate_cap" and not explicit_mine):
+        if not _tile_needs_mining(tile, ratio_threshold) or (decision.get("action") == "tighten_positive_rate_cap" and not explicit_mine) or (decision.get("action") == "run_cap_comparison" and decision.get("cap_comparison_command_text") and not explicit_mine):
             continue
         metrics_path = Path(str(tile.get("path") or ""))
         existing_output_dir = metrics_path.parent if metrics_path.name == "metrics.json" else None

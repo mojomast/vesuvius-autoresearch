@@ -51,7 +51,7 @@ VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_ENABLE_RUNS=1 \
   .venv/bin/python run_dashboard.py --host 127.0.0.1 --port 8765
 ```
 
-Run buttons are allowlisted and reject arbitrary shell input; artifact-writing commands stay copy-only. The dashboard keeps high-signal scorecards visible while folding long review surfaces by default: the research usefulness leaderboard has search/status controls, the validation fold matrix includes filter/best-run actions plus safe validation command cards, the decoded-output gallery starts folded, and the experiment runs ledger is contained in a sticky-header scroll window with run/model/status/blocker/artifact search and segment/F1 filters. Optional Agent Chat defaults to a Hermes-style local provider, while non-Hermes users can configure their own endpoint/API key:
+Run buttons are allowlisted and reject arbitrary shell input; artifact-writing commands stay copy-only. The dashboard keeps high-signal scorecards visible while folding long review surfaces by default: the research usefulness leaderboard has search/status controls, the validation fold matrix includes filter/best-run actions plus safe validation command cards, the decoded-output gallery starts folded, and the experiment runs ledger is contained in a sticky-header scroll window with run/model/status/blocker/artifact search and segment/F1 filters. Candidate evidence also profiles the hard `20230530172803` fold so low AP/prevalence failures trigger read-only fold audits instead of threshold-gate relaxation. Optional Agent Chat defaults to a Hermes-style local provider, while non-Hermes users can configure their own endpoint/API key:
 
 ```bash
 VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_AGENT_ENABLED=1 \
@@ -86,31 +86,25 @@ The script writes `configs/baseline.yaml` plus the four robust pivot configs use
 
 Verify the installation with `python -m pytest tests/ && python autoresearch.py --plan --json && python -c "from harness.vesuvius_harness import VesuviusHarness; print('ok')" && python -c "from autoresearch import METRIC_CONTRACT, PARAM_BOUNDS; print(len(PARAM_BOUNDS), 'bounds')"`.
 
-Current `python3 autoresearch.py --plan --json` state, redacted to omit local absolute paths, remains promotion review oriented after the full-tile evidence package:
+Current dashboard/autoresearch review state is intentionally blocker-oriented when hard-fold evidence is weak. A representative redacted decision payload looks like:
 
 ```json
 {
-  "status": "promotion_ready",
-  "candidate_run_id": "20260528T163849Z_17863aaa",
-  "next_action": "Review full-tile quality evidence before promotion for segment 20230522181603",
+  "status": "blocked",
+  "candidate_run_id": "<candidate>",
+  "next_action": "Audit labels and sampling pressure for hard fold 20230530172803",
   "proposals": [],
   "reasoning": [
-    "promotion_gate_ready",
+    "candidate_linked_evidence_available",
     "pause_exploration_before_more_local_sweeps",
-    "candidate_linked_evidence_available"
+    "strict_hard_fold_blocker_active"
   ],
   "promotion_actions": [
     {
-      "id": "quality_review",
-      "kind": "quality",
-      "quality_verdict": "review",
-      "segment_id": "20230522181603",
-      "target": "candidate_full_tile"
-    },
-    {
-      "id": "promotion_review",
-      "kind": "review",
-      "label": "Review promotion candidate 20260528T163849Z_17863aaa"
+      "id": "audit_hard_fold_labels",
+      "kind": "diagnostic",
+      "segment_id": "20230530172803",
+      "writes_artifacts": false
     }
   ]
 }

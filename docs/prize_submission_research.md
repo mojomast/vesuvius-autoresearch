@@ -95,7 +95,7 @@ Dashboard integration notes for the submission package:
 - Optional agent settings action mode is limited to allowlisted non-secret dashboard preferences, requires `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, validates every patch server-side, and requires a user click before apply.
 - Settings versioning creates immutable local recovery snapshots before every apply and before rollback, making broken dashboard settings rewindable without relying on the agent.
 - Optional decoded-output visual analysis is opt-in through `VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED=1` or the versioned dashboard setting, sends only guarded preview images/metrics, and cannot mutate settings or run commands.
-- Long dashboard surfaces are reviewer-safe by default: the usefulness leaderboard and decoded-output gallery start folded, the validation matrix includes explicit filter/best-run and safe-command actions, and the experiment ledger is scroll-contained with text, status, segment, and F1 filters.
+- Long dashboard surfaces are reviewer-safe by default: the usefulness leaderboard and decoded-output gallery start folded, the validation matrix includes explicit filter/best-run and safe-command actions, and the experiment ledger is scroll-contained with text, status, segment, and F1 filters. The hard `20230530172803` fold is profiled as AP/separability evidence, so weak hard-fold ranking triggers audit/sampling review instead of relaxed threshold claims.
 
 ### Terms Relevant to Submission
 

@@ -15,7 +15,7 @@ import numpy as np
 
 from research_dashboard.artifacts import list_artifact_files, preview_artifact
 from research_dashboard.app import HTML, _agent_chat, _visual_artifact_analysis, make_handler
-from research_dashboard.experiments import _full_tile_ready, _positive_rate_risk_summary
+from research_dashboard.experiments import _full_tile_ready, _hard_fold_profile, _positive_rate_risk_summary
 from research_dashboard.inventory import build_inventory
 from research_dashboard.quality import decoded_output_quality
 from research_dashboard.snapshot import build_snapshot, reset_snapshot_cache
@@ -88,6 +88,24 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(speckle["small_component_positive_fraction"], 1.0)
         self.assertEqual(noisy["verdict"], "fail")
         self.assertIn("fragmented_threshold_mask", noisy["flags"])
+
+    def test_hard_fold_profile_uses_summary_weak_ap_flags_without_jsonl(self) -> None:
+        profile = _hard_fold_profile(
+            {
+                "promotion_ready": True,
+                "worst_fold_id": "20230530172803",
+                "worst_fold_val_f1": 0.06,
+                "per_fold_val_f1": {"20230530172803": 0.06},
+                "per_fold_average_precision": {"20230530172803": 0.08},
+                "folds_with_weak_ap_prevalence_lift": ["20230530172803:seed=11001"],
+            },
+            {"evidence": []},
+        )
+
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile["failure_mode"], "low_ap_near_prevalence")
+        self.assertEqual(profile["severity"], "blocker")
 
     def test_snapshot_contract_from_temp_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -888,6 +906,55 @@ class ResearchDashboardTest(unittest.TestCase):
         run = snapshot["experiments"]["recent"][0]
         self.assertEqual(run["promotion_status"], "blocked")
         self.assertIn("fixed_threshold_status_weak", {blocker["code"] for blocker in run["promotion_blockers"]})
+
+    def test_hard_fold_low_ap_profile_blocks_and_prioritizes_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            summary = {
+                "promotion_ready": True,
+                "run_ids": ["hard_fold"],
+                "worst_fold_id": "20230530172803",
+                "worst_fold_val_f1": 0.032,
+                "per_fold_val_f1": {"20230530172803": 0.032},
+                "per_fold_average_precision": {"20230530172803": 0.025},
+                "promotion_warnings": [],
+            }
+            (logs / "hard_fold.summary.json").write_text(json.dumps(summary))
+            rows = [
+                {"run_id": "loo_a", "artifact_dir": str(root / "experiments" / "runs" / "loo_a"), "heldout_segment": "20230530172803", "seed": 1, "val_f1": 0.032, "average_precision": 0.025, "ap_prevalence_lift": 1.4, "val_positive_rate": 0.018, "pred_positive_rate": 0.045, "fixed_threshold_status": "ok", "returncode": 0},
+                {"run_id": "loo_b", "artifact_dir": str(root / "experiments" / "runs" / "loo_b"), "heldout_segment": "20230530172803", "seed": 2, "val_f1": 0.022, "average_precision": 0.024, "ap_prevalence_lift": 1.3, "val_positive_rate": 0.018, "pred_positive_rate": 0.047, "fixed_threshold_status": "ok", "returncode": 0},
+            ]
+            (logs / "hard_fold.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "hard_fold"
+            full_tile_dir = run_dir / "full_tile_20230530172803"
+            full_tile_dir.mkdir(parents=True)
+            (full_tile_dir / "metrics.json").write_text(json.dumps({"promotion_checks": {"eligible": True}, "evaluation_region": {"type": "whole_segment", "segment_id": "20230530172803"}, "val_f1": 0.08, "average_precision": 0.027, "val_positive_rate": 0.018, "pred_positive_rate": 0.045, "fixed_threshold_f1": 0.04, "fixed_threshold_status": "ok"}))
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "leave-one-segment-out", "train_segment_id": "?", "val_segment_id": "20230530172803"}}
+            metrics = {"val_f1": 0.40, "average_precision": 0.30, "precision": 0.5, "recall": 0.6, "pred_positive_rate": 0.20, "val_positive_rate": 0.10, "fixed_threshold_f1": 0.30, "fixed_threshold_status": "ok"}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("hard_fold", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        run = snapshot["experiments"]["recent"][0]
+        evidence = snapshot["research_summary"]["candidate_evidence"]
+        profile = evidence["hard_fold_profile"]
+        self.assertEqual(run["promotion_status"], "blocked")
+        self.assertIn("hard_fold_low_ap", {blocker["code"] for blocker in run["promotion_blockers"]})
+        self.assertEqual(profile["failure_mode"], "low_ap_near_prevalence")
+        self.assertEqual(profile["recommended_action"], "audit_hard_fold_labels_and_sampling")
+        self.assertEqual(evidence["promotion_actions"][0]["id"], "audit_hard_fold_labels")
+        self.assertIn("scripts/analyze_loo_folds.py", evidence["promotion_actions"][0]["command_text"])
 
     def test_loo_full_tile_quality_fail_blocks_promotion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
