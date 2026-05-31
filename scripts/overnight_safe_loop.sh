@@ -6,7 +6,7 @@ PY="$REPO/.venv/bin/python"
 LOCK="$REPO/.overnight_safe_loop.lock"
 STOP="$REPO/logs/overnight_safe_loop.stop"
 RUN_ROOT="$REPO/logs/overnight_safe_loop/$(date +%Y%m%d_%H%M%S)"
-MAX_SECONDS="${OVERNIGHT_MAX_SECONDS:-28800}"
+MAX_SECONDS="${OVERNIGHT_MAX_SECONDS:-0}"
 CYCLE_SLEEP_SECONDS="${OVERNIGHT_CYCLE_SLEEP_SECONDS:-900}"
 JOB_TIMEOUT_SECONDS="${OVERNIGHT_JOB_TIMEOUT_SECONDS:-5400}"
 HEARTBEAT_SECONDS="${OVERNIGHT_HEARTBEAT_SECONDS:-300}"
@@ -89,7 +89,6 @@ from pathlib import Path
 
 root = Path.cwd()
 db = root / "experiments" / "experiments.db"
-stop_file = root / "logs" / "overnight_safe_loop.stop"
 target_run_id = os.environ.get("OVERNIGHT_GATE_RUN_ID", "").strip()
 min_val_f1 = float(os.environ.get("OVERNIGHT_MIN_VAL_F1", "0.02"))
 min_ap_lift = float(os.environ.get("OVERNIGHT_MIN_AP_PREVALENCE_LIFT", "1.25"))
@@ -97,8 +96,7 @@ min_ratio = float(os.environ.get("OVERNIGHT_MIN_PRED_VAL_RATIO", "0.1"))
 max_ratio = float(os.environ.get("OVERNIGHT_MAX_PRED_VAL_RATIO", "3.5"))
 
 def fail(reason: str) -> int:
-    stop_file.write_text(reason + "\n")
-    print("QUALITY_STOP " + reason)
+    print("QUALITY_FAIL " + reason)
     return 42
 
 if not db.exists():
@@ -215,7 +213,7 @@ stale_cycles=0
 evidence_only_cycles=0
 while true; do
   now=$(date +%s)
-  if [ $((now - started)) -ge "$MAX_SECONDS" ]; then
+  if [ "$MAX_SECONDS" -gt 0 ] && [ $((now - started)) -ge "$MAX_SECONDS" ]; then
     log "STOP max runtime reached"
     exit 0
   fi
@@ -237,8 +235,7 @@ while true; do
   after_promotion_log="$(latest_promotion_log || true)"
   if [ -n "$after_run_id" ] && { [ -z "$before_run_id" ] || [ "$after_run_id" != "$before_run_id" ]; }; then
     if ! OVERNIGHT_GATE_RUN_ID="$after_run_id" gate_latest_artifact "$after_run_id" | tee -a "$RUN_ROOT/orchestrator.log"; then
-      log "STOP artifact quality gate failed"
-      exit 1
+      log "QUALITY_FAIL artifact quality gate failed for $after_run_id; rejecting run-local candidate and continuing research loop"
     fi
   else
     log "QUALITY_SKIP no new run produced; latest_run_id=$after_run_id"

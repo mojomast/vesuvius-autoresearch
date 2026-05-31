@@ -48,6 +48,8 @@ Use `scripts/overnight_safe_loop.sh` for autonomous overnight research. The loop
 
 Promotion-evidence cycles may run LOO or full-tile commands without creating a new experiment row. The loop treats those as `EVIDENCE_PROGRESS` and skips artifact quality gating for stale latest DB rows. If a cycle creates a new run, the loop quality-gates that specific new run before continuing.
 
+The loop is designed to run continuously by default. `OVERNIGHT_MAX_SECONDS=0` means unlimited runtime; set a positive value to restore a wall-clock cap. Failed artifact quality gates are logged as `QUALITY_FAIL` and reject that run-local candidate, but they do not stop the orchestrator. Explicit stop remains available by creating `logs/overnight_safe_loop.stop`, and hard process failures, lock contention, resource guards, and promotion gates remain in force.
+
 Low-load background mode keeps the machine responsive:
 
 ```bash
@@ -57,7 +59,7 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 NUMEXPR_NUM_THREADS=2
 High-load overnight mode is appropriate when the machine can be saturated. On a 32-core host, 24 threads leaves some headroom while improving throughput:
 
 ```bash
-OMP_NUM_THREADS=24 MKL_NUM_THREADS=24 OPENBLAS_NUM_THREADS=24 NUMEXPR_NUM_THREADS=24 AUTORESEARCH_NUM_WORKERS=24 scripts/overnight_safe_loop.sh
+OVERNIGHT_MAX_SECONDS=0 OMP_NUM_THREADS=24 MKL_NUM_THREADS=24 OPENBLAS_NUM_THREADS=24 NUMEXPR_NUM_THREADS=24 AUTORESEARCH_NUM_WORKERS=24 scripts/overnight_safe_loop.sh
 ```
 
 Keep strict promotion gates enabled. Do not use high-load mode to bypass linked LOO, full-tile evidence, fixed-threshold checks, or quality verdicts.
