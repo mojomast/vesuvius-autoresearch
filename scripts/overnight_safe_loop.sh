@@ -78,6 +78,7 @@ run_with_heartbeat() {
 }
 
 gate_latest_artifact() {
+  local target_run_id="${1:-}"
   "$PY" - <<'PY'
 import json
 import math
@@ -89,6 +90,7 @@ from pathlib import Path
 root = Path.cwd()
 db = root / "experiments" / "experiments.db"
 stop_file = root / "logs" / "overnight_safe_loop.stop"
+target_run_id = os.environ.get("OVERNIGHT_GATE_RUN_ID", "").strip()
 min_val_f1 = float(os.environ.get("OVERNIGHT_MIN_VAL_F1", "0.02"))
 min_ap_lift = float(os.environ.get("OVERNIGHT_MIN_AP_PREVALENCE_LIFT", "1.25"))
 min_ratio = float(os.environ.get("OVERNIGHT_MIN_PRED_VAL_RATIO", "0.1"))
@@ -104,13 +106,19 @@ if not db.exists():
     raise SystemExit(0)
 
 con = sqlite3.connect(db)
-row = con.execute(
-    "SELECT run_id,timestamp,secondary_metrics_json,artifact_dir "
-    "FROM experiments ORDER BY timestamp DESC LIMIT 1"
-).fetchone()
+if target_run_id:
+    row = con.execute(
+        "SELECT run_id,timestamp,secondary_metrics_json,artifact_dir FROM experiments WHERE run_id = ?",
+        (target_run_id,),
+    ).fetchone()
+else:
+    row = con.execute(
+        "SELECT run_id,timestamp,secondary_metrics_json,artifact_dir "
+        "FROM experiments ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()
 con.close()
 if not row:
-    print("QUALITY_SKIP no experiment rows yet")
+    print(f"QUALITY_SKIP no experiment row for {target_run_id!r}")
     raise SystemExit(0)
 
 run_id, _timestamp, metrics_json, artifact_dir = row
@@ -225,12 +233,16 @@ while true; do
     log "STOP autoresearch cycle failed"
     exit 1
   fi
-  if ! gate_latest_artifact | tee -a "$RUN_ROOT/orchestrator.log"; then
-    log "STOP artifact quality gate failed"
-    exit 1
-  fi
   after_run_id="$(latest_run_id || true)"
   after_promotion_log="$(latest_promotion_log || true)"
+  if [ -n "$after_run_id" ] && { [ -z "$before_run_id" ] || [ "$after_run_id" != "$before_run_id" ]; }; then
+    if ! OVERNIGHT_GATE_RUN_ID="$after_run_id" gate_latest_artifact "$after_run_id" | tee -a "$RUN_ROOT/orchestrator.log"; then
+      log "STOP artifact quality gate failed"
+      exit 1
+    fi
+  else
+    log "QUALITY_SKIP no new run produced; latest_run_id=$after_run_id"
+  fi
   if [ -n "$before_run_id" ] && [ "$after_run_id" = "$before_run_id" ]; then
     if [ -n "$after_promotion_log" ] && [ "$after_promotion_log" != "$before_promotion_log" ]; then
       stale_cycles=0

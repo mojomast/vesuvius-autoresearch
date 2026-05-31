@@ -41,3 +41,23 @@ AUTORESEARCH_PROFILE=1 AUTORESEARCH_PROPOSALS=1 .venv/bin/python autoresearch.py
 ```
 
 Timing labels include `recent_runs`, `strategy_phase`, `proposal_generation`, `config_dump`, and `experiment_subprocess`. Use this mode when changing planner logic or investigating cron latency.
+
+## Overnight Guarded Loop
+
+Use `scripts/overnight_safe_loop.sh` for autonomous overnight research. The loop runs one guarded AutoResearch cycle at a time, records logs under `logs/overnight_safe_loop/<timestamp>/`, honors `logs/overnight_safe_loop.stop`, and uses `.overnight_safe_loop.lock` to avoid concurrent orchestrators.
+
+Promotion-evidence cycles may run LOO or full-tile commands without creating a new experiment row. The loop treats those as `EVIDENCE_PROGRESS` and skips artifact quality gating for stale latest DB rows. If a cycle creates a new run, the loop quality-gates that specific new run before continuing.
+
+Low-load background mode keeps the machine responsive:
+
+```bash
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 NUMEXPR_NUM_THREADS=2 AUTORESEARCH_NUM_WORKERS=2 scripts/overnight_safe_loop.sh
+```
+
+High-load overnight mode is appropriate when the machine can be saturated. On a 32-core host, 24 threads leaves some headroom while improving throughput:
+
+```bash
+OMP_NUM_THREADS=24 MKL_NUM_THREADS=24 OPENBLAS_NUM_THREADS=24 NUMEXPR_NUM_THREADS=24 AUTORESEARCH_NUM_WORKERS=24 scripts/overnight_safe_loop.sh
+```
+
+Keep strict promotion gates enabled. Do not use high-load mode to bypass linked LOO, full-tile evidence, fixed-threshold checks, or quality verdicts.

@@ -136,9 +136,7 @@ def _normalize_loo_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _summary_matches_run(summary: dict[str, Any], run: dict[str, Any], project_root: Path | None = None) -> bool:
-    if not summary.get("promotion_ready"):
-        return False
+def _summary_links_run(summary: dict[str, Any], run: dict[str, Any], project_root: Path | None = None) -> bool:
     run_id = str(run.get("run_id") or "")
     run_ids = {str(item) for item in summary.get("run_ids") or []}
     if run_id and run_id in run_ids:
@@ -162,6 +160,10 @@ def _summary_matches_run(summary: dict[str, Any], run: dict[str, Any], project_r
     if not isinstance(base_cfg, dict):
         return False
     return _normalize_loo_config(base_cfg) == _normalize_loo_config(cfg)
+
+
+def _summary_matches_run(summary: dict[str, Any], run: dict[str, Any], project_root: Path | None = None) -> bool:
+    return bool(summary.get("promotion_ready") and _summary_links_run(summary, run, project_root))
 
 
 def _linked_loo_ready(run: dict[str, Any], loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> bool:
@@ -198,7 +200,7 @@ def _rel_path(path: Path, project_root: Path | None = None) -> str:
 
 def _linked_loo_summary(run: dict[str, Any], loo_summaries: list[dict[str, Any]], project_root: Path | None = None) -> dict[str, Any] | None:
     for summary in loo_summaries:
-        if _summary_matches_run(summary, run, project_root):
+        if _summary_links_run(summary, run, project_root):
             return summary
     return None
 
@@ -493,6 +495,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
         "scope_policy": _get_nested(config, ("autoresearch", "scope_policy"), None),
         "loo": {
             "ready": bool(summary and summary.get("promotion_ready")),
+            "linked": bool(summary),
             "summary_path": summary.get("path") if summary else None,
             "seeds": summary.get("seeds") if summary else None,
             "worst_fold_id": weak_fold_id or None,

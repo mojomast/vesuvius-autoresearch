@@ -1519,6 +1519,9 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHist
     }
     if summary_json is not None:
         payload["summary_json"] = str(summary_json)
+    if os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1" and command_args:
+        timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "7200"))
+        payload.update(_run_automated_promotion(command_args, candidate_run_id, summary_json or (LOGS / "promotion.summary.json"), timeout, gate_warnings))
     return payload
 
 

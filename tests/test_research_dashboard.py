@@ -396,6 +396,34 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertNotIn("missing_full_tile_evidence", codes)
         self.assertEqual(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"], True)
 
+    def test_dashboard_reports_linked_failed_loo_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "candidate.summary.json").write_text(json.dumps({"promotion_ready": False, "run_ids": ["candidate"], "worst_fold_id": "weak", "worst_fold_val_f1": 0.04, "promotion_warnings": []}))
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "candidate"
+            run_dir.mkdir(parents=True)
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.4, json.dumps({"val_f1": 0.4, "average_precision": 0.2, "precision": 0.4, "recall": 0.6, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        loo = snapshot["research_summary"]["decision"]["candidate_evidence"]["loo"]
+        self.assertEqual(loo["linked"], True)
+        self.assertEqual(loo["ready"], False)
+        self.assertEqual(loo["worst_fold_id"], "weak")
+        self.assertIn("missing_seed_repeat_loo", {blocker["code"] for blocker in snapshot["experiments"]["recent"][0]["promotion_blockers"]})
+
     def test_dashboard_blocks_validation_segment_leakage_despite_heldout_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -724,9 +752,8 @@ class ResearchDashboardTest(unittest.TestCase):
                 snapshot = build_snapshot(root)
 
         actions = snapshot["research_summary"]["candidate_evidence"]["promotion_actions"]
-        self.assertEqual(snapshot["experiments"]["recent"][0]["promotion_status"], "eligible")
+        self.assertEqual(snapshot["experiments"]["recent"][0]["promotion_status"], "blocked")
         self.assertEqual(actions[0]["id"], "review_positive_rate")
-        self.assertEqual(actions[1]["id"], "promotion_review")
         self.assertIn("Review positive-rate ratio", snapshot["research_summary"]["decision"]["next_action"])
 
     def test_quality_fail_blocks_promotion(self) -> None:
