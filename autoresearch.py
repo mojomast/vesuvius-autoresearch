@@ -542,6 +542,25 @@ def _metadata_allows_expensive(cfg: Dict[str, Any]) -> bool:
     return str(autoresearch.get("run_profile") or "") == "promotion" or str(autoresearch.get("intent") or "") == "promotion_action"
 
 
+def _exploration_max_epochs() -> int:
+    return _env_int("AUTORESEARCH_EXPLORATION_MAX_EPOCHS", COST_TIER_EPOCH_NORMAL_MAX)
+
+
+def _clamp_exploration_training_bounds(cfg: Dict[str, Any]) -> None:
+    model_name = str(_get_nested(cfg, ("model", "name"), ""))
+    if "torch" not in model_name:
+        return
+    training = cfg.setdefault("training", {})
+    max_epochs = _exploration_max_epochs()
+    try:
+        epochs = int(training.get("epochs") or SIGNATURE_DEFAULTS[("training", "epochs")])
+    except (TypeError, ValueError):
+        return
+    if epochs > max_epochs:
+        training["epochs"] = max_epochs
+        cfg.setdefault("autoresearch", {}).setdefault("cron_safety", {})["epochs_bound"] = max_epochs
+
+
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
     if path == ("model", "depth") and isinstance(value, int) and value > 3:
         return 3
@@ -580,6 +599,7 @@ def _prepare_autoresearch_base(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if "seeds" in training and os.environ.get("AUTORESEARCH_ALLOW_SEED_ENSEMBLE", "0") != "1":
         training.pop("seeds", None)
         cfg.setdefault("autoresearch", {}).setdefault("cron_safety", {})["seed_ensemble_disabled"] = True
+    _clamp_exploration_training_bounds(cfg)
     return cfg
 
 
@@ -807,6 +827,7 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         if path == ("training", "tversky_beta"):
             cfg.setdefault("training", {}).setdefault("tversky_loss_weight", 0.15)
             cfg.setdefault("training", {})["tversky_alpha"] = round(1.0 - float(value), 4)
+        _clamp_exploration_training_bounds(cfg)
         cost_tier = _config_cost_tier(cfg)
         if not _cost_tier_allowed(cost_tier, allow_expensive=expensive_context):
             print(f"Skipping {cost_tier} proposal {'.'.join(path)} under AUTORESEARCH_MAX_COST_TIER={_max_allowed_cost_tier(expensive_context)}")
@@ -1688,7 +1709,7 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
     if not candidate_run:
         return []
 
-    base = _canonicalize_config(candidate_run.get("config", {}))
+    base = _prepare_autoresearch_base(candidate_run.get("config", {}))
     model_name = str(_get_nested(base, ("model", "name"), ""))
     is_torch = "torch" in model_name
     proposals: List[Tuple[str, Dict[str, Any], str]] = []

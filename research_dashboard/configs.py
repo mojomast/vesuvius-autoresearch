@@ -13,11 +13,19 @@ def load_configs(project_root: Path) -> list[dict[str, Any]]:
         return []
     paths = list(cfg_dir.glob("*.yaml")) + list(cfg_dir.glob("*.yml")) + list(cfg_dir.glob("*.json"))
     out = []
-    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+    existing_paths: list[tuple[float, Path]] = []
+    for path in paths:
+        try:
+            existing_paths.append((path.stat().st_mtime, path))
+        except FileNotFoundError:
+            continue
+    for modified_at, path in sorted(existing_paths, key=lambda item: item[0], reverse=True):
         try:
             raw = json.loads(path.read_text()) if path.suffix == ".json" else yaml.safe_load(path.read_text())
             summary = raw if isinstance(raw, dict) else {}
+        except FileNotFoundError:
+            continue
         except Exception as exc:
             summary = {"_error": str(exc)}
-        out.append({"name": path.name, "path": f"configs/{path.name}", "modified_at": path.stat().st_mtime, "summary": summary})
+        out.append({"name": path.name, "path": f"configs/{path.name}", "modified_at": modified_at, "summary": summary})
     return out

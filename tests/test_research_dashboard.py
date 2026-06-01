@@ -15,6 +15,7 @@ import numpy as np
 
 from research_dashboard.artifacts import list_artifact_files, preview_artifact
 from research_dashboard.app import HTML, _agent_chat, _visual_artifact_analysis, make_handler
+from research_dashboard.configs import load_configs
 from research_dashboard.experiments import _full_tile_ready, _hard_fold_profile, _positive_rate_risk_summary
 from research_dashboard.inventory import build_inventory
 from research_dashboard.quality import decoded_output_quality
@@ -149,6 +150,18 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("inventory", snapshot)
         self.assertIn("progress", snapshot)
         self.assertFalse(snapshot["capabilities"]["enable_runs"])
+
+    def test_config_inventory_skips_disappearing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg_dir = root / "configs"
+            cfg_dir.mkdir()
+            (cfg_dir / "good.yaml").write_text("model:\n  name: tiny_torch_unet\n")
+            (cfg_dir / "vanished.yaml").symlink_to("missing.yaml")
+
+            configs = load_configs(root)
+
+        self.assertEqual([cfg["name"] for cfg in configs], ["good.yaml"])
 
     def test_snapshot_cache_reuses_and_can_bypass_or_reset(self) -> None:
         reset_snapshot_cache()

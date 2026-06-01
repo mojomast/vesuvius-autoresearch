@@ -106,6 +106,16 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(prepared["training"]["max_train_samples"], 1024)
         self.assertIn("cron_safety", prepared["autoresearch"])
 
+    def test_unattended_torch_bases_clamp_exploration_epochs(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg.setdefault("training", {})["epochs"] = 20
+
+        with patch.dict("os.environ", {"AUTORESEARCH_EXPLORATION_MAX_EPOCHS": "8"}):
+            prepared = _prepare_autoresearch_base(cfg)
+
+        self.assertEqual(prepared["training"]["epochs"], 8)
+        self.assertEqual(prepared["autoresearch"]["cron_safety"]["epochs_bound"], 8)
+
     def test_best_path_does_not_start_with_focused_numpy_when_robust_available(self) -> None:
         base = load_config("configs/baseline.yaml")
 
@@ -130,6 +140,20 @@ class AutoResearchPivotTest(unittest.TestCase):
             self.assertEqual(cfg["dataset"].get("research_scope"), "multi_segment_robust_expanded")
             self.assertNotIn(_search_signature(cfg), {_search_signature(winner)})
             self.assertIn("recent base", reason)
+
+    def test_recent_winner_followups_preserve_exploration_epoch_cap(self) -> None:
+        winner = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        winner.setdefault("training", {})["epochs"] = 20
+        _set_nested(winner, ("training", "learning_rate"), 0.003)
+        runs = [{"run_id": "winner", "config": winner, "main_metric": 0.39, "metrics": {"val_f1": 0.39, "average_precision": 0.24, "precision": 0.25, "recall": 0.7, "pred_positive_rate": 0.2, "val_positive_rate": 0.1}}]
+
+        with patch.dict("os.environ", {"AUTORESEARCH_EXPLORATION_MAX_EPOCHS": "8"}):
+            proposals = _propose_from_recent_winners(runs, count=2)
+
+        self.assertTrue(proposals)
+        for _name, cfg, _reason in proposals:
+            self.assertEqual(cfg["autoresearch"]["run_profile"], "exploration")
+            self.assertLessEqual(int(cfg["training"]["epochs"]), 8)
 
     def test_strategy_phase_detects_plateau_and_forces_diversity(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
