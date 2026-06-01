@@ -4,7 +4,7 @@
 
 Evidence-gated Vesuvius Challenge ink-detection research automation with reviewer-safe dashboards, validation gates, and full-tile diagnostics.
 
-Prize reviewers should start with [`SUBMISSION.md`](SUBMISSION.md), which summarizes the Progress Prize submission, honest research results, and extension path.
+Prize reviewers should start with [`SUBMISSION.md`](SUBMISSION.md), which frames this as an Open Source Tooling Prize submission, not as a state-of-the-art ink model claim.
 
 ## Quick Start With Synthetic Data
 
@@ -28,11 +28,21 @@ python3 autoresearch.py --plan --json
 
 The synthetic generator writes runner-compatible NPZs at `data/real_cross/segment_20230827161847/train.npz` and `data/real_cross/segment_20230520175435/val.npz`, plus metadata marked `provenance=synthetic`.
 
-The active workflow uses real Vesuvius data only. If real prepared NPZs or official data access are unavailable, runs fail loudly instead of falling back to fake data.
+Synthetic data is demo-only. Promotion/research claims use real prepared Vesuvius data only; real-data configs fail loudly if paths are missing instead of falling back to fake data.
 
 ## Open-Source Prize Readiness
 
 This repository is packaged for Scroll Prize open-source review: code is MIT licensed, raw data and generated artifacts are excluded from git, and reproducibility metadata is documented separately from local experiment outputs.
+
+Official context and data references: <https://scrollprize.org/prizes>, <https://scrollprize.org/data>, <https://scrollprize.org/get_started>, and <https://scrollprize.org/community_projects>. This repo is packaged as open-source tooling for safer, auditable Vesuvius ink-detection research.
+
+Reviewer checklist:
+
+- Run the synthetic smoke test above.
+- Run `.venv/bin/python -m pytest tests/`.
+- Export a dashboard snapshot with `.venv/bin/python scripts/export_dashboard_snapshot.py --pretty`.
+- Review `DATA.md`, `METHOD.md`, `REPRODUCE.md`, `CREDITS.md`, and `CITATION.cff`.
+- If real data is available, prepare public segment data and run one baseline experiment from `REPRODUCE.md`.
 
 Reviewer-facing docs:
 
@@ -115,7 +125,7 @@ Current dashboard/autoresearch review state is intentionally blocker-oriented wh
 }
 ```
 
-The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Current promotion review is still blocker-oriented: the latest completed 24-row seed-repeat LOO summary observed for `20260531T140032Z_6fa41856` reports `promotion_ready=true`, but the worst fold is still `20230530172803` with `worst_fold_val_f1=0.03575020275750203`, below the hard-fold floor used for review. Treat that as hard-fold separability evidence requiring audit and direct validation, not as a reason to relax the threshold gate.
+The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Current promotion review is still blocker-oriented: one completed 24-row seed-repeat LOO summary for `20260531T140032Z_6fa41856` reports script-level `promotion_ready=true`, but the worst fold is still `20230530172803` with `worst_fold_val_f1=0.03575020275750203`, below the stricter hard-fold floor used for repository-level submission review. Treat that as hard-fold separability evidence requiring audit and direct validation, not as a reason to relax the threshold gate.
 
 For continued diagnostic sweeps after promotion review is blocked, use `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1 AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` with `.venv/bin/python autoresearch.py`; promote-phase planning now includes loss-calibration proposals such as `training.positive_rate_loss_tolerance: 0.01` as well as the `2.5-3.0` positive-rate cap band.
 
@@ -259,6 +269,17 @@ Each experiment writes:
 - `run_summary.md`: human-readable steering summary.
 
 Resolved experiment configs are deduped by canonical `config_signature` before artifact creation. Re-running an identical config may return the prior run with `deduped: true` instead of writing another `experiments/runs/<run_id>/` directory.
+
+## Standard Interfaces
+
+| Area | Current support | Notes |
+| --- | --- | --- |
+| Public Scroll segment Zarr | Preparation scripts | Converts labeled segment data into local NPZs for reproducible experiments. |
+| Local fragment folders | `prepare_local_vesuvius_npz.py` | Supports `surface_volume/*.tif`, `inklabels.png`, and optional `mask.png`. |
+| Prepared model input | NPZ | `images [N,C,H,W]`, `labels [N,1,H,W]`, plus metadata sidecars. |
+| Experiment outputs | JSON, CSV, SQLite | Configs, metrics, threshold sweeps, and run summaries are dashboard/audit friendly. |
+| Dashboard output | JSON snapshot | `vesuvius-dashboard/v1` can be consumed by standalone or host dashboards. |
+| OME-Zarr / broader direct Zarr support | Future work | The repo does not claim complete direct community-format coverage yet. |
 
 ## Next-Best Move Protocols
 

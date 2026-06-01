@@ -23,15 +23,41 @@ For public Vesuvius data ingestion, install optional dependencies and accept off
 .venv/bin/python -m pytest tests/
 ```
 
-## Prepare Public Segment Data
+## No-Download Synthetic Smoke Test
+
+This path demonstrates the tooling without downloading Vesuvius data. It is not evidence for an ink claim.
+
+```bash
+.venv/bin/python scripts/generate_synthetic_data.py --n-train 256 --n-val 64
+.venv/bin/python scripts/setup_data.py --data-dir ./data
+.venv/bin/python autoresearch.py --plan --json
+.venv/bin/python run_experiment.py --config configs/baseline.yaml
+```
+
+Expected runtime: CPU-only, typically minutes or less depending on the host. Outputs are generated under `data/`, `experiments/`, and `logs/` and should not be committed.
+
+## Real-Data Reproduction
+
+This path uses real public Vesuvius/Scroll segment data. Install ingestion extras first and follow the Scroll Prize data terms.
+
+Prepare a training segment and a validation segment, then regenerate configs:
 
 ```bash
 .venv/bin/python scripts/prepare_vesuvius_segment_npz.py \
   --segment-id 20230827161847 \
   --catalog-source public-directory \
-  --output-dir data/real/segment_20230827161847 \
+  --output-dir data/real_cross/segment_20230827161847 \
   --level 1 \
   --patch-size 64
+
+.venv/bin/python scripts/prepare_vesuvius_segment_npz.py \
+  --segment-id 20230520175435 \
+  --catalog-source public-directory \
+  --output-dir data/real_cross/segment_20230520175435 \
+  --level 1 \
+  --patch-size 64
+
+.venv/bin/python scripts/setup_data.py --data-dir ./data
 ```
 
 ## Run One Experiment
@@ -42,6 +68,8 @@ For public Vesuvius data ingestion, install optional dependencies and accept off
 
 Outputs are written to `experiments/runs/<run_id>/` and should not be committed.
 Identical resolved configs are deduped by `config_signature`; inspect the returned `deduped` field before assuming a new run directory was created.
+
+Expected runtime: one CPU baseline run can take minutes; seed-repeat LOO and full-tile inference are substantially slower and depend on local CPU count, storage, and public-data mirror responsiveness.
 
 ## Dry-Run Leave-One-Out Configs
 
@@ -66,7 +94,7 @@ Before writing any mining artifacts, package the current read-only next-move evi
 .venv/bin/python scripts/package_next_move_evidence.py --markdown
 ```
 
-This package reuses existing dashboard/full-tile artifacts. It does not write run, mined-data, log, DB, `.npy`, `.npz`, or `.pt` outputs. It synthesizes whether the next move is promotion review, cap tightening, full-tile regression review, or fold-safe mining review.
+This package requires existing local run artifacts, dashboard evidence, and full-tile outputs. It does not write run, mined-data, log, DB, `.npy`, `.npz`, or `.pt` outputs. It synthesizes whether the next move is promotion review, cap tightening, full-tile regression review, or fold-safe mining review.
 
 ```bash
 .venv/bin/python scripts/plan_hard_negative_retrain.py --pretty

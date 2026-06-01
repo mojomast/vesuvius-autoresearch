@@ -6,7 +6,7 @@ date-released: "2026-05-27"
 license: "MIT"
 authors:
   - name: "Vesuvius AutoResearch contributors"
-repository-code: "https://github.com/scrollprize/vesuvius-autoresearch"
+repository-code: "https://github.com/mojomast/vesuvius-autoresearch"
 abstract: "CPU-safe Vesuvius Scroll Prize ink-detection research, validation, dashboard, and packaging tooling."
 keywords:
   - vesuvius challenge
@@ -21,6 +21,14 @@ references:
   - type: dataset
     title: "EduceLab-Scrolls"
     url: "https://scrollprize.org/data"
+  - type: software
+    title: "ScrollPrize/villa"
+    authors:
+      - name: "Youssef Nader"
+      - name: "Luke Farritor"
+      - name: "Julian Schilliger"
+    url: "https://github.com/ScrollPrize/villa"
+    license: "MIT"
   - type: article
     title: "EduceLab-Scrolls: Verifiable Recovery of Text from Herculaneum Papyri using X-ray CT"
     authors:

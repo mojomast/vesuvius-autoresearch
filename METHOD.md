@@ -2,6 +2,8 @@
 
 Vesuvius AutoResearch is a CPU-safe, evidence-gated research loop for ink-detection experiments on public Vesuvius data. It is designed to make false-positive control and validation evidence visible in a reviewer-safe dashboard before any promotion claim.
 
+For prize review, the method claim is tooling-oriented: bounded experiment governance, reproducibility, and validation evidence management. It is not a claim that the included baseline model reads hidden text.
+
 ## Pipeline
 
 1. Prepare real Vesuvius segment patches into validated NPZ files.
@@ -64,6 +66,10 @@ Planner output is fold-scoped. `fold_safe_extra_train_npzs_by_heldout` shows whi
 - Report full-tile quality, not only positive-biased sampled metrics.
 - Keep threshold selection transparent: log whether it maximizes F1 or constrains positive rate.
 - Preserve exact config, commit, data metadata, and command provenance for every submission candidate.
+
+## Integration Contract
+
+The main integration surfaces are YAML experiment configs, prepared NPZ inputs, SQLite experiment rows, JSON/CSV metrics, and the `vesuvius-dashboard/v1` snapshot. Direct OME-Zarr and broader Zarr-native model inputs are extension targets; current real-data support converts public segment data into prepared NPZs before training.
 
 ## Limitations
 

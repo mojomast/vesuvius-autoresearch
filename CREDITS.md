@@ -2,6 +2,10 @@
 
 ## ScrollPrize/villa
 
+Attribution statement used for borrowed code and labels: Adapted from ScrollPrize/villa (MIT License) — Youssef Nader, Luke Farritor, Julian Schilliger.
+
+Sources were reviewed from the public `ScrollPrize/villa` repository in May 2026. Inline attribution headers are preserved in borrowed-code files; this document records component-level attribution for reviewers.
+
 - Components: `src/autoresearch/villa_samplers.py` with `StatefulShuffledSampler` and `GroupStratifiedBatchSampler`.
 - Source: https://github.com/ScrollPrize/villa/blob/main/ink-detection/samplers.py
 - License: MIT License.
@@ -19,3 +23,5 @@
 - License: MIT License.
 - Original authors: Youssef Nader, Luke Farritor, Julian Schilliger.
 - Changes: labels are resized/aligned to existing local NPZ spatial metadata with nearest-neighbor alignment and used to replace label arrays without overwriting original NPZ files.
+
+Cleaned labels and regenerated NPZ files are generated local data artifacts and are not redistributed by this repository. Use them only under the applicable Scroll Prize/Vesuvius data terms and the upstream Villa license notices.

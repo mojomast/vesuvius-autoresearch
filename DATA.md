@@ -11,9 +11,20 @@ Active research uses public Vesuvius/Scroll Prize data, primarily Scroll 1 label
 
 The code also supports local fragment-style folders with `surface_volume/*.tif`, `inklabels.png`, and optional `mask.png`.
 
+## Standard Data Interfaces
+
+| Interface | Status | Notes |
+| --- | --- | --- |
+| Public Scroll segment Zarr | Supported through preparation scripts | Converts public labeled segment data into local NPZs. |
+| Local TIFF/PNG fragment folders | Supported | Uses `surface_volume/*.tif`, `inklabels.png`, and optional `mask.png`. |
+| Prepared NPZ | Supported model input | `images [N,C,H,W]`, `labels [N,1,H,W]`, metadata sidecar expected. |
+| OME-Zarr / broader direct Zarr | Not complete | Planned extension; do not treat this repo as direct OME-Zarr-native yet. |
+
 ## Licenses And Attribution
 
 Vesuvius Challenge data is not covered by this repository's MIT code license. Follow the data portal terms and dataset-specific licenses before downloading or publishing outputs.
+
+Official Scroll Prize data pages currently describe Vesuvius data as subject to data-specific terms such as CC-BY-NC 4.0 unless otherwise noted. This repository's MIT license covers code, not raw scans, labels, generated predictions, trained weights, or regenerated NPZ data.
 
 For Scrolls 1-4 and Fragments 1-6, cite the EduceLab-Scrolls dataset and Parsons et al. 2023 as requested by the Scroll Prize data documentation. For newer scans, cite the Vesuvius Challenge CT scans of Herculaneum papyri dataset.
 

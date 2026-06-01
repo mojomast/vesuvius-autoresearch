@@ -51,7 +51,8 @@ search = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/scrollprize"
+Homepage = "https://github.com/mojomast/vesuvius-autoresearch"
+Source = "https://github.com/mojomast/vesuvius-autoresearch"
 Data = "https://scrollprize.org/data"
 Prizes = "https://scrollprize.org/prizes"
 

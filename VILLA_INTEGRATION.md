@@ -60,7 +60,7 @@ The targeted follow-up batch falsified three simple hypotheses for this fold: lo
 
 Built-in probability ensembling did not help on the sampled hard fold: the `11001,11045,11073` ensemble reached AP `0.059997`, below all strong single seeds. The current best path is seed `11071` with 20 epochs, not ensemble averaging.
 
-Low-load full-tile inference for `20260530T032140Z_d4d69b0f` on `20230530172803` produced AP `0.100025`, F1 `0.180540`, and fixed-threshold status `ok`, improving the previous weak-fold full-tile AP `0.027372` and F1 `0.014940`. This is stronger champion evidence, but not final promotion evidence because linked LOO over valid villa folds is still incomplete.
+Low-load full-tile inference for `20260530T032140Z_d4d69b0f` on `20230530172803` produced AP `0.100025`, F1 `0.180540`, and fixed-threshold status `ok`, improving the previous weak-fold full-tile AP `0.027372` and F1 `0.014940`. This is stronger hard-fold diagnostic evidence, but not final promotion evidence because linked LOO over valid villa folds is still incomplete.
 
 Before running villa-label promotion LOO, audit the fold map with `scripts/audit_villa_fold_map.py`. The current villa fold map contains zero-positive validation folds (`20230522181603`, `20230601193301`), so AP/F1 are not meaningful for those folds unless the validation splits are regenerated or a documented nonzero fold map is used.
 
