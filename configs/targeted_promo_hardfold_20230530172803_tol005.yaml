@@ -1,13 +1,13 @@
-# Targeted Promotion Config: weak-fold lift for 20230530172803 with tighter PR tolerance.
-# Addresses: LOO hard fold 20230530172803 falling just below the downstream 0.04 F1 gate.
-# Evidence: RESEARCH_ML_E found 478e28aa only 0.0064 F1 short on this fold; RESEARCH_ML_C recommended tol 0.005.
+# Targeted Promotion Config: direct sampled validation on weak fold 20230530172803 with tighter PR tolerance.
+# Addresses: low hard-fold separability by measuring 20230530172803 during cron exploration before promotion LOO.
+# Evidence: dashboard hard-fold profile marks AP near prevalence; keep strict gates and target data/sampling pressure.
 autoresearch:
   changed_path: targeted_promo_hardfold_20230530172803_tol005
-  heldout_segment: "20230520175435"
+  heldout_segment: "20230530172803"
   intent: promotion_candidate
   mutation_family: weak_fold_repair
   parent_config: configs/residual25d_cap250_stride32_allval.yaml
-  parent_reason: tighten PR tolerance to improve low-ink hard-fold recall while preserving cap 2.5
+  parent_reason: run direct hard-fold sampled validation with tighter PR tolerance while preserving cap 2.5
   promotable: true
   promotion_required:
     - seed_repeat_leave_one_out
@@ -16,9 +16,9 @@ autoresearch:
   scope_policy: expanded_multi_segment_leave_one_out
 dataset:
   patch_size: 64
-  research_scope: multi_segment_targeted_promo_hardfold_20230530172803_tol005
-  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435/train.npz
-  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  research_scope: multi_segment_targeted_promo_hardfold_20230530172803_tol005_directval
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230530172803/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230530172803/val.npz
   validation_mode: leave-one-segment-out
 evaluation:
   main_metric: val_f1

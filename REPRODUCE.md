@@ -139,6 +139,8 @@ Queued experiment configs default to config-signature dedupe keys, so duplicate 
 
 The guarded AutoResearch launcher honors explicit `AUTORESEARCH_PROPOSALS`, but keeps promotion-action pauses enabled for unattended safety. To intentionally bypass the promotion pause through the guard for diagnostics, set both `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1` and `SCROLL_RESEARCH_ALLOW_PROMOTION_OVERRIDE=1`.
 
+For continuous local research, prefer `scripts/overnight_safe_loop.sh` over overlapping manual launchers. It serializes cycles with `.overnight_safe_loop.lock`, honors `logs/overnight_safe_loop.stop`, gates each new run by artifact quality, treats completed evidence commands as progress, and skips generated configs whose prepared NPZ paths are missing.
+
 ## Expected Generated Paths
 
 - `data/**`: prepared NPZs and metadata.

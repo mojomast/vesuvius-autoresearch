@@ -1098,6 +1098,25 @@ def _promotion_output_exists(path_text: str) -> bool:
     return path.exists()
 
 
+def _configured_data_path_exists(path_text: Any) -> bool:
+    if not path_text:
+        return False
+    path = Path(str(path_text)).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.exists()
+
+
+def _missing_configured_data_paths(cfg: Dict[str, Any]) -> list[str]:
+    dataset = cfg.get("dataset", {}) if isinstance(cfg.get("dataset"), dict) else {}
+    missing: list[str] = []
+    for key in ("train_npz", "val_npz"):
+        value = dataset.get(key)
+        if not _configured_data_path_exists(value):
+            missing.append(f"dataset.{key}={value}")
+    return missing
+
+
 def _promotion_output_path(path_text: str) -> Path:
     path = Path(path_text)
     return path if path.is_absolute() else ROOT / path
@@ -1590,6 +1609,10 @@ def _pivot_bases() -> list[tuple[str, Dict[str, Any], str]]:
             continue
         cfg = load_config(path)
         if not (cfg.get("dataset", {}).get("train_npz") and cfg.get("dataset", {}).get("val_npz")):
+            continue
+        missing_paths = _missing_configured_data_paths(cfg)
+        if missing_paths:
+            print(f"Skipping AutoResearch best-path base {name}: missing prepared data {missing_paths}", flush=True)
             continue
         prepared = _prepare_autoresearch_base(cfg)
         bases.append((name, prepared, str(prepared.get("autoresearch", {}).get("scope_policy") or prepared.get("dataset", {}).get("research_scope") or "strategy_pivot")))
@@ -2117,6 +2140,10 @@ def main() -> int:
             if deadline is not None and time.monotonic() > deadline - 90:
                 print("AutoResearch deadline is near; stopping before launching another experiment", flush=True)
                 break
+            missing_paths = _missing_configured_data_paths(cfg)
+            if missing_paths:
+                print(f"Skipping generated experiment {name}: missing prepared data {missing_paths}", flush=True)
+                continue
             cfg_path = CONFIGS / name
             with profiler.measure("config_dump"):
                 _dump_config_with_comment(cfg_path, cfg, reason)

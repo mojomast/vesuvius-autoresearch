@@ -20,6 +20,8 @@ python3 scripts/export_dashboard_snapshot.py --pretty
 
 Dashboard snapshots use a short in-process cache by default (`2` seconds) to avoid repeatedly scanning configs, run artifacts, and fold metadata during active experiments. Set `VESUVIUS_DASHBOARD_SNAPSHOT_TTL_SEC=<seconds>` to tune the TTL, or `VESUVIUS_DASHBOARD_DISABLE_SNAPSHOT_CACHE=1` while debugging source changes. Restart the dashboard process after Python source edits; the cache only affects data snapshots.
 
+Snapshot hydration also caches normalized run and LOO base-config comparisons during each `/api/research` build, then strips those internal cache fields before responding. This keeps candidate-linked LOO, hard-fold profile, and leaderboard evidence fast enough for frequent refreshes even when many summaries point at YAML base configs.
+
 Use another repo root if needed:
 
 ```bash
@@ -64,6 +66,8 @@ VESUVIUS_DASHBOARD_TOKEN=change-me VESUVIUS_DASHBOARD_ENABLE_RUNS=1 \
 Then open `http://127.0.0.1:8765?token=change-me`.
 
 For private tailnet-only use, `VESUVIUS_DASHBOARD_ALLOW_UNAUTHENTICATED_POSTS=1` allows Agent Chat, settings writes, and other POST controls without a dashboard token. Use this only on a trusted private binding or tailnet route; do not combine it with public Funnel exposure.
+
+When running under user systemd, keep one managed process on the port instead of launching a parallel `nohup` server. Import any changed `VESUVIUS_DASHBOARD_*` variables into the user manager, then restart `vesuvius-dashboard.service`. `logs/dashboard.pid` should reflect the service `MainPID`.
 
 ## Agent Chat
 

@@ -39,8 +39,11 @@ Reviewer-facing docs:
 - `DATA.md`: data sources, licensing, local paths, and no-overlap safety rules.
 - `METHOD.md`: model pipeline, validation gates, hard-negative mining, and hallucination controls.
 - `REPRODUCE.md`: clean install, tests, data preparation, run, LOO, full-tile, and dashboard commands.
+- `docs/dashboard.md`: dashboard safety model, Agent Chat, safe controls, hydration/cache behavior, and shared snapshot contract.
+- `docs/autoresearch_cost_tiers.md`: proposal cost tiers and guarded overnight loop modes.
 - `CITATION.cff`: citation metadata for this repo and required dataset attribution.
 - `artifacts/README.md`, `weights/README.md`, and `submission/`: templates for external artifacts and prize package metadata.
+- `docs/archive/`: dated research notes and planning audits retained for provenance, not active promotion guidance.
 
 ## Dashboard Controls And Agent Chat
 
@@ -61,6 +64,8 @@ VESUVIUS_DASHBOARD_AGENT_BASE_URL=http://127.0.0.1:8766/api/agent/chat \
 ```
 
 For custom providers, set `VESUVIUS_DASHBOARD_AGENT_BASE_URL`, `VESUVIUS_DASHBOARD_AGENT_MODEL`, and `VESUVIUS_DASHBOARD_AGENT_API_KEY`, or enter a session-only key in the dashboard UI. When `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, the agent can propose allowlisted dashboard settings fixes; users must review and apply them, and every apply creates a reversible snapshot under `.dashboard/`. Optional decoded-output visual analysis is enabled with `VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED=1` or the versioned dashboard setting. See `docs/dashboard.md` for the safety model.
+
+For private tailnet operation, run controls and Agent Chat can be enabled without URL tokens only with `VESUVIUS_DASHBOARD_ALLOW_UNAUTHENTICATED_POSTS=1` on a trusted private binding or tailnet route. Do not combine tokenless POST mode with public Funnel exposure. When the dashboard is managed by user systemd, import updated `VESUVIUS_DASHBOARD_*` environment variables into the user manager before restarting `vesuvius-dashboard.service`.
 
 Quick setup from a clean clone:
 
@@ -110,7 +115,7 @@ Current dashboard/autoresearch review state is intentionally blocker-oriented wh
 }
 ```
 
-The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Clean-provenance retrain `20260529T014355Z_5fc7c1ca` fixed full-tile provenance eligibility but exposed empty-positive validation strips. Strip-fix candidate `20260529T021416Z_570f6775` removed zero precision/recall LOO folds and reached three-seed median-over-seeds median `val_f1=0.1109`, but promotion is still blocked by positive-rate alarms. Tightened candidate `20260529T023543Z_021a01b0` reduced alarms but still has `promotion_ready=false` and worst-fold `val_f1=0.0179`; prratio3.5 candidate `20260529T024258Z_8b44032d` improved eligible full-tile F1 to `0.2363` but failed LOO. Residual 2.5D candidate `20260529T034850Z_d0ee3406` reached sampled `val_f1=0.4664` and eligible full-tile `val_f1=0.2132`, but also failed 2-seed LOO on zero folds for `20230530172803`, so it is diagnostic-only. Follow-up diagnosis found this is not a missing per-fold threshold sweep. Re-preparing `20230530172803` with all tiled stride-32 validation patches removed zero folds for residual retrain `20260529T043342Z_478e28aa`, but promotion remains rejected because worst-fold LOO is `0.0336` and secondary full-tile evidence is not eligible for that artifact lineage.
+The planner may also print warnings for older pre-contract rows missing `ap_prevalence_lift`; current post-fix rows include that MetricContract key. Current promotion review is still blocker-oriented: the latest completed 24-row seed-repeat LOO summary observed for `20260531T140032Z_6fa41856` reports `promotion_ready=true`, but the worst fold is still `20230530172803` with `worst_fold_val_f1=0.03575020275750203`, below the hard-fold floor used for review. Treat that as hard-fold separability evidence requiring audit and direct validation, not as a reason to relax the threshold gate.
 
 For continued diagnostic sweeps after promotion review is blocked, use `AUTORESEARCH_CONTINUE_AFTER_PROMOTION_ACTION=1 AUTORESEARCH_PAUSE_WHEN_PROMOTION_READY=0` with `.venv/bin/python autoresearch.py`; promote-phase planning now includes loss-calibration proposals such as `training.positive_rate_loss_tolerance: 0.01` as well as the `2.5-3.0` positive-rate cap band.
 
@@ -257,7 +262,7 @@ Resolved experiment configs are deduped by canonical `config_signature` before a
 
 ## Next-Best Move Protocols
 
-The current next moves are documented in `docs/next_best_moves_may2026.md` and sketched in `configs/next_best_moves_robust_template.yaml`. Treat them as promotion protocols, not one-off sweep ideas:
+Current next moves are surfaced by the dashboard snapshot and documented in `docs/dashboard.md`, `docs/calibration_and_thresholding.md`, and `docs/autoresearch_cost_tiers.md`. Historical May 2026 next-move notes live under `docs/archive/2026-05-research-status/`. Treat promotion actions as evidence protocols, not one-off sweep ideas:
 
 - Seed-repeat leave-one-out: run each LOO fold across at least three seeds and promote by median-over-seeds, then median-over-folds.
 - Safe data expansion: add labeled public segments only through explicit fold maps; never mix a held-out segment into its training NPZ.
@@ -318,6 +323,8 @@ python3 run_dashboard.py --host 127.0.0.1 --port 8765
 ```
 
 Reviewer workflow is intentionally compact: long secondary panels start folded, the usefulness leaderboard can be searched and narrowed by quality/promotion status, the validation matrix offers fold-specific ledger filtering and best-run jumps with allowlisted diagnostic commands, decoded outputs load only after the folded gallery is opened, and the experiment ledger stays inside a scrollable window with sticky headers and filters for text, promotion status, train/validation segment, and minimum F1.
+
+The `/api/research` snapshot caches normalized candidate/LOO config comparisons during one build and then strips internal cache keys before returning JSON. This keeps candidate-linked LOO and hard-fold evidence visible without repeatedly reloading base configs during dashboard hydration.
 
 The shared snapshot contract can also be exported with:
 

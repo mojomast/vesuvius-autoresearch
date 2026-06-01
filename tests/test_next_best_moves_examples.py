@@ -65,7 +65,7 @@ class NextBestMovesExamplesTest(unittest.TestCase):
         self.assertAlmostEqual(summary["median_val_f1"], 0.55)
 
     def test_docs_reference_the_five_next_best_moves(self) -> None:
-        text = (ROOT / "docs" / "next_best_moves_may2026.md").read_text()
+        text = (ROOT / "docs" / "archive" / "2026-05-research-status" / "next_best_moves_may2026.md").read_text()
 
         for phrase in [
             "Seed-Repeat Leave-One-Out",

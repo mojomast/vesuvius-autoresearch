@@ -18,7 +18,7 @@ The exact hard fold `20230530172803` is present in villa as `20230530172803_inkl
 |---|---:|---:|---:|---:|---:|
 | `20230530172803` | val | `0.018045` | `0.017589` | `0.974698` | `0` | `3054` |
 
-Other folds show larger deltas, especially some tiled validation regions. Full details are in `RESEARCH_VILLA_A_label_delta.md` and `data/npz_villa/rebuild_summary.json`.
+Other folds show larger deltas, especially some tiled validation regions. Full details are in `docs/archive/villa-integration-research-2026-05-30/RESEARCH_VILLA_A_label_delta.md` and `data/npz_villa/rebuild_summary.json`.
 
 ## Sampler Integration
 

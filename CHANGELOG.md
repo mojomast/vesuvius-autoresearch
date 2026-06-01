@@ -1,5 +1,12 @@
 # Changelog
 
+## Dashboard Hydration, Loop Robustness, And Docs Archive
+
+- Cached normalized run and LOO base-config comparisons during dashboard snapshot builds so candidate-linked evidence and hard-fold profile rendering no longer repeatedly reload base YAML configs.
+- Skipped AutoResearch pivot/generated configs with missing prepared NPZ paths instead of crashing the guarded loop.
+- Retargeted the hard-fold promotion pivot configs to existing direct `20230530172803` train/validation NPZ paths.
+- Documented high-load guarded loop settings, managed dashboard service behavior, strict hard-fold promotion expectations, and archived dated research/planning notes under `docs/archive/`.
+
 ## Seed Sensitivity Analysis
 
 - Ran a targeted seed sweep around the hard fold `20230530172803` using the villa-label focal hard-mining recipe.
@@ -23,12 +30,12 @@
 
 ## High-Compute ML Pass
 
-- Audited `experiments/experiments.db` and documented calibrated, AP-leading, and LOO-backed candidates in `DB_AUDIT.md`.
+- Audited `experiments/experiments.db` and documented calibrated, AP-leading, and LOO-backed candidates in `docs/archive/2026-05-research-status/DB_AUDIT.md`.
 - Validated the focal promotion candidate with existing 24/24 seed-repeat LOO evidence and full-tile inference on `20230520175435`.
 - Ran weak-fold full-tile inference for `20230530172803`; promotion checks were eligible but full-tile F1 remained weak, confirming hard-fold robustness as the blocker.
 - Ran three high-compute Bayesian autoresearch cycles with expensive-tier settings; 10 new sampled runs were added, but all retained weak fixed-threshold behavior.
 - Fixed search-signature normalization for dict/list-valued config fields such as `training.sampling_curriculum`.
-- Added `EXPERIMENT_REPORT.md` summarizing DB audit, LOO evidence, full-tile metrics, autonomous-cycle results, and next actions.
+- Added `docs/archive/2026-05-research-status/EXPERIMENT_REPORT.md` summarizing DB audit, LOO evidence, full-tile metrics, autonomous-cycle results, and next actions.
 
 ## Watch Item Fixes
 
@@ -104,4 +111,4 @@
 
 - Expanded `scripts/backtest_quality_score.py` to grid AP, F0.5, and calibration-penalty weights.
 - Updated `_run_quality_score` defaults to AP `0.20`, F0.5 `0.10`, and an explicit capped predicted-rate calibration penalty.
-- Added `docs/quality_score_analysis.md` with backtesting rationale.
+- Added `docs/archive/2026-05-research-status/quality_score_analysis.md` with backtesting rationale.

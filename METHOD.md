@@ -31,6 +31,7 @@ Promotion requires more than sampled F1:
 - Fixed-threshold diagnostics at `0.5`; any present `fixed_threshold_status` other than `ok` blocks promotion.
 - Full-tile evidence on the candidate and linked LOO folds, with no quality failures.
 - Weak-fold full-tile evidence counts only when it is linked to the held-out LOO/candidate lineage, evaluates `evaluation_region.type: whole_segment`, and passes promotion checks for that segment.
+- Sampled-only hard-fold results are diagnostic. The repeated `20230530172803` blocker must be cleared by candidate-linked LOO and full-tile evidence, not by threshold-only gate relaxation.
 - No fold leakage from held-out segments.
 
 ## Hard-Negative Mining
@@ -66,6 +67,6 @@ Planner output is fold-scoped. `fold_safe_extra_train_npzs_by_heldout` shows whi
 
 ## Limitations
 
-The current promotion candidate is a research baseline, not a proven decode. Current failures are dominated by overprediction and weak fixed-threshold behavior on full-tile outputs. Treat dashboard next actions as the source of truth for the next research step.
+The current promotion candidate is a research baseline, not a proven decode. Current failures are dominated by hard-fold separability, overprediction risk, and weak fixed-threshold behavior on full-tile outputs. Treat dashboard next actions as the source of truth for the next research step.
 
 Pick the strictest positive-rate cap that preserves about 95% of selected F1 and F0.5, considering intermediate caps such as `2.5x` before mining or broader retraining. If lower caps collapse F1 or F0.5, prefer fold-safe hard-negative mining or a bounded positive-rate-loss/sampling adjustment rather than another unconstrained threshold sweep.

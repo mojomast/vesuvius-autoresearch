@@ -59,7 +59,11 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 NUMEXPR_NUM_THREADS=2
 High-load overnight mode is appropriate when the machine can be saturated. On a 32-core host, 24 threads leaves some headroom while improving throughput:
 
 ```bash
-OVERNIGHT_MAX_SECONDS=0 OMP_NUM_THREADS=24 MKL_NUM_THREADS=24 OPENBLAS_NUM_THREADS=24 NUMEXPR_NUM_THREADS=24 AUTORESEARCH_NUM_WORKERS=24 scripts/overnight_safe_loop.sh
+SCROLL_RESEARCH_MAX_LOAD_HARD=64 SCROLL_RESEARCH_MAX_LOAD_SOFT=48 \
+OVERNIGHT_MAX_SECONDS=0 OVERNIGHT_CYCLE_SLEEP_SECONDS=60 \
+OVERNIGHT_JOB_TIMEOUT_SECONDS=5400 OVERNIGHT_HEARTBEAT_SECONDS=300 \
+OMP_NUM_THREADS=24 MKL_NUM_THREADS=24 OPENBLAS_NUM_THREADS=24 NUMEXPR_NUM_THREADS=24 \
+AUTORESEARCH_NUM_WORKERS=24 scripts/overnight_safe_loop.sh
 ```
 
-Keep strict promotion gates enabled. Do not use high-load mode to bypass linked LOO, full-tile evidence, fixed-threshold checks, or quality verdicts.
+Keep strict promotion gates enabled. Do not use high-load mode to bypass linked LOO, full-tile evidence, fixed-threshold checks, or quality verdicts. The loop also checks configured prepared-data paths before launching generated experiments, so stale pivot configs with missing NPZs are skipped instead of crashing the orchestrator.

@@ -141,6 +141,37 @@ def _normalize_loo_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _normalized_loo_config_for_run(run: dict[str, Any]) -> dict[str, Any]:
+    cached = run.get("_normalized_loo_config")
+    if isinstance(cached, dict):
+        return cached
+    cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+    normalized = _normalize_loo_config(cfg)
+    run["_normalized_loo_config"] = normalized
+    return normalized
+
+
+def _normalized_loo_config_for_summary(summary: dict[str, Any], project_root: Path | None = None) -> dict[str, Any] | None:
+    cached = summary.get("_normalized_base_config")
+    if isinstance(cached, dict):
+        return cached
+    base_config = summary.get("base_config")
+    if not base_config or project_root is None:
+        return None
+    base_path = Path(str(base_config)).expanduser()
+    if not base_path.is_absolute():
+        base_path = project_root / base_path
+    try:
+        base_cfg = yaml.safe_load(base_path.read_text()) or {}
+    except Exception:
+        return None
+    if not isinstance(base_cfg, dict):
+        return None
+    normalized = _normalize_loo_config(base_cfg)
+    summary["_normalized_base_config"] = normalized
+    return normalized
+
+
 def _summary_links_run(summary: dict[str, Any], run: dict[str, Any], project_root: Path | None = None) -> bool:
     run_id = str(run.get("run_id") or "")
     run_ids = {str(item) for item in summary.get("run_ids") or []}
@@ -152,19 +183,10 @@ def _summary_links_run(summary: dict[str, Any], run: dict[str, Any], project_roo
     if summary.get("fold_map") and autoresearch.get("fold_map") and not _same_path_tail(summary.get("fold_map"), autoresearch.get("fold_map")):
         return False
 
-    base_config = summary.get("base_config")
-    if not base_config or project_root is None:
+    normalized_summary = _normalized_loo_config_for_summary(summary, project_root)
+    if normalized_summary is None:
         return False
-    base_path = Path(str(base_config)).expanduser()
-    if not base_path.is_absolute():
-        base_path = project_root / base_path
-    try:
-        base_cfg = yaml.safe_load(base_path.read_text()) or {}
-    except Exception:
-        return False
-    if not isinstance(base_cfg, dict):
-        return False
-    return _normalize_loo_config(base_cfg) == _normalize_loo_config(cfg)
+    return normalized_summary == _normalized_loo_config_for_run(run)
 
 
 def _summary_matches_run(summary: dict[str, Any], run: dict[str, Any], project_root: Path | None = None) -> bool:
@@ -1005,18 +1027,24 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
             if _metric_direction(run) * run["main_metric"] < _metric_direction(run) * prev["best_main_metric"]:
                 candidate["run_count"] = prev["run_count"]
                 matrix[key] = candidate
+    decision = _decision_snapshot(runs, best, robust, promotable, loo_summaries, project_root)
+    leaderboard = _leaderboard_rows(runs, project_root)
+    for run in runs:
+        run.pop("_normalized_loo_config", None)
+    for summary in loo_summaries:
+        summary.pop("_normalized_base_config", None)
     return {
         "count": int(count),
         "best": best,
         "latest": latest,
         "recent": runs,
         "champions": {"peak_score": _compact_run(best), "robust_candidate": _compact_run(robust), "promotion_eligible": _compact_run(promotable)},
-        "decision": _decision_snapshot(runs, best, robust, promotable, loo_summaries, project_root),
+        "decision": decision,
         "loo_summaries": loo_summaries,
         "promotion_results": promotion_results,
         "metric_trends": [{"run_id": r["run_id"], "timestamp": r["timestamp"], "main_metric": r["main_metric"], "val_f1": r.get("metrics", {}).get("val_f1"), "average_precision": r.get("metrics", {}).get("average_precision")} for r in chronological],
         "validation_matrix": sorted(matrix.values(), key=lambda item: (item["train_segment_id"], item["val_segment_id"])),
-        "leaderboard": _leaderboard_rows(runs, project_root),
+        "leaderboard": leaderboard,
         "config_diffs": {"latest_vs_previous": _config_diff(previous.get("config") if previous else None, latest.get("config") if latest else None), "latest_vs_best": _config_diff(best.get("config") if best else None, latest.get("config") if latest else None), "latest_vs_baseline": _config_diff(baseline.get("config") if baseline else None, latest.get("config") if latest else None)},
         "hypotheses": [],
     }

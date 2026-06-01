@@ -65,6 +65,39 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIn("robust_calibrated_prloss_w0p03_lr0012_prratio3_seed11018.yaml", {item[0] for item in bases})
         self.assertIn("multi_segment_robust", bases[0][1]["dataset"].get("research_scope", ""))
 
+    def test_pivot_bases_skip_missing_prepared_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            old_pivots = autoresearch.PIVOT_CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            autoresearch.PIVOT_CONFIGS = ("missing_data.yaml",)
+            try:
+                (Path(tmpdir) / "missing_data.yaml").write_text(
+                    "dataset:\n"
+                    "  train_npz: data/does-not-exist/train.npz\n"
+                    "  val_npz: data/does-not-exist/val.npz\n"
+                    "model:\n"
+                    "  name: tiny_torch_unet\n"
+                )
+
+                self.assertEqual(_pivot_bases(), [])
+            finally:
+                autoresearch.CONFIGS = old_configs
+                autoresearch.PIVOT_CONFIGS = old_pivots
+
+    def test_hard_fold_pivots_use_existing_direct_hard_fold_validation(self) -> None:
+        bases = {name: cfg for name, cfg, _scope_policy in _pivot_bases()}
+
+        for name in (
+            "targeted_promo_hardfold_20230530172803_tol005.yaml",
+            "targeted_promo_hardfold_dualheldout_22181603_30172803.yaml",
+        ):
+            cfg = bases[name]
+            self.assertEqual(cfg["autoresearch"].get("heldout_segment"), "20230530172803")
+            self.assertEqual(cfg["dataset"].get("train_npz"), "data/real_cross_folds_expanded_combined/leaveout_20230530172803/train.npz")
+            self.assertEqual(cfg["dataset"].get("val_npz"), "data/real_cross_folds_v2/segment_20230530172803/val.npz")
+            self.assertEqual(autoresearch._missing_configured_data_paths(cfg), [])
+
     def test_unattended_torch_bases_are_cpu_bounded(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
 

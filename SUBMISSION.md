@@ -14,10 +14,10 @@ The Progress Prize criteria favor open-source tools that solve a concrete Vesuvi
 
 - Autonomous experiment proposal with `PARAM_BOUNDS` clamping and duplicate-config avoidance.
 - `MetricContract` enforcement across 1,600+ recorded experiments.
-- Evidence-gated promotion: leave-one-out seed-repeat checks, full-tile inference, positive-rate alarms, fixed-threshold diagnostics, and eligibility checks.
+- Evidence-gated promotion: candidate-linked leave-one-out seed-repeat checks, full-tile inference, positive-rate alarms, fixed-threshold diagnostics, hard-fold profiling, and eligibility checks.
 - An interactive standalone dashboard that turns the experiment database, configs, fold maps, full-tile artifacts, LOO summaries, promotion gates, quality verdicts, safe diagnostic controls, and recommended next actions into one reviewer-facing control room with collapsed long panels, fold-matrix actions, folded decoded outputs, and a filterable scroll-contained run ledger.
 - `VesuviusHarness` abstraction so the same propose/evaluate/promote loop can pivot to other scroll research workflows.
-- GitHub Actions CI with 222+ tests, a 30-minute cron workflow, baseline guards, and artifact upload.
+- GitHub Actions CI with 321 passing local tests in the current verification run, a 30-minute cron workflow, baseline guards, and artifact upload.
 - Synthetic demo data generator so reviewers can exercise the loop without downloading protected or large Vesuvius data first.
 
 ## Dashboard Value
@@ -52,7 +52,7 @@ The synthetic data follows the runner schema used by this repo: `images` are `[N
 
 This repository has run 1,600+ recorded experiments with full metric/provenance tracking. The infrastructure is hardened: metric contracts, parameter bounds, Vesuvius-specific harnessing, promotion evidence packaging, positive-rate alarms, full-tile inference checks, CI, synthetic demo generation, and dashboard-driven review are all in place.
 
-The ink detector itself is not a champion model. The best eligible tiled result so far is `val_f1=0.2363` on a fragment/full-tile-style validation region, and promotion remains blocked by cross-seed generalization failures. Seeds `11001` and `11018` behaved acceptably in recent checks, while `15050` showed threshold-cliff flooding and replacement seed `15073` produced zero-precision folds. The current bottleneck is model architecture and calibration robustness, not the experiment infrastructure.
+The ink detector itself is not a champion model. Recent autonomous research improved sampled validation and produced candidate-linked LOO evidence, but promotion remains blocked by the hard `20230530172803` fold. The latest observed completed 24-row LOO summary reported `promotion_ready=true` with `worst_fold_val_f1=0.03575020275750203`, which is still below the hard-fold floor used for review. The current bottleneck is hard-fold separability, architecture, and calibration robustness, not the experiment infrastructure.
 
 The submission claim is therefore intentionally narrow: this is a reusable open-source research automation and evidence-gating tool for the Vesuvius community, not a state-of-the-art ink model.
 
@@ -64,6 +64,7 @@ The submission claim is therefore intentionally narrow: this is a reusable open-
 - Continued the real-data research loop through positive-rate alarm diagnosis, seed-analysis follow-up, and residual 2.5D architecture exploration.
 - Added CPU-safe residual 2.5D configs and evidence logs. The best sampled residual candidate, `20260529T034850Z_d0ee3406`, reached sampled `val_f1=0.4664` and eligible full-tile `val_f1=0.2132`, but failed 2-seed LOO on zero folds for `20230530172803`, so it remains diagnostic-only.
 - Updated research status docs and best-practice guidance to explain what worked, what failed, and where the next useful work should focus.
+- Archived dated planning and audit notes under `docs/archive/` so active docs point to current dashboard, calibration, cost-tier, and reproducibility guidance.
 
 ## How To Extend This
 
@@ -80,7 +81,7 @@ The most useful next integrations would be:
 
 - Repo: <https://github.com/mojomast/vesuvius-autoresearch>
 - Harness docs: [`harness/README.md`](harness/README.md)
-- Research best practices: [`docs/research_best_practices_may2026.md`](docs/research_best_practices_may2026.md)
-- Evidence and next moves: [`docs/next_best_moves_may2026.md`](docs/next_best_moves_may2026.md)
-- Prize requirements research: [`docs/prize_submission_research.md`](docs/prize_submission_research.md)
-- Competitive landscape: [`docs/competitive_landscape.md`](docs/competitive_landscape.md)
+- Dashboard safety and review workflow: [`docs/dashboard.md`](docs/dashboard.md)
+- Calibration and thresholding: [`docs/calibration_and_thresholding.md`](docs/calibration_and_thresholding.md)
+- Historical research archive: [`docs/archive/README.md`](docs/archive/README.md)
+- Archived research best practices: [`docs/archive/2026-05-research-status/research_best_practices_may2026.md`](docs/archive/2026-05-research-status/research_best_practices_may2026.md)

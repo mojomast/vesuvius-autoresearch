@@ -36,12 +36,15 @@ labels: float32-like [N, 1, H, W]
 
 Each NPZ should have a sidecar `*.metadata.json` with source, segment ID, patch size, split, and validation-safety metadata.
 
+Curated configs that point at prepared NPZ files are expected to reference real existing local paths. AutoResearch skips pivot or generated configs whose `dataset.train_npz` or `dataset.val_npz` is missing instead of substituting synthetic data.
+
 ## Safety Rules
 
 - Do not train on labels, crops, mined negatives, or manually reviewed regions from a held-out validation or submitted prediction region.
 - Keep full-tile mined negatives fold-safe: a mined NPZ from segment `X` must not be listed in `dataset.extra_train_npzs` for a fold where `X` is held out.
 - Treat `64 x 64` patch windows at public 8 micron scale as the default hallucination-control window size unless a submission protocol explicitly justifies otherwise.
 - Do not commit raw scans, labels, NPZs, NPYs, model checkpoints, experiment databases, full-tile predictions, or decoded text outputs.
+- Keep dated research notes under `docs/archive/`; keep generated data and evidence artifacts under ignored runtime paths such as `data/`, `experiments/runs/`, and `logs/`.
 
 ## Preparing Data
 

@@ -112,4 +112,3 @@ The `20230530172803` validation split is the fold-map heldout hard fold and is c
 | 20230531121653 | train | train origins reconstructed because NPZ stores no patch coordinates; source-label replay/current comparison IoU=0.053160, so train rows are origin-proxy diagnostics rather than fully coordinate-verified deltas |
 | 20230601193301 | train | train origins reconstructed because NPZ stores no patch coordinates; source-label replay/current comparison IoU=0.875996, so train rows are origin-proxy diagnostics rather than fully coordinate-verified deltas |
 | 20230611014200 | train | train origins reconstructed because NPZ stores no patch coordinates; source-label replay/current comparison IoU=0.523756, so train rows are origin-proxy diagnostics rather than fully coordinate-verified deltas |
-

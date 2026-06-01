@@ -1,13 +1,13 @@
-# Targeted Promotion Config: dual-heldout lineage for the two repeated LOO blockers.
-# Addresses: fold-safe evidence for 20230522181603 and 20230530172803 before full-tile promotion checks.
-# Evidence: RESEARCH_ML_E recommends dual-heldout variants excluding the validation segment plus weak evidence folds.
+# Targeted Promotion Config: direct sampled validation on hard fold 20230530172803 with dual-blocker calibration.
+# Addresses: hard-fold AP/F1 collapse without relying on unavailable synthetic dual-heldout NPZs.
+# Evidence: use existing leaveout_20230530172803 prepared data; LOO still supplies fold-safe promotion evidence.
 autoresearch:
   changed_path: targeted_promo_hardfold_dualheldout_22181603_30172803
-  heldout_segment: "20230520175435"
+  heldout_segment: "20230530172803"
   intent: promotion_candidate
   mutation_family: weak_fold_repair
   parent_config: configs/residual25d_cap250_stride32_allval.yaml
-  parent_reason: train fold-safe dual-heldout artifact for weak-fold LOO and full-tile evidence
+  parent_reason: train direct hard-fold validation artifact with dual-blocker calibration settings
   promotable: true
   promotion_required:
     - seed_repeat_leave_one_out
@@ -16,9 +16,9 @@ autoresearch:
   scope_policy: expanded_multi_segment_leave_one_out
 dataset:
   patch_size: 64
-  research_scope: multi_segment_targeted_promo_dualheldout_22181603_30172803
-  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230520175435_20230530172803/train.npz
-  val_npz: data/real_cross_folds_v2/segment_20230520175435/val.npz
+  research_scope: multi_segment_targeted_promo_hardfold_20230530172803_dualblocker_directval
+  train_npz: data/real_cross_folds_expanded_combined/leaveout_20230530172803/train.npz
+  val_npz: data/real_cross_folds_v2/segment_20230530172803/val.npz
   validation_mode: leave-one-segment-out
 evaluation:
   main_metric: val_f1
