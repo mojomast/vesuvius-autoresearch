@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from research_dashboard.mining import build_hard_negative_plan  # noqa: E402
 from research_dashboard.snapshot import build_snapshot  # noqa: E402
+from src.autoresearch.ledger import record_evidence_package  # noqa: E402
 from scripts.compare_full_tile_metrics import compare_full_tile_metrics, render_batch_markdown as render_full_tile_batch_markdown, render_markdown as render_full_tile_markdown, summarize_comparisons  # noqa: E402
 from scripts.compare_threshold_caps import compare_threshold_caps, render_markdown as render_cap_markdown  # noqa: E402
 
@@ -75,6 +78,16 @@ def _blocker_counts(snapshot: dict[str, Any]) -> dict[str, int]:
         except (TypeError, ValueError):
             continue
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _git_metadata(root: Path) -> dict[str, Any]:
+    def run(args: list[str]) -> str | None:
+        try:
+            proc = subprocess.run(args, cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+        except Exception:
+            return None
+        return proc.stdout.strip() if proc.returncode == 0 else None
+    return {"head": run(["git", "rev-parse", "--short", "HEAD"]), "status": run(["git", "status", "--short"])}
 
 
 def _cap_reports(root: Path, plan: dict[str, Any], caps: list[float], min_retained_f1: float, min_retained_f05: float) -> list[dict[str, Any]]:
@@ -143,6 +156,19 @@ def _cap_recommendation_result(cap_reports: list[dict[str, Any]]) -> dict[str, A
 
 
 def synthesize_next_move_decision(package: dict[str, Any]) -> dict[str, Any]:
+    linked_failure = package.get("linked_loo_failure_pattern") if isinstance(package.get("linked_loo_failure_pattern"), dict) else {}
+    hard_fold = package.get("hard_fold_profile") if isinstance(package.get("hard_fold_profile"), dict) else {}
+    if linked_failure.get("blocks_promotion") or hard_fold.get("severity") == "blocker":
+        action = hard_fold.get("action") if isinstance(hard_fold.get("action"), dict) else {}
+        return {
+            "action": "audit_linked_loo_hard_fold_failure",
+            "readiness": "blocks_promotion",
+            "writes_artifacts": False,
+            "reason": hard_fold.get("reason") or linked_failure.get("pattern") or "linked LOO is not promotion-ready",
+            "command_text": action.get("command_text"),
+            "supporting_evidence": ["linked_loo_failure_pattern", "hard_fold_profile"],
+        }
+
     full_tile_summary = package.get("full_tile_comparison_summary") if isinstance(package.get("full_tile_comparison_summary"), dict) else None
     if full_tile_summary:
         regressed = [item for item in full_tile_summary.get("per_pair_status") or [] if isinstance(item, dict) and item.get("status") == "core_regressed"]
@@ -234,10 +260,18 @@ def build_next_move_evidence_package(
         "schema": "vesuvius.next_move_evidence_package.v1",
         "repo_root": str(root),
         "writes_artifacts": False,
+        "writes_evidence_package": False,
+        "git": _git_metadata(root),
+        "contract_status": snapshot.get("contract_status", {}),
         "next_action": _snapshot_next_action(snapshot),
         "promotion_gate": _promotion_gate(snapshot),
         "promotion_blockers": _blocker_counts(snapshot),
         "candidate_evidence": _candidate_evidence(snapshot),
+        "linked_loo_failure_pattern": _candidate_evidence(snapshot).get("linked_loo_failure_pattern", {}),
+        "hard_fold_profile": _candidate_evidence(snapshot).get("hard_fold_profile", {}),
+        "hypotheses": snapshot.get("research_summary", {}).get("hypotheses", []) if isinstance(snapshot.get("research_summary"), dict) else [],
+        "staleness": snapshot.get("research_summary", {}).get("decision", {}).get("staleness", {}) if isinstance(snapshot.get("research_summary"), dict) else {},
+        "stale_causes": snapshot.get("operations", {}).get("no_progress", {}) if isinstance(snapshot.get("operations"), dict) else {},
         "hard_negative_plan": plan,
         "cap_comparisons": cap_reports,
         "cap_recommendation": cap_result["recommendation"],
@@ -247,6 +281,33 @@ def build_next_move_evidence_package(
     }
     package["recommended_next_move"] = synthesize_next_move_decision(package)
     return package
+
+
+def write_evidence_package(package: dict[str, Any], output_dir: str | Path, *, write_json: bool = True, write_markdown: bool = True, reason: str | None = None) -> dict[str, str | None]:
+    root = Path(package.get("repo_root") or ROOT).resolve()
+    out_dir = Path(output_dir).expanduser()
+    out_dir = out_dir if out_dir.is_absolute() else root / out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    candidate = str((package.get("candidate_evidence") or {}).get("candidate_run_id") or "unknown")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_candidate = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in candidate)[:80]
+    package_id = f"{stamp}_{safe_candidate}"
+    paths: dict[str, str | None] = {"json": None, "markdown": None}
+    package["writes_evidence_package"] = True
+    if write_json:
+        json_path = out_dir / f"next_move_evidence_{package_id}.json"
+        paths["json"] = str(json_path.relative_to(root) if json_path.is_relative_to(root) else json_path)
+    if write_markdown:
+        md_path = out_dir / f"next_move_evidence_{package_id}.md"
+        paths["markdown"] = str(md_path.relative_to(root) if md_path.is_relative_to(root) else md_path)
+    package["package_id"] = package_id
+    package["package_paths"] = paths
+    if paths["json"]:
+        (root / paths["json"]).write_text(json.dumps(package, indent=2, sort_keys=True, default=str))
+    if paths["markdown"]:
+        (root / paths["markdown"]).write_text(render_markdown(package))
+    record_evidence_package(package_id, candidate_run_id=candidate if candidate != "unknown" else None, path_json=paths["json"], path_markdown=paths["markdown"], reason=reason, db_path=root / "experiments" / "experiments.db")
+    return paths
 
 
 def _fmt(value: Any) -> str:
@@ -299,6 +360,15 @@ def render_markdown(package: dict[str, Any]) -> str:
             lines.append(f"- Safe to execute from dashboard: {recommended.get('safe_to_execute_from_dashboard')}")
         if recommended.get("artifact_policy"):
             lines.append(f"- Artifact policy: {recommended.get('artifact_policy')}")
+    contract_status = package.get("contract_status") if isinstance(package.get("contract_status"), dict) else {}
+    if contract_status:
+        lines.extend(["", "## Dashboard Contract Status", "", f"- Source of truth: {contract_status.get('source_of_truth')}", f"- Producer: `{contract_status.get('producer')}`", f"- Candidate linkage: {contract_status.get('candidate_linkage')}"])
+    linked_failure = package.get("linked_loo_failure_pattern") if isinstance(package.get("linked_loo_failure_pattern"), dict) else {}
+    if linked_failure:
+        lines.extend(["", "## Linked LOO Failure Pattern", "", f"- Pattern: `{linked_failure.get('pattern')}`", f"- Blocks promotion: {linked_failure.get('blocks_promotion')}", f"- Recommended action: `{linked_failure.get('recommended_action')}`"])
+    hard_fold = package.get("hard_fold_profile") if isinstance(package.get("hard_fold_profile"), dict) else {}
+    if hard_fold:
+        lines.extend(["", "## Hard Fold Diagnostics", "", f"- Fold: `{hard_fold.get('fold_id')}`", f"- Failure mode: `{hard_fold.get('failure_mode')}`", f"- Mean F1: {_fmt(hard_fold.get('mean_val_f1'))}", f"- Mean AP: {_fmt(hard_fold.get('mean_average_precision'))}", f"- AP/prevalence lift: {_fmt(hard_fold.get('mean_ap_prevalence_lift'))}"])
     blockers = package.get("promotion_blockers") if isinstance(package.get("promotion_blockers"), dict) else {}
     if blockers:
         lines.extend(["", "## Promotion Blockers", "", "| blocker | count |", "|---|---:|"])
@@ -361,6 +431,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ratio-threshold", type=float, default=2.0)
     parser.add_argument("--target-config", default="configs/robust_hard_negative_prratio2p0_followup.yaml")
     parser.add_argument("--markdown", action="store_true", help="emit Markdown instead of JSON")
+    parser.add_argument("--output-dir", default=None, help="write JSON/Markdown package files under this directory")
+    parser.add_argument("--output-json", default=None, help="write JSON package to this path")
+    parser.add_argument("--output-markdown", default=None, help="write Markdown package to this path")
+    parser.add_argument("--reason", default="manual", help="ledger reason when writing package files")
     args = parser.parse_args(argv)
 
     package = build_next_move_evidence_package(
@@ -374,6 +448,19 @@ def main(argv: list[str] | None = None) -> int:
         ratio_threshold=args.ratio_threshold,
         target_config=args.target_config,
     )
+    if args.output_dir:
+        paths = write_evidence_package(package, args.output_dir, reason=args.reason)
+        package["package_paths"] = paths
+    if args.output_json:
+        path = Path(args.output_json)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        package["writes_evidence_package"] = True
+        path.write_text(json.dumps(package, indent=2, sort_keys=True, default=str))
+    if args.output_markdown:
+        path = Path(args.output_markdown)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        package["writes_evidence_package"] = True
+        path.write_text(render_markdown(package))
     if args.markdown:
         print(render_markdown(package), end="")
     else:

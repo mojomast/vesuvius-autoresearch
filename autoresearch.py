@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import hashlib
 from dataclasses import dataclass, field
 from types import ModuleType
 _fcntl: ModuleType | None
@@ -26,7 +27,8 @@ from typing import Any, Dict, Iterator, List, Tuple, cast
 
 import yaml
 
-from experiments.runner import DB_PATH, init_db, load_config
+from experiments.runner import DB_PATH, canonical_experiment_config_signature, init_db, load_config
+from src.autoresearch.ledger import record_proposal, record_proposal_result
 from src.autoresearch.schemas import ExperimentConfig, load_typed_config
 
 fcntl: ModuleType | None = _fcntl
@@ -77,6 +79,8 @@ QUALITY_WARNING_PENALTY = _env_float("AUTORESEARCH_QUALITY_WARNING_PENALTY", 0.0
 COST_TIER_TORCH_SAMPLE_NORMAL_MAX = _env_int("AUTORESEARCH_COST_TIER_TORCH_SAMPLE_NORMAL_MAX", 2048)
 COST_TIER_NUMPY_PIXEL_MAX = _env_int("AUTORESEARCH_COST_TIER_NUMPY_PIXEL_MAX", 600000)
 COST_TIER_EPOCH_NORMAL_MAX = _env_int("AUTORESEARCH_COST_TIER_EPOCH_NORMAL_MAX", 8)
+METHOD_FAMILY_ARMS = {"augmentation_policy", "z_context", "sampling_strategy", "full_tile_inference", "label_audit"}
+CPU_SAFE_FULL_TILE_DEFAULTS = {"device": "cpu", "batch_size": 4, "stride": 64, "overwrite": False}
 _LINKED_LOO_SUMMARY_CACHE_AT = 0.0
 _LINKED_LOO_SUMMARY_CACHE: list[Dict[str, Any]] | None = None
 _LINKED_LOO_SUMMARY_CACHE_ROOT: Path | None = None
@@ -113,6 +117,7 @@ SEARCH_PATHS = (
     ("training", "combo_dice_weight"),
     ("training", "positive_rate_loss_weight"),
     ("training", "positive_rate_loss_tolerance"),
+    ("training", "positive_rate_loss_target"),
     ("training", "tversky_loss_weight"),
     ("training", "tversky_alpha"),
     ("training", "tversky_beta"),
@@ -126,7 +131,9 @@ SEARCH_PATHS = (
     ("training", "stateful_sampler"),
     ("training", "group_stratified_sampling"),
     ("training", "sampling_curriculum"),
+    ("training", "patch_sampling"),
     ("training", "hard_negative_fraction"),
+    ("training", "positive_patch_fraction"),
     ("evaluation", "threshold"),
     ("evaluation", "use_villa_metrics"),
     ("evaluation", "max_pred_positive_rate_ratio"),
@@ -162,6 +169,7 @@ SIGNATURE_DEFAULTS = {
     ("training", "combo_dice_weight"): None,
     ("training", "positive_rate_loss_weight"): None,
     ("training", "positive_rate_loss_tolerance"): None,
+    ("training", "positive_rate_loss_target"): None,
     ("training", "tversky_loss_weight"): None,
     ("training", "tversky_alpha"): None,
     ("training", "tversky_beta"): None,
@@ -175,7 +183,9 @@ SIGNATURE_DEFAULTS = {
     ("training", "stateful_sampler"): False,
     ("training", "group_stratified_sampling"): False,
     ("training", "sampling_curriculum"): None,
+    ("training", "patch_sampling"): None,
     ("training", "hard_negative_fraction"): None,
+    ("training", "positive_patch_fraction"): None,
     ("evaluation", "threshold"): 0.5,
     ("evaluation", "use_villa_metrics"): True,
     ("evaluation", "max_pred_positive_rate_ratio"): None,
@@ -198,6 +208,16 @@ BALANCED_CALIBRATION_FIELDS = {
     "max_pred_positive_rate_ratio": ("evaluation", "max_pred_positive_rate_ratio"),
     "positive_rate_loss_tolerance": ("training", "positive_rate_loss_tolerance"),
     "positive_rate_loss_weight": ("training", "positive_rate_loss_weight"),
+}
+HARD_FOLD_SAMPLING_CALIBRATION_PATH = ("hard_fold_sampling_calibration",)
+HARD_FOLD_SAMPLING_CALIBRATION_FIELDS = {
+    "patch_sampling": ("training", "patch_sampling"),
+    "positive_patch_fraction": ("training", "positive_patch_fraction"),
+    "hard_negative_fraction": ("training", "hard_negative_fraction"),
+    "positive_rate_loss_weight": ("training", "positive_rate_loss_weight"),
+    "positive_rate_loss_tolerance": ("training", "positive_rate_loss_tolerance"),
+    "positive_rate_loss_target": ("training", "positive_rate_loss_target"),
+    "max_pred_positive_rate_ratio": ("evaluation", "max_pred_positive_rate_ratio"),
 }
 PARAM_BOUNDS: Dict[Tuple[str, ...], tuple[float, float]] = {
     ("training", "pos_weight"): (0.25, 25.0),
@@ -445,6 +465,11 @@ def _candidate_is_noop(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -
             _get_nested(cfg, BALANCED_CALIBRATION_FIELDS[key], None) == proposed
             for key, proposed in value.items()
         )
+    if path == HARD_FOLD_SAMPLING_CALIBRATION_PATH:
+        return all(
+            _get_nested(cfg, HARD_FOLD_SAMPLING_CALIBRATION_FIELDS[key], None) == proposed
+            for key, proposed in value.items()
+        )
     return bool(_get_nested(cfg, path, None) == value)
 
 
@@ -452,6 +477,10 @@ def _apply_candidate(cfg: Dict[str, Any], path: Tuple[str, ...], value: Any) -> 
     if path == BALANCED_CALIBRATION_PATH:
         for key, proposed in value.items():
             _set_nested(cfg, BALANCED_CALIBRATION_FIELDS[key], proposed)
+        return
+    if path == HARD_FOLD_SAMPLING_CALIBRATION_PATH:
+        for key, proposed in value.items():
+            _set_nested(cfg, HARD_FOLD_SAMPLING_CALIBRATION_FIELDS[key], proposed)
         return
     _set_nested(cfg, path, value)
 
@@ -477,7 +506,36 @@ def _clamp_param(path: Tuple[str, ...], value: Any) -> Any:
 
 def _bounded_candidates(candidates: list[tuple[Tuple[str, ...], Any, str]]) -> list[tuple[Tuple[str, ...], Any, str]]:
     """Apply `PARAM_BOUNDS` to generated proposal candidates."""
-    return [(path, _clamp_param(path, value), reason) for path, value, reason in candidates]
+    seen: set[tuple[Tuple[str, ...], str]] = set()
+    out: list[tuple[Tuple[str, ...], Any, str]] = []
+    for path, value, reason in candidates:
+        clamped = _clamp_param(path, value)
+        key = (path, json.dumps(clamped, sort_keys=True, default=str))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((path, clamped, reason))
+    return out
+
+
+def _strict_env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _method_family_arm_enabled(arm: str) -> bool:
+    if arm not in METHOD_FAMILY_ARMS:
+        return False
+    if arm in {"full_tile_inference", "label_audit"}:
+        return _strict_env_bool(f"AUTORESEARCH_ENABLE_{arm.upper()}_ARMS", False)
+    return _strict_env_bool("AUTORESEARCH_ENABLE_METHOD_FAMILY_ARMS", True)
+
+
+def _proposal_id(stamp: str, index: int, signature: Tuple[Any, ...], family: str) -> str:
+    digest = hashlib.sha1(json.dumps(signature, sort_keys=True, default=str).encode()).hexdigest()[:10]
+    return f"{stamp}_{index:03d}_{family}_{digest}"
 
 
 def _proposal_value_slug(value: Any) -> str:
@@ -546,19 +604,31 @@ def _exploration_max_epochs() -> int:
     return _env_int("AUTORESEARCH_EXPLORATION_MAX_EPOCHS", COST_TIER_EPOCH_NORMAL_MAX)
 
 
+def _exploration_max_train_pixels() -> int:
+    return _env_int("AUTORESEARCH_EXPLORATION_MAX_TRAIN_PIXELS", COST_TIER_NUMPY_PIXEL_MAX)
+
+
 def _clamp_exploration_training_bounds(cfg: Dict[str, Any]) -> None:
     model_name = str(_get_nested(cfg, ("model", "name"), ""))
-    if "torch" not in model_name:
-        return
     training = cfg.setdefault("training", {})
     max_epochs = _exploration_max_epochs()
     try:
         epochs = int(training.get("epochs") or SIGNATURE_DEFAULTS[("training", "epochs")])
     except (TypeError, ValueError):
-        return
+        epochs = 0
     if epochs > max_epochs:
         training["epochs"] = max_epochs
         cfg.setdefault("autoresearch", {}).setdefault("cron_safety", {})["epochs_bound"] = max_epochs
+    if "torch" in model_name:
+        return
+    pixel_cap = _exploration_max_train_pixels()
+    try:
+        max_train_pixels = int(training.get("max_train_pixels") or pixel_cap)
+    except (TypeError, ValueError):
+        return
+    if max_train_pixels > pixel_cap:
+        training["max_train_pixels"] = pixel_cap
+        cfg.setdefault("autoresearch", {}).setdefault("cron_safety", {})["max_train_pixels_bound"] = pixel_cap
 
 
 def _normalize_signature_value(path: Tuple[str, ...], value: Any) -> Any:
@@ -707,6 +777,22 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
             candidates.append((("training", "hard_negative_fraction"), 0.85, "raise hard-negative fraction toward recent precision-oriented residual configs"))
         if sampling_curriculum:
             candidates = [candidate for candidate in candidates if candidate[0] != ("training", "sampling_curriculum")]
+        if _method_family_arm_enabled("augmentation_policy"):
+            candidates.extend([
+                (("training", "augment_flips"), not augment_flips, "method-family arm augmentation_policy: toggle flip augmentation"),
+                (("training", "augment_rotation"), not augment_rotation, "method-family arm augmentation_policy: toggle rotation augmentation"),
+            ])
+        if _method_family_arm_enabled("z_context"):
+            z_offsets = _get_nested(base, ("dataset", "z_offsets"), None)
+            if z_offsets != [-4, 0, 4]:
+                candidates.append((("dataset", "z_offsets"), [-4, 0, 4], "method-family arm z_context: use CPU-bounded 2.5D context"))
+            if z_offsets != [-6, -3, 0, 3, 6]:
+                candidates.append((("dataset", "z_offsets"), [-6, -3, 0, 3, 6], "method-family arm z_context: use wider CPU-bounded 2.5D context"))
+        if _method_family_arm_enabled("sampling_strategy"):
+            candidates.extend([
+                (("training", "sampling_strategy"), "hard_mining", "method-family arm sampling_strategy: hard-negative mining"),
+                (("training", "sampling_curriculum"), "warmup_then_hard", "method-family arm sampling_strategy: warmup then hard mining"),
+            ])
         sample_cap = int(os.environ.get("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "1024"))
         if max_train_samples and max_train_samples < 2048 and sample_cap >= 2048:
             candidates.append((("training", "max_train_samples"), 2048, "increase robust torch sample budget after local hyperparameter plateau"))
@@ -747,11 +833,17 @@ def _proposal_candidates(base: Dict[str, Any]) -> list[tuple[Tuple[str, ...], An
 def _mutation_family(path: Tuple[str, ...]) -> str:
     if path == BALANCED_CALIBRATION_PATH:
         return "balanced_calibration"
+    if path == HARD_FOLD_SAMPLING_CALIBRATION_PATH:
+        return "hard_fold_sampling_calibration"
+    if path in {("training", "augment_flips"), ("training", "augment_rotation")}:
+        return "augmentation_policy"
+    if path == ("dataset", "z_offsets"):
+        return "z_context"
     if path in {("training", "learning_rate"), ("training", "weight_decay"), ("training", "epochs"), ("training", "batch_size")}:
         return "optimizer"
     if path in {("training", "pos_weight"), ("training", "dice_loss_weight"), ("training", "focal_loss_weight"), ("training", "focal_gamma"), ("training", "positive_rate_loss_weight"), ("training", "positive_rate_loss_tolerance"), ("training", "tversky_loss_weight"), ("training", "tversky_alpha"), ("training", "tversky_beta"), ("training", "focal_tversky_gamma")}:
         return "loss_calibration"
-    if path in {("training", "sampling_strategy"), ("training", "stateful_sampler"), ("training", "group_stratified_sampling"), ("training", "sampling_curriculum"), ("training", "hard_negative_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction"), ("training", "augment_flips"), ("training", "augment_rotation")}:
+    if path in {("training", "sampling_strategy"), ("training", "stateful_sampler"), ("training", "group_stratified_sampling"), ("training", "sampling_curriculum"), ("training", "patch_sampling"), ("training", "hard_negative_fraction"), ("training", "positive_patch_fraction"), ("training", "max_train_samples"), ("training", "max_train_pixels"), ("training", "sample_positive_fraction")}:
         return "data_sampling"
     if path in {("model", "name"), ("model", "input_mode"), ("model", "base_channels"), ("model", "depth"), ("model", "hidden_units")}:
         return "model_family"
@@ -760,6 +852,117 @@ def _mutation_family(path: Tuple[str, ...]) -> str:
     if path in {("training", "seed"), ("training", "seeds"), ("training", "deterministic")}:
         return "replication"
     return "other"
+
+
+def _classify_run_failures(run: Dict[str, Any]) -> list[str]:
+    """Classify recent failures into proposal-planning signals."""
+    cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+    metrics = run.get("metrics", {}) if isinstance(run.get("metrics"), dict) else {}
+    failures: list[str] = []
+    pred_rate = _optional_float(metrics.get("pred_positive_rate"))
+    val_rate = _optional_float(metrics.get("val_positive_rate"))
+    if val_rate is not None and val_rate <= 0.0:
+        failures.append("zero_positive_validation")
+    if pred_rate is not None and val_rate is not None and val_rate > 0.0:
+        ratio = pred_rate / max(val_rate, 1e-6)
+        if ratio > PROMOTION_POS_RATE_RATIO_HIGH:
+            failures.append("calibration_high")
+        elif ratio < PROMOTION_POS_RATE_RATIO_LOW:
+            failures.append("calibration_low")
+    if float(metrics.get("precision") or 0.0) <= 0.0 or float(metrics.get("recall") or 0.0) <= 0.0:
+        failures.append("zero_precision_recall")
+    ap = _optional_float(metrics.get("average_precision"))
+    ap_lift = _optional_float(metrics.get("ap_prevalence_lift"))
+    if (ap_lift is not None and ap_lift < PROMOTION_WEAK_AP_LIFT) or (ap is not None and val_rate is not None and val_rate > 0.0 and ap <= val_rate * PROMOTION_WEAK_AP_LIFT):
+        failures.append("ap_near_prevalence")
+    best_threshold = _optional_float(metrics.get("best_threshold"))
+    if best_threshold is not None and (best_threshold <= PROMOTION_THRESHOLD_EDGE_LOW or best_threshold >= PROMOTION_THRESHOLD_EDGE_HIGH):
+        failures.append("threshold_edge")
+    if str(metrics.get("fixed_threshold_status") or "").lower() not in {"", "ok"} or "fixed_threshold_status" not in metrics:
+        failures.append("fixed_threshold_weak")
+    text = " ".join(str(item) for item in (run.get("run_id"), metrics.get("worst_fold_id"), cfg.get("autoresearch", {}).get("heldout_segment"), cfg.get("dataset", {}).get("val_npz")))
+    if "20230530172803" in text or "20230522181603" in text:
+        failures.append("hard_fold_blocker")
+    eligible, warnings = _promotion_gate(run)
+    if not eligible and "validation_not_held_out" in warnings:
+        failures.append("validation_leakage")
+    if any(w in warnings for w in ("cron_safety_run_not_promotable", "patch_size_exceeds_scroll_prize_guidance", "promotion_checks_ineligible")) or str(metrics.get("status") or "").lower() in {"oom", "timeout", "failed"}:
+        failures.append("resource_or_policy")
+    return list(dict.fromkeys(failures))
+
+
+def _summarize_recent_failure_context(runs: List[Dict[str, Any]], limit: int = 24) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    family_scores: dict[str, list[float]] = {}
+    changed_paths: set[str] = set()
+    signatures: set[Tuple[Any, ...]] = set()
+    for run in runs[:limit]:
+        for failure in _classify_run_failures(run):
+            counts[failure] = counts.get(failure, 0) + 1
+        cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+        autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+        family = str(autoresearch.get("mutation_family") or "")
+        if family:
+            family_scores.setdefault(family, []).append(_run_quality_score(run))
+        changed_path = str(autoresearch.get("changed_path") or "")
+        if changed_path:
+            changed_paths.add(changed_path)
+        signatures.add(_search_signature(cfg))
+    return {
+        "failure_counts": counts,
+        "family_scores": {family: sum(scores) / len(scores) for family, scores in family_scores.items() if scores},
+        "changed_paths": changed_paths,
+        "signatures": signatures,
+    }
+
+
+def _score_proposal_candidate(path: Tuple[str, ...], cfg: Dict[str, Any], runs: List[Dict[str, Any]], context: dict[str, Any] | None = None) -> tuple[float, dict[str, float], list[str]]:
+    context = context or _summarize_recent_failure_context(runs)
+    failures = cast(dict[str, int], context.get("failure_counts", {}))
+    family_scores = cast(dict[str, float], context.get("family_scores", {}))
+    changed_paths = cast(set[str], context.get("changed_paths", set()))
+    family = _mutation_family(path)
+    cost_tier = _config_cost_tier(cfg)
+    components: dict[str, float] = {"cost": {"cheap": 1.0, "normal": 0.4, "expensive": -1.0}.get(cost_tier, -1.0)}
+    reasons = [f"cost_{cost_tier}"]
+    if failures.get("hard_fold_low_ap_near_prevalence"):
+        components["hard_fold_relevance"] = {
+            "data_sampling": 2.0,
+            "hard_fold_sampling_calibration": 2.2,
+            "z_context": 1.5,
+            "loss_calibration": 1.2,
+            "balanced_calibration": 1.2,
+            "inference_calibration": 0.8,
+            "model_family": -0.4,
+            "replication": -0.6,
+        }.get(family, -0.2)
+        reasons.append("hard_fold_low_ap_relevant" if components["hard_fold_relevance"] > 0 else "weak_hard_fold_low_ap_relevance")
+    elif failures.get("hard_fold_blocker"):
+        components["hard_fold_relevance"] = 1.5 if family in {"loss_calibration", "data_sampling", "z_context", "balanced_calibration"} else -0.2
+        reasons.append("hard_fold_relevant" if components["hard_fold_relevance"] > 0 else "weak_hard_fold_relevance")
+    if failures.get("calibration_high") or failures.get("calibration_low") or failures.get("fixed_threshold_weak"):
+        components["calibration_relevance"] = 1.2 if family in {"loss_calibration", "balanced_calibration", "inference_calibration"} else 0.0
+        if components["calibration_relevance"]:
+            reasons.append("calibration_relevant")
+    if failures.get("ap_near_prevalence") and path == ("evaluation", "threshold"):
+        components["threshold_only_penalty"] = -2.5
+        reasons.append("threshold_only_low_value_when_ap_near_prevalence")
+    prior = family_scores.get(family)
+    if prior is not None:
+        components["prior_family_performance"] = max(-1.0, min(1.0, prior))
+        reasons.append("prior_family_performance")
+    changed_path = ".".join(path)
+    if changed_path in changed_paths:
+        components["near_duplicate_penalty"] = -1.0
+        reasons.append("near_duplicate_changed_path")
+    elif family in family_scores:
+        components["near_duplicate_penalty"] = -0.25
+        reasons.append("recent_family_penalty")
+    if family == "replication" and failures:
+        components["low_value_penalty"] = -0.4
+        reasons.append("replication_low_value_for_active_failures")
+    score = round(sum(components.values()), 6)
+    return score, components, reasons
 
 
 def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: int = 3, *, scope_policy: str = "focused_pair_only", lock_to_baseline_scope: bool = True, name_index_offset: int = 0, required_families: set[str] | None = None, strategy_phase: str | None = None, allow_expensive: bool = False) -> List[Tuple[str, Dict[str, Any], str]]:
@@ -800,16 +1003,13 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         slot = int(datetime.now(timezone.utc).strftime("%M")) // 10
         candidates = candidates[slot:] + candidates[:slot]
     proposals: List[Tuple[str, Dict[str, Any], str]] = []
-    deferred_expensive: list[tuple[str, Dict[str, Any], str, str, Tuple[Any, ...]]] = []
-    used_families: set[str] = set()
-    seen_batch_signatures: set[Tuple[Any, ...]] = set()
+    scored_candidates: list[tuple[float, int, Tuple[str, ...], Any, str, Dict[str, Any], str, Tuple[Any, ...], dict[str, float], list[str]]] = []
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     expensive_context = allow_expensive or strategy_phase in {"promote", "diversify"} or _metadata_allows_expensive(base)
-    for path, value, reason in candidates:
+    triage_context = _summarize_recent_failure_context(runs)
+    for candidate_index, (path, value, reason) in enumerate(candidates):
         family = _mutation_family(path)
         if required_families and family not in required_families:
-            continue
-        if required_families and family in used_families:
             continue
         cfg = copy.deepcopy(base)
         cfg.pop("resolved_data", None)
@@ -833,10 +1033,27 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
             print(f"Skipping {cost_tier} proposal {'.'.join(path)} under AUTORESEARCH_MAX_COST_TIER={_max_allowed_cost_tier(expensive_context)}")
             continue
         signature = _search_signature(cfg)
-        if signature in tested or signature in seen_batch_signatures:
+        if signature in tested:
             print(f"Skipping already-tested search signature {signature}")
             continue
+        score, score_components, score_reasons = _score_proposal_candidate(path, cfg, runs, triage_context)
+        scored_candidates.append((score, candidate_index, path, value, reason, cfg, family, signature, score_components, score_reasons))
+    scored_candidates.sort(key=lambda item: (-item[0], _cost_tier_rank(_config_cost_tier(item[5])), item[1]))
+    used_families: set[str] = set()
+    seen_batch_signatures: set[Tuple[Any, ...]] = set()
+    for score, _candidate_index, path, value, reason, cfg, family, signature, score_components, score_reasons in scored_candidates:
+        if len(proposals) >= count:
+            break
+        if required_families and family in used_families:
+            continue
+        if signature in seen_batch_signatures:
+            continue
         autoresearch = cfg.setdefault("autoresearch", {})
+        proposal_index = name_index_offset + len(proposals) + 1
+        proposal_id = _proposal_id(stamp, proposal_index, signature, family)
+        autoresearch["proposal_id"] = proposal_id
+        autoresearch.setdefault("hypothesis_id", f"hyp_{family}")
+        autoresearch["arm_id"] = family
         autoresearch["parent_reason"] = reason
         autoresearch["scope_policy"] = scope_policy
         autoresearch["search_signature"] = list(signature)
@@ -846,7 +1063,11 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         autoresearch["proposal_status"] = "generated"
         autoresearch["changed_path"] = ".".join(path)
         autoresearch["mutation_family"] = family
-        autoresearch["cost_tier"] = cost_tier
+        autoresearch["cost_tier"] = _config_cost_tier(cfg)
+        autoresearch["proposal_score"] = score
+        autoresearch["proposal_score_components"] = score_components
+        autoresearch["triage_failures"] = dict(triage_context.get("failure_counts", {}))
+        autoresearch["score_reasons"] = score_reasons
         if search_strategy_label:
             autoresearch.setdefault("search_strategy", search_strategy_label)
         if search_strategy_candidate == path:
@@ -854,27 +1075,11 @@ def _propose_configs(base: Dict[str, Any], runs: List[Dict[str, Any]], count: in
         if strategy_phase:
             autoresearch["strategy_phase"] = strategy_phase
         autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
-        name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
-        if cost_tier == "expensive":
-            deferred_expensive.append((name, cfg, reason, family, signature))
-            continue
+        autoresearch["config_signature"] = canonical_experiment_config_signature(cfg)
+        name = f"auto_{stamp}_{proposal_index}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
         seen_batch_signatures.add(signature)
         proposals.append((name, cfg, reason))
         used_families.add(family)
-        if len(proposals) >= count:
-            break
-    for _name, cfg, reason, family, signature in deferred_expensive:
-        if len(proposals) >= count:
-            break
-        if required_families and family in used_families:
-            continue
-        if signature in seen_batch_signatures:
-            continue
-        name = f"auto_{stamp}_{name_index_offset + len(proposals) + 1}_{cfg['autoresearch']['changed_path'].replace('.', '_')}_{_proposal_value_slug(_get_nested(cfg, tuple(cfg['autoresearch']['changed_path'].split('.')), 'combined'))}.yaml"
-        seen_batch_signatures.add(signature)
-        proposals.append((name, cfg, reason))
-        used_families.add(family)
-    proposals.sort(key=lambda item: _cost_tier_rank(item[1].get("autoresearch", {}).get("cost_tier", "expensive")))
     return proposals
 
 
@@ -1047,7 +1252,7 @@ def _strategy_phase(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     next_action = _promotion_next_action(best_recent)
     if plateau and next_action != "continue_exploration":
         phase = "promote"
-        families = {"replication", "inference_calibration", "loss_calibration", "balanced_calibration"}
+        families = {"replication", "inference_calibration", "loss_calibration", "balanced_calibration", "data_sampling", "z_context"}
     elif plateau:
         phase = "diversify"
         families = {"loss_calibration", "data_sampling", "model_family", "inference_calibration", "balanced_calibration"}
@@ -1559,9 +1764,6 @@ def _promotion_phase_manual_action(runs: List[Dict[str, Any]], history: _RunHist
     }
     if summary_json is not None:
         payload["summary_json"] = str(summary_json)
-    if os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1" and command_args:
-        timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "7200"))
-        payload.update(_run_automated_promotion(command_args, candidate_run_id, summary_json or (LOGS / "promotion.summary.json"), timeout, gate_warnings))
     return payload
 
 
@@ -1677,12 +1879,18 @@ def _proposal_plan(proposals: List[Tuple[str, Dict[str, Any], str]]) -> list[Dic
         plan.append({
             "name": name,
             "reason": reason,
+            "proposal_id": autoresearch.get("proposal_id"),
+            "hypothesis_id": autoresearch.get("hypothesis_id"),
             "changed_path": autoresearch.get("changed_path"),
             "mutation_family": autoresearch.get("mutation_family"),
             "search_strategy": autoresearch.get("search_strategy"),
             "strategy_phase": autoresearch.get("strategy_phase"),
             "scope_policy": autoresearch.get("scope_policy"),
             "cost_tier": autoresearch.get("cost_tier"),
+            "proposal_score": autoresearch.get("proposal_score"),
+            "proposal_score_components": autoresearch.get("proposal_score_components", {}),
+            "triage_failures": autoresearch.get("triage_failures", {}),
+            "score_reasons": autoresearch.get("score_reasons", []),
             "promotable": bool(autoresearch.get("promotable")),
             "promotion_required": autoresearch.get("promotion_required", []),
             "search_signature": autoresearch.get("search_signature"),
@@ -1693,17 +1901,55 @@ def _proposal_plan(proposals: List[Tuple[str, Dict[str, Any], str]]) -> list[Dic
 _AUTO_ACTIONS: set[str] = {
     "calibrate_probability_scale",
     "calibrate_positive_rate",
+    "hard_fold_low_ap_near_prevalence",
     "improve_ranking_signal",
     "mine_hard_negatives",
     "repair_precision_recall",
-    "review_positive_rate",
-    "inspect_full_tile_errors",
 }
+
+
+def _linked_loo_blocker(payload_or_evidence: dict[str, Any]) -> dict[str, Any] | None:
+    evidence = payload_or_evidence.get("candidate_evidence", payload_or_evidence)
+    if not isinstance(evidence, dict):
+        return None
+    pattern = evidence.get("linked_loo_failure_pattern")
+    if isinstance(pattern, dict) and pattern.get("blocks_promotion") is True:
+        return pattern
+    return None
+
+
+def _is_nonwriting_diagnostic_action(action: dict[str, Any]) -> bool:
+    return bool(isinstance(action, dict) and action.get("kind") == "diagnostic" and action.get("writes_artifacts") is False)
+
+
+def _linked_loo_target_action_id(pattern: dict[str, Any], dashboard_action_id: str | None) -> str | None:
+    if dashboard_action_id in _AUTO_ACTIONS:
+        return dashboard_action_id
+    failure_pattern = str(pattern.get("pattern") or "")
+    recommended = str(pattern.get("recommended_action") or "")
+    if failure_pattern == "hard_fold_low_ap_near_prevalence":
+        return "hard_fold_low_ap_near_prevalence"
+    if failure_pattern == "fixed_threshold_not_ok" or recommended in {"calibrate_fixed_threshold", "calibrate_probability_scale"}:
+        return "calibrate_probability_scale"
+    if failure_pattern == "positive_rate_alarm" or recommended in {"review_positive_rate_calibration", "lower_positive_patch_pressure"}:
+        return "calibrate_positive_rate"
+    if failure_pattern == "weak_ap_prevalence_lift" or recommended == "improve_ranking_signal":
+        return "improve_ranking_signal"
+    if failure_pattern == "zero_positive_validation":
+        return "repair_precision_recall"
+    return None
+
+
+def _hard_fold_direct_paths(fold_id: str) -> tuple[str, str]:
+    return (
+        f"data/real_cross_folds_expanded_combined/leaveout_{fold_id}/train.npz",
+        f"data/real_cross_folds_v2/segment_{fold_id}/val.npz",
+    )
 
 
 def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_payload: dict[str, Any], count: int = 2) -> List[Tuple[str, Dict[str, Any], str]]:
     """Generate targeted proposals for auto-executable promotion actions."""
-    action_id = ready_payload.get("action_id")
+    action_id = ready_payload.get("targeted_action_id") or ready_payload.get("action_id")
     candidate_run_id = ready_payload.get("candidate_run_id")
     candidate_run = next((r for r in runs if r.get("run_id") == candidate_run_id), None)
     if not candidate_run:
@@ -1716,15 +1962,33 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tested = _reserved_signatures(runs)
     seen: set[Tuple[Any, ...]] = set()
+    triage_context = _summarize_recent_failure_context(runs)
+    linked_blocker = _linked_loo_blocker(ready_payload)
+    if action_id == "hard_fold_low_ap_near_prevalence":
+        failures = dict(triage_context.get("failure_counts", {}))
+        failures["hard_fold_low_ap_near_prevalence"] = failures.get("hard_fold_low_ap_near_prevalence", 0) + 1
+        failures["hard_fold_blocker"] = failures.get("hard_fold_blocker", 0) + 1
+        failures["ap_near_prevalence"] = failures.get("ap_near_prevalence", 0) + 1
+        triage_context["failure_counts"] = failures
+        fold_id = str((linked_blocker or {}).get("hard_fold_id") or (linked_blocker or {}).get("worst_fold_id") or "20230530172803")
+        train_npz, val_npz = _hard_fold_direct_paths(fold_id)
+        base.setdefault("dataset", {})["train_npz"] = train_npz
+        base.setdefault("dataset", {})["val_npz"] = val_npz
+        base["dataset"]["validation_mode"] = "leave-one-segment-out"
+        base.setdefault("autoresearch", {})["heldout_segment"] = fold_id
+        base["autoresearch"]["hard_fold_direct_screen"] = True
 
     def _make_proposal(path: Tuple[str, ...], value: Any, reason: str) -> Tuple[str, Dict[str, Any], str] | None:
         value = _clamp_param(path, value)
         cfg = copy.deepcopy(base)
         cfg.pop("resolved_data", None)
         cfg.pop("validation_setup", None)
-        if _get_nested(cfg, path, None) == value:
+        if _candidate_is_noop(cfg, path, value):
             return None
-        _set_nested(cfg, path, value)
+        _apply_candidate(cfg, path, value)
+        if _get_nested(cfg, ("evaluation", "tta_flips"), False) and os.environ.get("AUTORESEARCH_ALLOW_TTA_EXPLORATION", "0") != "1":
+            cfg.setdefault("evaluation", {})["tta_flips"] = False
+            cfg.setdefault("autoresearch", {}).setdefault("cron_safety", {})["tta_disabled"] = True
         if path == ("training", "sampling_strategy") and value == "hard_mining":
             cfg.setdefault("training", {}).setdefault("hard_negative_fraction", 0.5)
         if path == ("training", "tversky_loss_weight"):
@@ -1735,19 +1999,34 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
         if signature in tested or signature in seen:
             return None
         seen.add(signature)
+        score, score_components, score_reasons = _score_proposal_candidate(path, cfg, runs, triage_context)
         autoresearch = cfg.setdefault("autoresearch", {})
+        proposal_index = len(proposals) + 1
+        proposal_id = _proposal_id(stamp, proposal_index, signature, _mutation_family(path))
+        autoresearch["proposal_id"] = proposal_id
+        autoresearch.setdefault("hypothesis_id", f"hyp_{_mutation_family(path)}")
+        autoresearch["arm_id"] = _mutation_family(path)
         autoresearch["parent_reason"] = reason
         autoresearch["scope_policy"] = str(autoresearch.get("scope_policy") or base.get("dataset", {}).get("research_scope") or "promotion_action")
+        autoresearch["search_signature"] = list(signature)
         autoresearch["intent"] = "promotion_action"
         autoresearch["run_profile"] = "exploration"
         autoresearch["promotion_action_id"] = action_id
+        if linked_blocker:
+            autoresearch["linked_loo_failure_pattern"] = linked_blocker
+            autoresearch["diagnostic_source"] = "dashboard.linked_loo_failure_pattern"
         autoresearch["promotable"] = False
         autoresearch["proposal_status"] = "generated"
         autoresearch["changed_path"] = ".".join(path)
         autoresearch["mutation_family"] = _mutation_family(path)
         autoresearch["cost_tier"] = cost_tier
+        autoresearch["proposal_score"] = score
+        autoresearch["proposal_score_components"] = score_components
+        autoresearch["triage_failures"] = dict(triage_context.get("failure_counts", {}))
+        autoresearch["score_reasons"] = score_reasons
         autoresearch["promotion_required"] = ["seed_repeat_leave_one_out", "full_tile_validation", "promotion_checks_eligible"]
-        name = f"auto_{stamp}_promotion_{action_id}_{len(proposals)+1}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
+        autoresearch["config_signature"] = canonical_experiment_config_signature(cfg)
+        name = f"auto_{stamp}_promotion_{action_id}_{proposal_index}_{'_'.join(path)}_{_proposal_value_slug(value)}.yaml"
         return (name, cfg, reason)
 
     def _float_config(path: Tuple[str, ...], default: float) -> float:
@@ -1803,6 +2082,26 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
             if p:
                 proposals.append(p)
 
+    elif action_id == "hard_fold_low_ap_near_prevalence":
+        moves: list[tuple[Tuple[str, ...], Any, str]] = []
+        if is_torch:
+            moves.extend([
+                (("training", "patch_sampling"), "hard_mining", "focus hard-negative sampling for hard fold false positives"),
+                (HARD_FOLD_SAMPLING_CALIBRATION_PATH, {"patch_sampling": "hard_mining", "positive_patch_fraction": 0.30, "hard_negative_fraction": 0.75}, "activate lower positive pressure under hard-negative sampling"),
+                (HARD_FOLD_SAMPLING_CALIBRATION_PATH, {"patch_sampling": "hard_mining", "positive_patch_fraction": 0.25, "hard_negative_fraction": 0.75}, "activate lower positive patch pressure sweep under hard-negative sampling"),
+                (HARD_FOLD_SAMPLING_CALIBRATION_PATH, {"patch_sampling": "hard_mining", "positive_patch_fraction": 0.30, "hard_negative_fraction": 0.75, "positive_rate_loss_weight": 0.05, "positive_rate_loss_tolerance": 0.015, "positive_rate_loss_target": "auto_train", "max_pred_positive_rate_ratio": 2.75}, "combine lower positive pressure, hard-negative sampling, and active positive-rate calibration"),
+                (HARD_FOLD_SAMPLING_CALIBRATION_PATH, {"patch_sampling": "hard_mining", "positive_patch_fraction": 0.30, "hard_negative_fraction": 0.75, "positive_rate_loss_weight": 0.08, "positive_rate_loss_tolerance": 0.012, "positive_rate_loss_target": "auto_train", "max_pred_positive_rate_ratio": 2.5}, "combine lower positive pressure, hard-negative sampling, and stronger active positive-rate calibration"),
+                (("evaluation", "max_pred_positive_rate_ratio"), 2.75, "tighten validation positive-rate cap for overprediction alarms"),
+                (("dataset", "z_offsets"), [-4, 0, 4], "restore robust 2.5D z-context for hard-fold separability"),
+                (("dataset", "z_offsets"), [-6, -3, 0, 3, 6], "test wider z-context for hard-fold separability"),
+            ])
+        for path, value, detail in moves:
+            if len(proposals) >= count:
+                break
+            p = _make_proposal(path, value, f"promotion action {action_id}: {detail}")
+            if p:
+                proposals.append(p)
+
     elif action_id == "improve_ranking_signal":
         if is_torch:
             epochs = int(_get_nested(base, ("training", "epochs"), 5))
@@ -1840,11 +2139,15 @@ def _generate_promotion_action_proposals(runs: List[Dict[str, Any]], ready_paylo
 
 def _promotion_or_fallback_proposals(runs: List[Dict[str, Any]], base: Dict[str, Any], ready_payload: dict[str, Any] | None, count: int, history: _RunHistory | None = None) -> tuple[List[Tuple[str, Dict[str, Any], str]], str | None]:
     """Return auto-action proposals, falling back to normal exploration if exhausted."""
-    if ready_payload and ready_payload.get("action_id") in _AUTO_ACTIONS:
+    action_id = ready_payload.get("targeted_action_id") or ready_payload.get("action_id") if ready_payload else None
+    if ready_payload and action_id in _AUTO_ACTIONS:
         action_proposals = _generate_promotion_action_proposals(runs, ready_payload, count=count)
         if action_proposals:
-            return action_proposals, str(ready_payload.get("action_id"))
-        print(f"Promotion gate action={ready_payload.get('action_id')} proposals exhausted; falling back to normal exploration", flush=True)
+            return action_proposals, str(action_id)
+        if _linked_loo_blocker(ready_payload):
+            print(f"Linked LOO blocks promotion and action={action_id} proposals are exhausted; pausing instead of normal fallback", flush=True)
+            return [], str(action_id)
+        print(f"Promotion gate action={action_id} proposals exhausted; falling back to normal exploration", flush=True)
     return _propose_best_path(base, runs, count=count, history=history), None
 
 
@@ -1855,12 +2158,15 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
         from research_dashboard.snapshot import build_snapshot
         decision = build_snapshot(ROOT).get("research_summary", {}).get("decision", {})
         gate = decision.get("promotion_gate", {}) if isinstance(decision, dict) else {}
-        if gate.get("ready") is True:
-            evidence = decision.get("candidate_evidence", {}) if isinstance(decision.get("candidate_evidence"), dict) else {}
-            actions = decision.get("promotion_actions", []) if isinstance(decision.get("promotion_actions"), list) else []
-            if not actions and isinstance(evidence.get("promotion_actions"), list):
-                actions = evidence.get("promotion_actions", [])
-            top_action = actions[0] if actions and isinstance(actions[0], dict) else {}
+        evidence = decision.get("candidate_evidence", {}) if isinstance(decision.get("candidate_evidence"), dict) else {}
+        actions = decision.get("promotion_actions", []) if isinstance(decision.get("promotion_actions"), list) else []
+        if not actions and isinstance(evidence.get("promotion_actions"), list):
+            actions = evidence.get("promotion_actions", [])
+        top_action = actions[0] if actions and isinstance(actions[0], dict) else {}
+        linked_blocker = _linked_loo_blocker(evidence)
+        targeted_action_id = _linked_loo_target_action_id(linked_blocker, str(top_action.get("id") or "")) if linked_blocker else None
+
+        def _payload(status: str, base_reasoning: list[str]) -> dict[str, Any]:
             next_action = str(top_action.get("label") or decision.get("next_action") or "Promotion gate is ready; review the promotion candidate before more exploration.")
             weak_tile = evidence.get("weak_fold_full_tile", {}) if isinstance(evidence.get("weak_fold_full_tile"), dict) else {}
             command = top_action.get("command_text")
@@ -1870,6 +2176,32 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
                 command = _review_blocker_command(evidence)
                 if command:
                     next_action = "Run blocker remediation plan"
+            reasoning = list(base_reasoning)
+            if linked_blocker:
+                reasoning.append("linked_loo_blocks_promotion")
+            if evidence.get("candidate_run_id"):
+                reasoning.append("candidate_linked_evidence_available")
+            if command:
+                reasoning.append("use_public_directory_backoff_and_chunk_pacing")
+            return {
+                "status": status,
+                "next_action": next_action,
+                "candidate_run_id": evidence.get("candidate_run_id"),
+                "action_id": top_action.get("id"),
+                "targeted_action_id": targeted_action_id,
+                "command": command,
+                "safe_to_execute_from_dashboard": top_action.get("safe_to_execute_from_dashboard"),
+                "writes_artifacts": top_action.get("writes_artifacts"),
+                "reasoning": reasoning,
+                "promotion_failure_reasons": [str(item) for item in gate.get("warnings", [])] if isinstance(gate.get("warnings"), list) else [],
+                "promotion_actions": actions,
+                "candidate_evidence": evidence,
+                "linked_loo_failure_pattern": linked_blocker or {},
+                "linked_loo_blocks_promotion": bool(linked_blocker),
+                "proposals": [],
+            }
+
+        if gate.get("ready") is True:
             # Compressed probabilities producing no fixed-threshold positives is expected;
             # do not pause exploration for this alone.
             if top_action.get("id") == "calibrate_probability_scale":
@@ -1883,28 +2215,26 @@ def _promotion_ready_payload() -> dict[str, Any] | None:
                 if ft_reasons == {"no_fixed_positive_predictions"}:
                     print("Promotion gate ready but fixed-threshold weakness is expected (compressed probabilities); continuing exploration.", flush=True)
                     return None
-            reasoning = [
-                "promotion_gate_ready",
-                "pause_exploration_before_more_local_sweeps",
-            ]
-            if evidence.get("candidate_run_id"):
-                reasoning.append("candidate_linked_evidence_available")
-            if command:
-                reasoning.append("use_public_directory_backoff_and_chunk_pacing")
-            return {
-                "status": "promotion_ready",
-                "next_action": next_action,
-                "candidate_run_id": evidence.get("candidate_run_id"),
-                "action_id": top_action.get("id"),
-                "command": command,
-                "safe_to_execute_from_dashboard": top_action.get("safe_to_execute_from_dashboard"),
-                "writes_artifacts": top_action.get("writes_artifacts"),
-                "reasoning": reasoning,
-                "promotion_failure_reasons": [str(item) for item in gate.get("warnings", [])] if isinstance(gate.get("warnings"), list) else [],
-                "promotion_actions": actions,
-                "candidate_evidence": evidence,
-                "proposals": [],
-            }
+            return _payload("promotion_ready", ["promotion_gate_ready", "pause_exploration_before_more_local_sweeps"])
+        evidence_action_ids = {"seed_repeat_loo", "full_tile_candidate", "weak_fold_full_tile"}
+        criteria = gate.get("criteria", []) if isinstance(gate.get("criteria"), list) else []
+        missing_gate_ids = {str(item.get("id")) for item in criteria if isinstance(item, dict) and item.get("state") != "done"}
+        action_id = str(top_action.get("id") or "")
+        if action_id in evidence_action_ids and (action_id in missing_gate_ids or action_id == "weak_fold_full_tile"):
+            return _payload("promotion_evidence_required", ["promotion_gate_not_ready", f"missing_{action_id}", "pause_exploration_for_candidate_evidence"])
+        if linked_blocker and targeted_action_id:
+            return _payload(
+                "linked_loo_targeted_proposals",
+                ["promotion_gate_not_ready", "follow_dashboard_diagnostic", "emit_targeted_safe_hypotheses", "pause_broad_exploration_for_dashboard_candidate"],
+            )
+        if linked_blocker and _is_nonwriting_diagnostic_action(top_action):
+            return _payload(
+                "promotion_diagnostic_required",
+                ["promotion_gate_not_ready", "follow_dashboard_diagnostic", "pause_exploration_for_dashboard_candidate"],
+            )
+
+        if action_id and action_id not in _AUTO_ACTIONS and evidence.get("candidate_run_id"):
+            return _payload("promotion_evidence_required", ["promotion_gate_not_ready", f"dashboard_action_{action_id}", "pause_exploration_for_dashboard_candidate"])
     except Exception as exc:
         LOGGER.exception("Promotion readiness check failed")
         print(f"Promotion readiness check skipped: {exc}", flush=True)
@@ -1952,14 +2282,30 @@ def _auto_execute_ready_payload_command(payload: dict[str, Any]) -> dict[str, An
         return {"automation_status": "SKIPPED_INVALID_COMMAND", "automation_error": str(exc)}
     if not command_args:
         return None
-    command_text = " ".join(command_args)
-    allowed_evidence_command = any(
-        token in command_text
-        for token in ("scripts/evaluate_leave_one_out.py", "scripts/infer_full_tile.py", "scripts/plan_hard_negative_retrain.py", "scripts/compare_threshold_caps.py")
-    )
+    allowed_scripts = {
+        "scripts/evaluate_leave_one_out.py",
+        "scripts/infer_full_tile.py",
+        "scripts/plan_hard_negative_retrain.py",
+        "scripts/compare_threshold_caps.py",
+    }
+
+    def _argv_script(arg: str) -> str | None:
+        path = Path(arg)
+        try:
+            if path.is_absolute():
+                return path.resolve().relative_to(ROOT).as_posix()
+        except (OSError, ValueError):
+            return None
+        return path.as_posix().lstrip("./")
+
+    python_arg = Path(command_args[0]).as_posix()
+    if python_arg.startswith("./"):
+        python_arg = python_arg[2:]
+    python_ok = command_args[0] in {DEFAULT_PYTHON, sys.executable} or python_arg == ".venv/bin/python"
+    allowed_evidence_command = len(command_args) >= 2 and python_ok and _argv_script(command_args[1]) in allowed_scripts
+    if not allowed_evidence_command:
+        return {"automation_status": "SKIPPED_UNSAFE_COMMAND"}
     if payload.get("safe_to_execute_from_dashboard") is False:
-        if not allowed_evidence_command:
-            return {"automation_status": "SKIPPED_UNSAFE_COMMAND"}
         print("Promotion evidence command is dashboard-flagged unsafe but matches local evidence allowlist; executing under guard timeout.", flush=True)
     candidate_run_id = str(payload.get("candidate_run_id") or payload.get("action_id") or "promotion_ready")
     timeout = int(os.environ.get("AUTORESEARCH_PROMOTION_TIMEOUT_SECONDS", "3600"))
@@ -1991,13 +2337,41 @@ def _dump_config_with_comment(path: Path, cfg: Dict[str, Any], reason: str) -> N
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(header + body)
     tmp.replace(path)
+    record_proposal(path, cfg, db_path=DB_PATH)
 
 
 def _run_experiment_checked(config_path: Path) -> None:
     env = os.environ.copy()
     env.setdefault("OMP_NUM_THREADS", "16")
     env.setdefault("MKL_NUM_THREADS", "16")
-    subprocess.run([sys.executable, "run_experiment.py", "--config", str(config_path)], cwd=ROOT, env=env, check=True)
+    cfg: dict[str, Any] = {}
+    proposal_id: str | None = None
+    started = time.monotonic()
+    try:
+        cfg = load_config(config_path)
+        autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+        proposal_id = str(autoresearch.get("proposal_id") or "") or None
+    except Exception:
+        pass
+    completed = subprocess.run([sys.executable, "run_experiment.py", "--config", str(config_path)], cwd=ROOT, env=env, text=True, capture_output=True, check=False)
+    returncode = completed.returncode if isinstance(completed.returncode, int) else 0
+    if returncode != 0:
+        log_path = LOGS / f"{config_path.stem}_failure.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        stdout = completed.stdout if isinstance(completed.stdout, str) else ""
+        stderr = completed.stderr if isinstance(completed.stderr, str) else ""
+        log_path.write_text(stdout + ("\n--- stderr ---\n" + stderr if stderr else ""))
+        record_proposal_result(
+            proposal_id,
+            status="failed",
+            error_class="subprocess_nonzero",
+            error_message=(stderr or stdout)[-2000:],
+            returncode=returncode,
+            log_path=log_path,
+            duration_seconds=time.monotonic() - started,
+            db_path=DB_PATH,
+        )
+        raise subprocess.CalledProcessError(returncode, completed.args, output=stdout, stderr=stderr)
 
 
 def _acquire_autoresearch_lock(lock: Any) -> None:
@@ -2045,7 +2419,8 @@ def main() -> int:
             print(json.dumps({"status": "needs_baseline", "proposals": []}, indent=2 if args.json else None))
             return 0
         ready_payload = harness.promotion_ready_payload()
-        if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
+        proposal_action_id = (ready_payload.get("targeted_action_id") or ready_payload.get("action_id")) if ready_payload else None
+        if ready_payload and proposal_action_id not in _AUTO_ACTIONS:
             payload = ready_payload
             if args.json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
@@ -2055,18 +2430,18 @@ def main() -> int:
                     print(f"Command: {payload['command']}")
             return 0
         # Auto-execute promotion actions by generating targeted proposals
-        if ready_payload and ready_payload.get("action_id") in _AUTO_ACTIONS:
+        if ready_payload and proposal_action_id in _AUTO_ACTIONS:
             action_proposals = _generate_promotion_action_proposals(runs, ready_payload, count=int(os.environ.get("AUTORESEARCH_PROPOSALS", "3")))
             if action_proposals:
-                payload = {"status": "promotion_action", "action_id": ready_payload.get("action_id"), "proposal_count": len(action_proposals), "proposals": _proposal_plan(action_proposals)}
+                payload = {"status": "promotion_action", "action_id": proposal_action_id, "dashboard_action_id": ready_payload.get("action_id"), "proposal_count": len(action_proposals), "proposals": _proposal_plan(action_proposals)}
                 if args.json:
                     print(json.dumps(payload, indent=2, sort_keys=True))
                 else:
-                    print(f"Promotion gate ready with auto-executable action={ready_payload.get('action_id')}; generating targeted proposals:")
+                    print(f"Promotion gate ready with auto-executable action={proposal_action_id}; generating targeted proposals:")
                     for item in payload["proposals"]:
                         print(f"  {item['name']}: {item['reason']} [{item.get('strategy_phase')}/{item.get('mutation_family')}]")
                 return 0
-        manual_payload = _promotion_phase_manual_action(runs, history=history)
+        manual_payload = None if ready_payload and proposal_action_id in _AUTO_ACTIONS else _promotion_phase_manual_action(runs, history=history)
         if manual_payload:
             if args.json:
                 print(json.dumps(manual_payload, indent=2, sort_keys=True))
@@ -2119,7 +2494,8 @@ def main() -> int:
         proposal_count = int(os.environ.get("AUTORESEARCH_PROPOSALS", "3"))
         print(f"AutoResearch local-only cycle: loaded {len(runs)} prior runs; proposal_count={proposal_count}; no web/LLM calls", flush=True)
         ready_payload = harness.promotion_ready_payload()
-        if ready_payload and ready_payload.get("action_id") not in _AUTO_ACTIONS:
+        proposal_action_id = (ready_payload.get("targeted_action_id") or ready_payload.get("action_id")) if ready_payload else None
+        if ready_payload and proposal_action_id not in _AUTO_ACTIONS:
             automation_result = _auto_execute_ready_payload_command(ready_payload)
             if automation_result:
                 ready_payload.update(automation_result)
@@ -2129,7 +2505,7 @@ def main() -> int:
             if ready_payload.get("automation_status"):
                 print(f"Automation status: {ready_payload['automation_status']}", flush=True)
             return 0
-        manual_payload = _promotion_phase_manual_action(runs, history=history)
+        manual_payload = None if ready_payload and proposal_action_id in _AUTO_ACTIONS else _promotion_phase_manual_action(runs, history=history)
         if manual_payload:
             if os.environ.get("AUTORESEARCH_AUTO_PROMOTE", "0") == "1" and manual_payload.get("command"):
                 try:
@@ -2173,10 +2549,7 @@ def main() -> int:
                 with profiler.measure("experiment_subprocess"):
                     _run_experiment_checked(cfg_path)
             except subprocess.CalledProcessError:
-                try:
-                    cfg_path.unlink()
-                except FileNotFoundError:
-                    pass
+                print(f"Generated experiment failed; keeping {cfg_path.name} for proposal ledger triage", flush=True)
                 raise
     return 0
 

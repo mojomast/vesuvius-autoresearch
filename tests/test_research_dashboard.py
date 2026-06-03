@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +19,7 @@ from research_dashboard.app import HTML, _agent_chat, _visual_artifact_analysis,
 from research_dashboard.configs import load_configs
 from research_dashboard.experiments import _full_tile_ready, _hard_fold_profile, _positive_rate_risk_summary
 from research_dashboard.inventory import build_inventory
+from research_dashboard.operations import classify_no_progress_line, operations_snapshot
 from research_dashboard.quality import decoded_output_quality
 from research_dashboard.snapshot import build_snapshot, reset_snapshot_cache
 from research_dashboard.settings import load_dashboard_settings
@@ -31,6 +33,8 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("decodeVisibleOutputs", HTML)
         self.assertIn("decodeAllOutputs", HTML)
         self.assertIn("decodedPreviewCache", HTML)
+        self.assertIn("Download full artifact", HTML)
+        self.assertIn("/api/artifact/download", HTML)
         self.assertIn("Research Usefulness Leaderboard", HTML)
         self.assertIn("quality-leaderboard-panel", HTML)
         self.assertIn("leaderboard-search", HTML)
@@ -50,9 +54,14 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("Cap comparison commands", HTML)
         self.assertIn("Copy read-only cap comparison", HTML)
         self.assertIn("Top calibration action", HTML)
+        self.assertIn("ops-no-progress-detail", HTML)
+        self.assertIn("Evidence Packages", HTML)
+        self.assertIn("evidence-packages-panel", HTML)
         self.assertIn("Fold-safe summary", HTML)
         self.assertIn("Inventory status counts", HTML)
         self.assertIn("Config preview valid", HTML)
+        self.assertIn("image-rendering: auto", HTML)
+        self.assertNotIn("image-rendering: pixelated", HTML)
 
     def test_decoded_output_quality_passes_coherent_structure(self) -> None:
         probs = np.full((16, 16), 0.05, dtype=np.float32)
@@ -150,6 +159,19 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("inventory", snapshot)
         self.assertIn("progress", snapshot)
         self.assertFalse(snapshot["capabilities"]["enable_runs"])
+
+    def test_no_progress_cause_parser_and_snapshot(self) -> None:
+        self.assertEqual(classify_no_progress_line("SKIP load_guard load1=99")["code"], "load_guard")
+        self.assertEqual(classify_no_progress_line("Run linked seed-repeat LOO before promotion")["code"], "promotion_evidence_required")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "logs").mkdir()
+            (root / "logs" / "autoresearch_guard.log").write_text("SKIP mem_guard mem_available_gib=1\n")
+
+            ops = operations_snapshot(root)
+
+        self.assertEqual(ops["no_progress"]["latest"]["code"], "mem_guard")
+        self.assertEqual(ops["no_progress"]["counts"]["mem_guard"], 1)
 
     def test_config_inventory_skips_disappearing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -366,6 +388,12 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertIn("missing_full_tile_evidence", codes)
         self.assertFalse(snapshot["research_summary"]["decision"]["promotion_gate"]["ready"])
         self.assertLess(snapshot["progress"]["summary"]["foundation_readiness"], 100)
+        actions = snapshot["research_summary"]["candidate_evidence"]["promotion_actions"]
+        loo_action = next(action for action in actions if action["id"] == "seed_repeat_loo")
+        self.assertIn("scripts/evaluate_leave_one_out.py", loo_action["command_text"])
+        self.assertIn("--base-config experiments/runs/robust/config.json", loo_action["command_text"])
+        self.assertIn("--output-jsonl logs/robust_seedrepeat_loo.jsonl", loo_action["command_text"])
+        self.assertFalse(loo_action["safe_to_execute_from_dashboard"])
 
     def test_dashboard_reads_loo_summary_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -444,7 +472,7 @@ class ResearchDashboardTest(unittest.TestCase):
             root = Path(tmp)
             logs = root / "logs"
             logs.mkdir()
-            (logs / "candidate.summary.json").write_text(json.dumps({"promotion_ready": False, "run_ids": ["candidate"], "worst_fold_id": "weak", "worst_fold_val_f1": 0.04, "promotion_warnings": []}))
+            (logs / "candidate.summary.json").write_text(json.dumps({"promotion_ready": False, "run_ids": ["candidate"], "worst_fold_id": "weak", "worst_fold_val_f1": 0.04, "folds_requested": 6, "folds_successful": 4, "folds_failed": 2, "expected_folds": ["weak", "strong"], "planned_folds": ["weak"], "missing_expected_folds": ["strong"], "missing_expected_seed_repeats": ["weak:2"], "expected_seeds": [1, 2], "expected_task_count": 4, "planned_task_count": 2, "task_limit_applied": True, "min_seeds_for_promotion": 2, "distinct_successful_seeds": 1, "per_fold_successful_seeds": {"weak": 1}, "folds_with_zero_positive_validation": ["weak:seed=1"], "folds_with_weak_ap_prevalence_lift": ["weak:seed=1"], "promotion_warnings": []}))
             db = root / "experiments" / "experiments.db"
             db.parent.mkdir(parents=True)
             run_dir = root / "experiments" / "runs" / "candidate"
@@ -465,7 +493,37 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertEqual(loo["linked"], True)
         self.assertEqual(loo["ready"], False)
         self.assertEqual(loo["worst_fold_id"], "weak")
+        self.assertEqual(loo["folds_requested"], 6)
+        self.assertEqual(loo["missing_expected_folds"], ["strong"])
+        self.assertEqual(loo["missing_expected_seed_repeats"], ["weak:2"])
+        self.assertEqual(loo["folds_with_zero_positive_validation"], ["weak:seed=1"])
+        self.assertEqual(loo["folds_with_weak_ap_prevalence_lift"], ["weak:seed=1"])
+        self.assertEqual(loo["per_fold_successful_seeds"], {"weak": 1})
         self.assertIn("missing_seed_repeat_loo", {blocker["code"] for blocker in snapshot["experiments"]["recent"][0]["promotion_blockers"]})
+
+    def test_dashboard_adds_lift_and_zero_positive_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "experiments" / "experiments.db"
+            db.parent.mkdir(parents=True)
+            run_dir = root / "experiments" / "runs" / "candidate"
+            run_dir.mkdir(parents=True)
+            cfg = {"model": {"name": "tiny_torch_unet"}, "evaluation": {"main_metric": "val_f1"}, "dataset": {"research_scope": "multi_segment_robust_expanded"}, "validation_setup": {"mode": "cross-segment", "train_segment_id": "a", "val_segment_id": "b"}}
+            metrics = {"val_f1": 0.2, "average_precision": 0.0, "precision": 0.1, "recall": 0.1, "pred_positive_rate": 0.0, "val_positive_rate": 0.0, "ap_prevalence_lift": 1.0}
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE experiments (run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, config_json TEXT NOT NULL, main_metric REAL NOT NULL, secondary_metrics_json TEXT NOT NULL, artifact_dir TEXT NOT NULL)")
+                conn.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?)", ("candidate", "2026-05-26T00:00:00Z", json.dumps(cfg), 0.2, json.dumps(metrics), str(run_dir)))
+                conn.commit()
+            finally:
+                conn.close()
+
+            with mock.patch("research_dashboard.datasets.dataset_summary", return_value={"source": "test", "scrolls": [], "splits": {}}):
+                snapshot = build_snapshot(root)
+
+        codes = {blocker["code"] for blocker in snapshot["experiments"]["recent"][0]["promotion_blockers"]}
+        self.assertIn("zero_positive_validation", codes)
+        self.assertIn("weak_ap_prevalence_lift", codes)
 
     def test_dashboard_blocks_validation_segment_leakage_despite_heldout_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1022,6 +1080,33 @@ class ResearchDashboardTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "experiments/runs"):
                 preview_artifact(root, str(outside))
 
+    def test_artifact_download_serves_only_run_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "experiments" / "runs" / "run1"
+            runs.mkdir(parents=True)
+            safe = runs / "metrics.json"
+            safe.write_text('{"val_f1": 1.0}')
+            outside = root / "README.md"
+            outside.write_text("outside")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root, "secret-token"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                url = base + "/api/artifact/download?token=secret-token&path=" + urllib.parse.quote(str(safe))
+                resp = urllib.request.urlopen(url, timeout=5)
+                self.assertEqual(resp.read(), b'{"val_f1": 1.0}')
+                self.assertIn("attachment", resp.headers.get("Content-Disposition", ""))
+
+                bad_url = base + "/api/artifact/download?token=secret-token&path=" + urllib.parse.quote(str(outside))
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(bad_url, timeout=5)
+                self.assertEqual(ctx.exception.code, 400)
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_artifact_preview_decodes_probability_map(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1042,6 +1127,25 @@ class ResearchDashboardTest(unittest.TestCase):
         self.assertTrue(preview["preview"]["mask_data_url"].startswith("data:image/png;base64,"))
         self.assertIn("map_quality", preview["preview"])
         self.assertIn("quality_verdict", preview["preview"])
+
+    def test_artifact_preview_area_downsamples_full_resolution_mask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            full_tile = root / "experiments" / "runs" / "run1" / "full_tile_seg"
+            full_tile.mkdir(parents=True)
+            prob_path = full_tile / "probability_map.npy"
+            probs = np.full((768, 768), 0.10, dtype=np.float32)
+            probs[::2, ::2] = 0.90
+            np.save(prob_path, probs)
+            (full_tile / "metrics.json").write_text(json.dumps({"best_threshold": 0.5, "val_f1": 0.2}))
+
+            preview = preview_artifact(root, str(prob_path))["preview"]
+
+        self.assertEqual(preview["rendered_shape"], [384, 384])
+        self.assertEqual(preview["downsample"]["method"], "area_mean")
+        self.assertIn("preview_downsampled_area_mean_not_full_resolution", preview["preview_warnings"])
+        self.assertAlmostEqual(preview["pred_positive_rate"], 0.25)
+        self.assertAlmostEqual(preview["mask_positive_fraction_preview_mean"], 0.25)
 
     def test_inventory_uses_copyable_safe_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

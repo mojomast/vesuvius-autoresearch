@@ -154,6 +154,30 @@ class AuditResearchStateTest(unittest.TestCase):
         self.assertIn("--mine-output", action["command_text"])
         self.assertIn("scripts/infer_full_tile.py", markdown)
 
+    def test_markdown_renders_lineage_stale_causes_and_evidence_packages(self) -> None:
+        report = {
+            "project_root": "/tmp/repo",
+            "generated_auto_config_count": 0,
+            "experiment_db": {"exists": True, "run_count": 1},
+            "artifacts": {"run_directory_count": 1, "total_bytes": 10},
+            "logs": {"summary_json_count": 1},
+            "dashboard": {
+                "snapshot_contract_available": True,
+                "proposal_lineage": {"proposal_id": "prop1", "hypothesis_id": "hyp1", "mutation_family": "z_context", "changed_path": "dataset.z_offsets"},
+                "hypotheses": [{"hypothesis_id": "hyp1"}],
+                "latest_no_progress_cause": {"code": "promotion_evidence_required", "label": "Promotion evidence required", "source": "logs/autoresearch.log"},
+                "no_progress_cause_counts": {"promotion_evidence_required": 2},
+                "evidence_packages": [{"relative_path": "logs/evidence_packages/pkg.md"}],
+            },
+        }
+
+        markdown = render_markdown(report)
+
+        self.assertIn("Hypothesis / Proposal Lineage", markdown)
+        self.assertIn("Stale / No-progress Causes", markdown)
+        self.assertIn("Evidence Packages", markdown)
+        self.assertIn("promotion_evidence_required", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -104,6 +104,13 @@ def _enrich_row(summary_path: Path, summary: dict[str, Any], raw: dict[str, Any]
         "pred_val_ratio": pred_ratio,
         "cap": cap,
         "fixed_threshold_status": raw.get("fixed_threshold_status", ""),
+        "fixed_threshold_failure_reason": raw.get("fixed_threshold_failure_reason", ""),
+        "selected_threshold_reason": raw.get("selected_threshold_reason", ""),
+        "threshold_selection": raw.get("threshold_selection", ""),
+        "ap_prevalence_lift": _float(raw.get("ap_prevalence_lift")),
+        "prob_mean": _float(raw.get("prob_mean")),
+        "prob_p95": _float(raw.get("prob_p95")),
+        "prob_max": _float(raw.get("prob_max")),
         "low_f1": val_f1 is not None and val_f1 < LOW_F1_THRESHOLD,
         "over_cap": pred_ratio is not None and cap is not None and pred_ratio > cap,
         "zero_precision_or_recall": rid in zero_ids or precision == 0.0 or recall == 0.0,
@@ -135,7 +142,56 @@ def load_diagnostics(summary_path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def summarize_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(rows)
+    fixed_bad = [row for row in rows if row.get("fixed_threshold_not_ok")]
+    alarms = [row for row in rows if row.get("positive_rate_alarm")]
+    zero = [row for row in rows if row.get("zero_precision_or_recall")]
+    hard = [row for row in rows if str(row.get("fold_id")) == "20230530172803"]
+    reason_counts: dict[str, int] = {}
+    for row in fixed_bad:
+        reason = str(row.get("fixed_threshold_failure_reason") or row.get("fixed_threshold_status") or "unknown")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    next_action = "review linked LOO diagnostics"
+    if hard:
+        mean_ap = sum(float(row.get("average_precision") or 0.0) for row in hard) / max(len(hard), 1)
+        mean_lift_values = [float(row["ap_prevalence_lift"]) for row in hard if row.get("ap_prevalence_lift") is not None]
+        mean_lift = sum(mean_lift_values) / max(len(mean_lift_values), 1) if mean_lift_values else None
+        if mean_ap <= 0.03 or (mean_lift is not None and mean_lift < 1.5):
+            next_action = "audit hard-fold labels/sampling before threshold tuning"
+    if fixed_bad and len(fixed_bad) == total:
+        next_action = "diagnose fixed-threshold calibration across all LOO rows"
+    return {
+        "total_rows": total,
+        "fixed_threshold_not_ok_count": len(fixed_bad),
+        "positive_rate_alarm_count": len(alarms),
+        "zero_precision_or_recall_count": len(zero),
+        "fixed_threshold_failure_reason_counts": reason_counts,
+        "hard_fold_rows": hard,
+        "next_action": next_action,
+    }
+
+
 def render_markdown(rows: list[dict[str, Any]]) -> str:
+    summary = summarize_diagnostics(rows)
+    lines = [
+        "## LOO Diagnostic Summary",
+        "",
+        f"- Rows: {summary['total_rows']}",
+        f"- Fixed-threshold not OK: {summary['fixed_threshold_not_ok_count']}/{summary['total_rows']}",
+        f"- Positive-rate alarms: {summary['positive_rate_alarm_count']}/{summary['total_rows']}",
+        f"- Zero precision/recall rows: {summary['zero_precision_or_recall_count']}/{summary['total_rows']}",
+        f"- Next action: {summary['next_action']}",
+        "",
+    ]
+    if summary["fixed_threshold_failure_reason_counts"]:
+        reasons = ", ".join(f"`{key}`={value}" for key, value in sorted(summary["fixed_threshold_failure_reason_counts"].items()))
+        lines.extend([f"- Fixed-threshold reasons: {reasons}", ""])
+    if summary["hard_fold_rows"]:
+        hard = summary["hard_fold_rows"]
+        mean_f1 = sum(float(row.get("val_f1") or 0.0) for row in hard) / max(len(hard), 1)
+        mean_ap = sum(float(row.get("average_precision") or 0.0) for row in hard) / max(len(hard), 1)
+        lines.extend([f"- Hard fold `20230530172803`: rows={len(hard)}, mean F1={mean_f1:.4f}, mean AP={mean_ap:.4f}", ""])
     header = [
         "source",
         "fold_id",
@@ -147,9 +203,11 @@ def render_markdown(rows: list[dict[str, Any]]) -> str:
         "pred/val",
         "cap",
         "fixed",
+        "fixed_reason",
+        "AP/prevalence",
         "flags",
     ]
-    lines = ["| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
+    lines.extend(["| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"])
     for row in rows:
         lines.append("| " + " | ".join([
             str(row["source"]),
@@ -162,6 +220,8 @@ def render_markdown(rows: list[dict[str, Any]]) -> str:
             _fmt(row.get("pred_val_ratio"), 2),
             _fmt(row.get("cap"), 2),
             str(row.get("fixed_threshold_status") or ""),
+            str(row.get("fixed_threshold_failure_reason") or ""),
+            _fmt(row.get("ap_prevalence_lift"), 2),
             _diagnostic_flags(row),
         ]) + " |")
     return "\n".join(lines)

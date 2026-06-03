@@ -56,7 +56,7 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertEqual(summary["promotion_warnings"], [])
         self.assertTrue(summary["promotion_ready"])
 
-    def test_fixed_threshold_not_ok_is_summary_only(self) -> None:
+    def test_fixed_threshold_not_ok_blocks_promotion(self) -> None:
         rows = [
             {"returncode": 0, "heldout_segment": "a", "seed": 1, "val_f1": 0.5, "average_precision": 0.3, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "ok"},
             {"returncode": 0, "heldout_segment": "b", "seed": 1, "val_f1": 0.6, "average_precision": 0.5, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "weak"},
@@ -65,10 +65,10 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         summary = _summarize(rows, min_seeds_for_promotion=1)
 
         self.assertEqual(summary["folds_with_fixed_threshold_not_ok"], ["b:seed=1"])
-        self.assertEqual(summary["promotion_warnings"], [])
-        self.assertTrue(summary["promotion_ready"])
+        self.assertEqual(summary["promotion_warnings"], ["fixed_threshold_not_ok:b:seed=1"])
+        self.assertFalse(summary["promotion_ready"])
 
-    def test_threshold_edge_and_weak_ap_lift_are_summary_only(self) -> None:
+    def test_threshold_edge_and_weak_ap_lift_block_promotion(self) -> None:
         rows = [
             {"returncode": 0, "heldout_segment": "edge_low", "seed": 1, "val_f1": 0.5, "average_precision": 0.2, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "best_threshold": 0.01, "ap_prevalence_lift": 1.2},
             {"returncode": 0, "heldout_segment": "edge_high", "seed": 1, "val_f1": 0.6, "average_precision": 0.12, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "best_threshold": 0.99},
@@ -79,8 +79,13 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
 
         self.assertEqual(summary["folds_with_threshold_edge_case"], ["edge_low:seed=1", "edge_high:seed=1"])
         self.assertEqual(summary["folds_with_weak_ap_prevalence_lift"], ["edge_low:seed=1", "edge_high:seed=1"])
-        self.assertEqual(summary["promotion_warnings"], [])
-        self.assertTrue(summary["promotion_ready"])
+        self.assertEqual(summary["promotion_warnings"], [
+            "threshold_edge_case:edge_low:seed=1",
+            "threshold_edge_case:edge_high:seed=1",
+            "weak_ap_prevalence_lift:edge_low:seed=1",
+            "weak_ap_prevalence_lift:edge_high:seed=1",
+        ])
+        self.assertFalse(summary["promotion_ready"])
 
     def test_single_seed_is_not_promotion_ready(self) -> None:
         rows = [
@@ -146,6 +151,18 @@ class LeaveOneOutSummaryTest(unittest.TestCase):
         self.assertEqual(summary["folds_with_positive_rate_alarm"], ["high:seed=1"])
         self.assertIn("positive_rate_alarm:high:seed=1", summary["promotion_warnings"])
         self.assertFalse(summary["promotion_ready"])
+
+    def test_hard_fold_floor_blocks_nominal_promotion_ready(self) -> None:
+        rows = [
+            {"returncode": 0, "heldout_segment": "20230530172803", "seed": 1, "val_f1": 0.5, "average_precision": 0.001, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+            {"returncode": 0, "heldout_segment": "other", "seed": 1, "val_f1": 0.6, "average_precision": 0.5, "precision": 0.4, "recall": 0.5, "pred_positive_rate": 0.2, "val_positive_rate": 0.1},
+        ]
+
+        summary = _summarize(rows, min_seeds_for_promotion=1)
+
+        self.assertFalse(summary["promotion_ready"])
+        self.assertFalse(summary["hard_fold_diagnostics"]["passed"])
+        self.assertTrue(any(item.startswith("hard_fold_low_ap:20230530172803") for item in summary["promotion_warnings"]))
 
     def test_failed_only_rows_do_not_crash(self) -> None:
         summary = _summarize([{"returncode": 1, "heldout_segment": "x", "error": "bad"}])

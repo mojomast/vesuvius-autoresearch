@@ -30,6 +30,9 @@ THREAD_LIMIT_ENV_VARS = (
     "VECLIB_MAXIMUM_THREADS",
     "NUMEXPR_NUM_THREADS",
 )
+HARD_FOLD_ID = os.environ.get("AUTORESEARCH_HARD_FOLD_ID", "20230530172803")
+HARD_FOLD_MIN_AP = float(os.environ.get("AUTORESEARCH_HARD_FOLD_MIN_AP", "0.02"))
+HARD_FOLD_MIN_F1 = float(os.environ.get("AUTORESEARCH_HARD_FOLD_MIN_F1", "0.02"))
 
 
 def _resolve(path: str | Path) -> Path:
@@ -73,14 +76,50 @@ def _as_float(row: dict[str, Any], key: str) -> float | None:
         return None
 
 
-def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> dict[str, Any]:
+def _summarize(
+    rows: list[dict[str, Any]],
+    min_seeds_for_promotion: int = 3,
+    *,
+    expected_folds: list[str] | None = None,
+    expected_seeds: list[int | None] | None = None,
+    expected_task_count: int | None = None,
+    planned_task_count: int | None = None,
+    max_tasks: int | None = None,
+) -> dict[str, Any]:
+    expected_folds = sorted(str(fold) for fold in (expected_folds or []))
+    expected_seeds = list(expected_seeds or [])
+    expected_task_count = len(rows) if expected_task_count is None else expected_task_count
+    planned_task_count = len(rows) if planned_task_count is None else planned_task_count
+    task_limit_applied = max_tasks is not None and planned_task_count < expected_task_count
+    requested_folds = sorted({str(row["heldout_segment"]) for row in rows if "heldout_segment" in row})
+    missing_expected_folds = [fold for fold in expected_folds if fold not in requested_folds]
+    expected_seed_values = {seed for seed in expected_seeds if seed is not None}
+    planned_seeds_by_fold: dict[str, set[int | None]] = {fold: set() for fold in requested_folds}
+    for row in rows:
+        if "heldout_segment" in row:
+            planned_seeds_by_fold.setdefault(str(row["heldout_segment"]), set()).add(row.get("seed"))
+    missing_expected_seed_repeats = [
+        f"{fold}:{seed}"
+        for fold in (expected_folds or requested_folds)
+        for seed in sorted(expected_seed_values - planned_seeds_by_fold.get(fold, set()))
+    ]
     if rows and all(row.get("dry_run") for row in rows):
         return {
             "folds_requested": len(rows),
             "folds_successful": len(rows),
             "folds_failed": 0,
             "dry_run": True,
+            "expected_folds": expected_folds,
+            "planned_folds": requested_folds,
+            "missing_expected_folds": missing_expected_folds,
+            "missing_expected_seed_repeats": missing_expected_seed_repeats,
+            "expected_seeds": expected_seeds,
+            "expected_task_count": expected_task_count,
+            "planned_task_count": planned_task_count,
+            "max_tasks": max_tasks,
+            "task_limit_applied": task_limit_applied,
             "folds_with_zero_precision_or_recall": [],
+            "folds_with_zero_positive_validation": [],
             "folds_with_positive_rate_alarm": [],
             "folds_with_fixed_threshold_not_ok": [],
             "folds_with_threshold_edge_case": [],
@@ -89,9 +128,20 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
             "distinct_successful_seeds": 0,
             "per_fold_successful_seeds": {},
             "promotion_ready": False,
-            "promotion_warnings": ["dry_run_no_promotion_metrics"],
+            "promotion_warnings": [
+                "dry_run_no_promotion_metrics",
+                *([f"partial_task_limit_applied:{planned_task_count}/{expected_task_count}"] if task_limit_applied else []),
+                *[f"missing_expected_fold:{fold}" for fold in missing_expected_folds],
+                *[f"missing_expected_seed_repeat:{item}" for item in missing_expected_seed_repeats],
+            ],
         }
     promotion_warnings: list[str] = []
+    if task_limit_applied:
+        promotion_warnings.append(f"partial_task_limit_applied:{planned_task_count}/{expected_task_count}")
+    for fold in missing_expected_folds:
+        promotion_warnings.append(f"missing_expected_fold:{fold}")
+    for item in missing_expected_seed_repeats:
+        promotion_warnings.append(f"missing_expected_seed_repeat:{item}")
     failed_rows = [row for row in rows if row.get("returncode", 0) != 0]
     for row in failed_rows:
         detail = row.get("error")
@@ -106,9 +156,17 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
         "folds_successful": len(successful),
         "folds_failed": len(rows) - len(successful),
         "run_ids": [row["run_id"] for row in successful if row.get("run_id")],
+        "expected_folds": expected_folds,
+        "planned_folds": requested_folds,
+        "missing_expected_folds": missing_expected_folds,
+        "missing_expected_seed_repeats": missing_expected_seed_repeats,
+        "expected_seeds": expected_seeds,
+        "expected_task_count": expected_task_count,
+        "planned_task_count": planned_task_count,
+        "max_tasks": max_tasks,
+        "task_limit_applied": task_limit_applied,
     }
     distinct_successful_seeds = {row.get("seed") for row in successful if row.get("seed") is not None}
-    requested_folds = sorted({str(row["heldout_segment"]) for row in rows if "heldout_segment" in row})
     successful_seeds_by_fold: dict[str, set[Any]] = {fold: set() for fold in requested_folds}
     for row in successful:
         if row.get("seed") is not None:
@@ -123,6 +181,7 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
         ap_by_seed: dict[str, list[float]] = {}
         all_ap: list[float] = []
         zero_precision_or_recall: list[str] = []
+        zero_positive_validation: list[str] = []
         positive_rate_alarm: list[str] = []
         fixed_threshold_not_ok: list[str] = []
         threshold_edge_case: list[str] = []
@@ -152,6 +211,8 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
 
             pred_positive_rate = _as_float(row, "pred_positive_rate")
             val_positive_rate = _as_float(row, "val_positive_rate")
+            if val_positive_rate == 0.0:
+                zero_positive_validation.append(_row_id(row))
             if pred_positive_rate is not None and val_positive_rate is not None and val_positive_rate > 0:
                 ratio = pred_positive_rate / val_positive_rate
                 if ratio > 3.5 or ratio < 0.1:
@@ -172,6 +233,59 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
                 weak_ap_prevalence_lift.append(_row_id(row))
         per_fold_f1 = {fold: float(statistics.mean(values)) for fold, values in by_fold.items()}
         per_fold_ap = {fold: float(statistics.mean(values)) for fold, values in ap_by_fold.items()}
+        fixed_threshold_status_counts: dict[str, int] = {}
+        positive_rate_alarm_details: list[dict[str, Any]] = []
+        fixed_threshold_not_ok_details: list[dict[str, Any]] = []
+        for row in successful:
+            row_id = _row_id(row)
+            status = str(row.get("fixed_threshold_status") or "missing")
+            fixed_threshold_status_counts[status] = fixed_threshold_status_counts.get(status, 0) + 1
+            pred_positive_rate = _as_float(row, "pred_positive_rate")
+            val_positive_rate = _as_float(row, "val_positive_rate")
+            pred_to_val_ratio = pred_positive_rate / val_positive_rate if pred_positive_rate is not None and val_positive_rate and val_positive_rate > 0 else None
+            if row_id in positive_rate_alarm:
+                positive_rate_alarm_details.append({"row_id": row_id, "heldout_segment": row.get("heldout_segment"), "seed": row.get("seed"), "pred_positive_rate": pred_positive_rate, "val_positive_rate": val_positive_rate, "pred_to_val_ratio": pred_to_val_ratio})
+            if row_id in fixed_threshold_not_ok:
+                fixed_threshold_not_ok_details.append({"row_id": row_id, "heldout_segment": row.get("heldout_segment"), "seed": row.get("seed"), "status": row.get("fixed_threshold_status"), "failure_reason": row.get("fixed_threshold_failure_reason"), "fixed_threshold_f1": row.get("fixed_threshold_f1")})
+        diagnostic_summary: list[str] = []
+        if fixed_threshold_not_ok:
+            diagnostic_summary.append(f"{len(fixed_threshold_not_ok)}/{len(successful)} rows fixed_threshold_not_ok")
+        if positive_rate_alarm:
+            diagnostic_summary.append(f"{len(positive_rate_alarm)}/{len(successful)} rows positive_rate_alarm")
+        if weak_ap_prevalence_lift:
+            diagnostic_summary.append(f"{len(weak_ap_prevalence_lift)}/{len(successful)} rows weak_ap_prevalence_lift")
+        recommended_next_actions: list[dict[str, Any]] = []
+        hard_fold_diagnostics: dict[str, Any] = {}
+        if HARD_FOLD_ID in per_fold_f1 or HARD_FOLD_ID in per_fold_ap:
+            hard_f1 = per_fold_f1.get(HARD_FOLD_ID)
+            hard_ap = per_fold_ap.get(HARD_FOLD_ID)
+            hard_rows = [row for row in successful if str(row.get("heldout_segment")) == HARD_FOLD_ID]
+            hard_lifts = [_as_float(row, "ap_prevalence_lift") for row in hard_rows]
+            hard_val_rates = [_as_float(row, "val_positive_rate") for row in hard_rows]
+            hard_pred_rates = [_as_float(row, "pred_positive_rate") for row in hard_rows]
+            hard_fold_diagnostics = {
+                "fold_id": HARD_FOLD_ID,
+                "min_val_f1": HARD_FOLD_MIN_F1,
+                "min_average_precision": HARD_FOLD_MIN_AP,
+                "val_f1": hard_f1,
+                "average_precision": hard_ap,
+                "average_precision_floor_delta": (hard_ap - HARD_FOLD_MIN_AP) if hard_ap is not None else None,
+                "mean_ap_prevalence_lift": float(statistics.mean([value for value in hard_lifts if value is not None])) if any(value is not None for value in hard_lifts) else None,
+                "mean_val_positive_rate": float(statistics.mean([value for value in hard_val_rates if value is not None])) if any(value is not None for value in hard_val_rates) else None,
+                "mean_pred_positive_rate": float(statistics.mean([value for value in hard_pred_rates if value is not None])) if any(value is not None for value in hard_pred_rates) else None,
+                "passed": (hard_f1 is None or hard_f1 >= HARD_FOLD_MIN_F1) and (hard_ap is None or hard_ap >= HARD_FOLD_MIN_AP),
+            }
+            if hard_f1 is not None and hard_f1 < HARD_FOLD_MIN_F1:
+                promotion_warnings.append(f"hard_fold_low_f1:{HARD_FOLD_ID}:{hard_f1:.6f}")
+            if hard_ap is not None and hard_ap < HARD_FOLD_MIN_AP:
+                promotion_warnings.append(f"hard_fold_low_ap:{HARD_FOLD_ID}:{hard_ap:.6f}")
+            if hard_ap is not None and hard_ap <= max(HARD_FOLD_MIN_AP * 1.5, 0.03):
+                diagnostic_summary.append(f"hard_fold_low_ap:{HARD_FOLD_ID}:{hard_ap:.6f}")
+                recommended_next_actions.append({"id": "audit_hard_fold_labels", "label": f"Audit labels and sampling pressure for hard fold {HARD_FOLD_ID}", "writes_artifacts": False})
+        if fixed_threshold_not_ok:
+            recommended_next_actions.append({"id": "calibrate_fixed_threshold", "label": "Diagnose fixed-threshold calibration across linked LOO", "writes_artifacts": False})
+        if positive_rate_alarm:
+            recommended_next_actions.append({"id": "review_positive_rate_calibration", "label": "Review positive-rate alarms before promotion", "writes_artifacts": False})
         worst_fold_id = min(per_fold_f1, key=per_fold_f1.get)
         summary.update({
             "median_val_f1": float(statistics.median(per_fold_f1.values())),
@@ -184,11 +298,20 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
             "worst_fold_id": worst_fold_id,
             "per_fold_val_f1": per_fold_f1,
             "per_fold_average_precision": per_fold_ap,
+            "hard_fold_diagnostics": hard_fold_diagnostics,
             "folds_with_zero_precision_or_recall": zero_precision_or_recall,
+            "folds_with_zero_positive_validation": zero_positive_validation,
             "folds_with_positive_rate_alarm": positive_rate_alarm,
             "folds_with_fixed_threshold_not_ok": fixed_threshold_not_ok,
             "folds_with_threshold_edge_case": threshold_edge_case,
             "folds_with_weak_ap_prevalence_lift": weak_ap_prevalence_lift,
+            "fixed_threshold_status_counts": fixed_threshold_status_counts,
+            "positive_rate_alarm_count": len(positive_rate_alarm),
+            "fixed_threshold_not_ok_count": len(fixed_threshold_not_ok),
+            "positive_rate_alarm_details": positive_rate_alarm_details,
+            "fixed_threshold_not_ok_details": fixed_threshold_not_ok_details,
+            "diagnostic_summary": diagnostic_summary,
+            "recommended_next_actions": recommended_next_actions,
         })
         if by_seed:
             summary["per_seed_mean_val_f1"] = {seed: float(statistics.mean(values)) for seed, values in by_seed.items()}
@@ -201,15 +324,31 @@ def _summarize(rows: list[dict[str, Any]], min_seeds_for_promotion: int = 3) -> 
 
         for row_id in zero_precision_or_recall:
             promotion_warnings.append(f"zero_precision_or_recall:{row_id}")
+        for row_id in zero_positive_validation:
+            promotion_warnings.append(f"zero_positive_validation:{row_id}")
         for row_id in positive_rate_alarm:
             promotion_warnings.append(f"positive_rate_alarm:{row_id}")
+        for row_id in fixed_threshold_not_ok:
+            promotion_warnings.append(f"fixed_threshold_not_ok:{row_id}")
+        for row_id in threshold_edge_case:
+            promotion_warnings.append(f"threshold_edge_case:{row_id}")
+        for row_id in weak_ap_prevalence_lift:
+            promotion_warnings.append(f"weak_ap_prevalence_lift:{row_id}")
         if len(distinct_successful_seeds) < min_seeds_for_promotion:
             promotion_warnings.append(f"insufficient_seed_repeats:{len(distinct_successful_seeds)}/{min_seeds_for_promotion}")
         for fold, seed_count in summary["per_fold_successful_seeds"].items():
             if seed_count < min_seeds_for_promotion:
                 promotion_warnings.append(f"insufficient_fold_seed_repeats:{fold}:{seed_count}/{min_seeds_for_promotion}")
+        if expected_seed_values:
+            for fold in expected_folds or requested_folds:
+                seen = successful_seeds_by_fold.get(fold, set())
+                for seed in sorted(expected_seed_values - seen):
+                    warning = f"missing_expected_seed_repeat:{fold}:{seed}"
+                    if warning not in promotion_warnings:
+                        promotion_warnings.append(warning)
     else:
         summary["folds_with_zero_precision_or_recall"] = []
+        summary["folds_with_zero_positive_validation"] = []
         summary["folds_with_positive_rate_alarm"] = []
         summary["folds_with_fixed_threshold_not_ok"] = []
         summary["folds_with_threshold_edge_case"] = []
@@ -266,8 +405,11 @@ def _run_fold_job(fold_config: str, row: dict[str, Any]) -> dict[str, Any]:
             "fixed_threshold",
             "fixed_threshold_f1",
             "fixed_threshold_status",
+            "fixed_threshold_failure_reason",
             "threshold_selection",
             "selected_threshold_reason",
+            "threshold_risk_summary",
+            "max_pred_positive_rate_ratio",
         ):
             if key in metrics:
                 row[key] = metrics[key]
@@ -421,7 +563,17 @@ def main() -> int:
                         _write_row_jsonl(output_jsonl, row)
                         _print_progress(row, completed, total_tasks)
 
-    summary = _summarize(rows, min_seeds_for_promotion=args.min_seeds_for_promotion)
+    expected_folds = sorted(str(fold) for fold in fold_map)
+    expected_task_count = len(expected_folds) * len(seeds)
+    summary = _summarize(
+        rows,
+        min_seeds_for_promotion=args.min_seeds_for_promotion,
+        expected_folds=expected_folds,
+        expected_seeds=seeds,
+        expected_task_count=expected_task_count,
+        planned_task_count=total_tasks,
+        max_tasks=args.max_tasks,
+    )
     summary.update({"label": label, "base_config": str(base_path), "fold_map": str(fold_map_path), "seeds": seeds})
     summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     print("SUMMARY_JSON " + json.dumps(summary, sort_keys=True), flush=True)

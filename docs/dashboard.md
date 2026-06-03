@@ -36,9 +36,26 @@ python3 run_dashboard.py --repo-root /path/to/vesuvius-autoresearch
 - prepared-data metadata under `data/prepared`, `data/real*`, and fold roots
 - `data/**/fold_map.json`
 - `logs/autoresearch.log` and `logs/autoresearch.lock`
+- `logs/autoresearch_guard.log` and latest `logs/overnight_safe_loop/*/orchestrator.log` for structured no-progress causes
+- `logs/evidence_packages/*` for durable next-move handoff files
 - `logs/*summary.json` leave-one-out summaries with promotion readiness fields
 
 The dashboard does not load model weights, NPZ arrays, or full tile probability maps by default.
+
+## Self-Improvement Contract Fields
+
+The `vesuvius-dashboard/v1` snapshot exposes autonomous lineage and evidence handoff fields:
+
+- `experiments.recent[].proposal_lineage`: proposal id, hypothesis id, changed path, mutation family, search strategy, cost tier, score, and promotion requirements.
+- `experiments.hypotheses`: recent hypothesis records from the ledger and observed run metadata.
+- `experiments.ledger`: recent proposals, proposal results, hypotheses, and evidence packages.
+- `experiments.evidence_packages`: package files discovered under `logs/evidence_packages/` plus ledger-recorded packages.
+- `operations.no_progress`: latest structured stale/no-progress cause, counts, recent causes, and parsed sources.
+- `research_summary.proposal_lineage`, `research_summary.hypotheses`, and `research_summary.evidence_packages`: top-level review shortcuts.
+
+No-progress cause codes include `active_guard`, `load_guard`, `mem_guard`, `disk_guard`, `proposal_guard`, `promotion_pause`, `promotion_evidence_required`, `signature_exhausted`, `deduped_existing_run`, `timeout`, and `unknown_no_progress`.
+
+Evidence package preview remains read-only unless a caller explicitly writes package files with `scripts/package_next_move_evidence.py --output-dir logs/evidence_packages`. Artifact-writing training, mining, and full-tile commands remain copy-only unless separately allowlisted as safe read-only dashboard actions.
 
 ## Reviewer Workflow
 

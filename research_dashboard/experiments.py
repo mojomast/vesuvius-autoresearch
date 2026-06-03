@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import shlex
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,72 @@ import yaml
 
 from .artifacts import list_artifact_files
 from .quality import metrics_quality_verdict, quality_next_actions
+from src.autoresearch.ledger import recent_ledger_items, record_diagnosis
 
 HARD_FOLD_ID = "20230530172803"
 HARD_FOLD_LOW_F1_THRESHOLD = 0.04
 HARD_FOLD_LOW_AP_LIFT_THRESHOLD = 2.0
 HARD_FOLD_LOW_AP_THRESHOLD = 0.05
+
+
+def _proposal_lineage(run: dict[str, Any]) -> dict[str, Any]:
+    cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+    autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+    return {
+        "proposal_id": autoresearch.get("proposal_id"),
+        "hypothesis_id": autoresearch.get("hypothesis_id"),
+        "config_signature": run.get("config_signature") or autoresearch.get("config_signature"),
+        "changed_path": autoresearch.get("changed_path"),
+        "mutation_family": autoresearch.get("mutation_family"),
+        "arm_id": autoresearch.get("arm_id"),
+        "parent_reason": autoresearch.get("parent_reason"),
+        "scope_policy": autoresearch.get("scope_policy"),
+        "search_strategy": autoresearch.get("search_strategy"),
+        "strategy_phase": autoresearch.get("strategy_phase"),
+        "cost_tier": autoresearch.get("cost_tier"),
+        "proposal_score": autoresearch.get("proposal_score"),
+        "proposal_score_components": autoresearch.get("proposal_score_components", {}),
+        "triage_failures": autoresearch.get("triage_failures", {}),
+        "score_reasons": autoresearch.get("score_reasons", []),
+        "promotion_required": autoresearch.get("promotion_required", []),
+    }
+
+
+def _hypotheses_from_runs(runs: list[dict[str, Any]], ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    out = list(ledger.get("hypotheses") or [])
+    seen = {item.get("hypothesis_id") for item in out if isinstance(item, dict)}
+    for run in runs:
+        lineage = run.get("proposal_lineage") or _proposal_lineage(run)
+        hypothesis_id = lineage.get("hypothesis_id")
+        if not hypothesis_id or hypothesis_id in seen:
+            continue
+        seen.add(hypothesis_id)
+        out.append({
+            "hypothesis_id": hypothesis_id,
+            "title": lineage.get("parent_reason") or lineage.get("mutation_family"),
+            "expected_effect": lineage.get("parent_reason"),
+            "parent_run_id": run.get("run_id"),
+            "status": "observed",
+        })
+    return out[:50]
+
+
+def _evidence_package_files(project_root: Path, ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    packages: list[dict[str, Any]] = []
+    for item in ledger.get("evidence_packages") or []:
+        if isinstance(item, dict):
+            packages.append(dict(item))
+    root = project_root / "logs" / "evidence_packages"
+    for path in sorted(root.glob("*.*"), key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)[:50] if root.exists() else []:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        rel = str(path.relative_to(project_root))
+        if any(item.get("path_json") == rel or item.get("path_markdown") == rel for item in packages):
+            continue
+        packages.append({"relative_path": rel, "path": rel, "kind": path.suffix.lstrip("."), "modified_at": stat.st_mtime, "size_bytes": stat.st_size})
+    return packages[:50]
 
 
 def _get_nested(obj: dict[str, Any], path: tuple[str, ...], default: Any = None) -> Any:
@@ -562,7 +624,155 @@ def _hard_fold_profile(summary: dict[str, Any] | None, loo_full_tiles: dict[str,
         "full_tile_average_precision": _mean(full_tile_ap),
         "fixed_threshold_statuses": fixed_statuses,
         "row_count": len(rows),
+        "diagnostics": {
+            "summary_path": summary_path,
+            "row_count": len(rows),
+            "per_seed": [
+                {
+                    "seed": row.get("seed"),
+                    "run_id": row.get("run_id"),
+                    "val_f1": row.get("val_f1"),
+                    "average_precision": row.get("average_precision"),
+                    "ap_prevalence_lift": row.get("ap_prevalence_lift"),
+                    "val_positive_rate": row.get("val_positive_rate"),
+                    "pred_positive_rate": row.get("pred_positive_rate"),
+                    "fixed_threshold_status": row.get("fixed_threshold_status"),
+                }
+                for row in rows[:10]
+            ],
+            "ap_to_prevalence_ratio": (mean_ap / mean_val_rate) if mean_ap is not None and mean_val_rate else mean_lift,
+            "evidence_sources": [item for item, present in (("linked_loo_summary", True), ("linked_loo_jsonl", bool(rows)), ("loo_full_tile", bool(full_tile_evidence))) if present],
+        },
         "action": action,
+    }
+
+
+def _linked_loo_failure_pattern(summary: dict[str, Any] | None, hard_fold_profile: dict[str, Any] | None) -> dict[str, Any]:
+    if not summary:
+        return {"linked": False, "ready": False, "pattern": "missing_linked_loo", "blocks_promotion": True, "recommended_action": "run_seed_repeat_leave_one_out"}
+    positive_rate = _summary_diagnostic_items(summary, "folds_with_positive_rate_alarm", "positive_rate_alarm")
+    fixed_bad = _summary_diagnostic_items(summary, "folds_with_fixed_threshold_not_ok", "fixed_threshold_not_ok")
+    missing_folds = summary.get("missing_expected_folds") or []
+    missing_seeds = summary.get("missing_expected_seed_repeats") or []
+    zero_positive = summary.get("folds_with_zero_positive_validation") or []
+    weak_ap = summary.get("folds_with_weak_ap_prevalence_lift") or []
+    pattern = "none"
+    recommended = "promotion_review"
+    if hard_fold_profile and hard_fold_profile.get("severity") == "blocker":
+        pattern = f"hard_fold_{hard_fold_profile.get('failure_mode') or 'blocker'}"
+        recommended = hard_fold_profile.get("recommended_action") or "audit_hard_fold_labels_and_sampling"
+    elif missing_folds:
+        pattern = "missing_expected_folds"
+        recommended = "complete_linked_loo_folds"
+    elif missing_seeds:
+        pattern = "missing_seed_repeats"
+        recommended = "complete_seed_repeats"
+    elif zero_positive:
+        pattern = "zero_positive_validation"
+        recommended = "audit_validation_labels"
+    elif fixed_bad:
+        pattern = "fixed_threshold_not_ok"
+        recommended = "calibrate_fixed_threshold"
+    elif positive_rate:
+        pattern = "positive_rate_alarm"
+        recommended = "review_positive_rate_calibration"
+    elif weak_ap:
+        pattern = "weak_ap_prevalence_lift"
+        recommended = "improve_ranking_signal"
+    return {
+        "linked": True,
+        "ready": bool(summary.get("promotion_ready")),
+        "summary_path": summary.get("path"),
+        "pattern": pattern,
+        "worst_fold_id": summary.get("worst_fold_id"),
+        "hard_fold_id": HARD_FOLD_ID,
+        "hard_fold_failure_mode": hard_fold_profile.get("failure_mode") if isinstance(hard_fold_profile, dict) else None,
+        "missing_expected_folds": missing_folds,
+        "missing_expected_seed_repeats": missing_seeds,
+        "folds_with_zero_positive_validation": zero_positive,
+        "folds_with_weak_ap_prevalence_lift": weak_ap,
+        "folds_with_fixed_threshold_not_ok": fixed_bad,
+        "folds_with_positive_rate_alarm": positive_rate,
+        "fixed_threshold_not_ok_count": _summary_diagnostic_count(summary, "fixed_threshold_not_ok_count", fixed_bad),
+        "positive_rate_alarm_count": _summary_diagnostic_count(summary, "positive_rate_alarm_count", positive_rate),
+        "per_fold_successful_seeds": summary.get("per_fold_successful_seeds") or {},
+        "blocks_promotion": not bool(summary.get("promotion_ready")),
+        "recommended_action": recommended,
+    }
+
+
+def _summary_diagnostic_items(summary: dict[str, Any], field: str, warning_prefix: str) -> list[str]:
+    explicit = summary.get(field)
+    if isinstance(explicit, list) and explicit:
+        return [str(item) for item in explicit if item is not None]
+    prefix = f"{warning_prefix}:"
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    return [str(item)[len(prefix):] for item in warnings if isinstance(item, str) and item.startswith(prefix)]
+
+
+def _summary_diagnostic_count(summary: dict[str, Any], field: str, items: list[str]) -> int:
+    value = summary.get(field)
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+    return len(items)
+
+
+def _weak_fold_full_tile_status(run: dict[str, Any], summary: dict[str, Any] | None, project_root: Path | None = None) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None, Path | None]:
+    weak_fold_id = str((summary or {}).get("worst_fold_id") or "")
+    if not weak_fold_id:
+        return "not_applicable", None, None, None
+    artifact_dir = Path(str(run.get("artifact_dir") or ""))
+    weak_loo_run = _weak_fold_loo_run(summary, weak_fold_id)
+    weak_artifact_dir = Path(str((weak_loo_run or {}).get("artifact_dir") or artifact_dir))
+    weak_run = {"artifact_dir": str(weak_artifact_dir)} if weak_artifact_dir else run
+    weak_tiles = _full_tile_metrics(weak_run, project_root)
+    weak_tile = next((item for item in weak_tiles if item.get("segment_id") == weak_fold_id), None)
+    if not weak_tile:
+        weak_tile = next((item for item in _full_tile_metrics(run, project_root) if item.get("segment_id") == weak_fold_id), None)
+    if not weak_tile:
+        return "missing", None, weak_loo_run, weak_artifact_dir
+    if weak_tile.get("evaluation_region_type") == "whole_segment" and weak_tile.get("eligible") is True:
+        return "done", weak_tile, weak_loo_run, weak_artifact_dir
+    return "warning", weak_tile, weak_loo_run, weak_artifact_dir
+
+
+def _candidate_seed_repeat_loo_action(run: dict[str, Any], project_root: Path | None = None) -> dict[str, Any]:
+    run_id = str(run.get("run_id") or "candidate")
+    cfg = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
+    autoresearch = cfg.get("autoresearch", {}) if isinstance(cfg.get("autoresearch"), dict) else {}
+    dataset = cfg.get("dataset", {}) if isinstance(cfg.get("dataset"), dict) else {}
+    artifact_dir = Path(str(run.get("artifact_dir") or ""))
+    artifact_rel = _rel_path(artifact_dir, project_root) if str(artifact_dir) else f"experiments/runs/{run_id}"
+    fold_map = str(autoresearch.get("fold_map") or "")
+    if not fold_map:
+        train_npz = str(dataset.get("train_npz") or "")
+        if "real_cross_folds_expanded_combined" in train_npz:
+            fold_map = "data/real_cross_folds_expanded_combined/fold_map.json"
+        else:
+            fold_map = "data/fold_map_villa_labels_promotion_nonzero.json"
+    output_jsonl = f"logs/{run_id}_seedrepeat_loo.jsonl"
+    command = [
+        ".venv/bin/python", "scripts/evaluate_leave_one_out.py",
+        "--base-config", f"{artifact_rel}/config.json",
+        "--fold-map", fold_map,
+        "--output-jsonl", output_jsonl,
+        "--summary-json", output_jsonl.replace(".jsonl", ".summary.json"),
+        "--seeds", "11001,11018,11045",
+        "--jobs", "6",
+        "--execution-mode", "fold-major",
+        "--limit-worker-threads",
+    ]
+    return {
+        "id": "seed_repeat_loo",
+        "label": "Run linked seed-repeat LOO",
+        "kind": "validation",
+        "command": command,
+        "command_text": " ".join(shlex.quote(part) for part in command),
+        "writes_artifacts": True,
+        "safe_to_execute_from_dashboard": False,
     }
 
 
@@ -571,27 +781,30 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
         return {"candidate_run_id": None, "promotion_actions": []}
     config = run.get("config", {}) if isinstance(run.get("config"), dict) else {}
     summary = _linked_loo_summary(run, loo_summaries, project_root)
+    positive_rate_alarm_items = _summary_diagnostic_items(summary, "folds_with_positive_rate_alarm", "positive_rate_alarm") if isinstance(summary, dict) else []
+    fixed_threshold_bad_items = _summary_diagnostic_items(summary, "folds_with_fixed_threshold_not_ok", "fixed_threshold_not_ok") if isinstance(summary, dict) else []
     full_tiles = _full_tile_metrics(run, project_root)
     loo_full_tiles = _loo_full_tile_diagnostics(summary, project_root)
     hard_fold_profile = _hard_fold_profile(summary, loo_full_tiles)
+    linked_loo_failure_pattern = _linked_loo_failure_pattern(summary, hard_fold_profile)
+    if isinstance(hard_fold_profile, dict) and hard_fold_profile.get("severity") == "blocker" and run.get("run_id"):
+        try:
+            kwargs: dict[str, Any] = {}
+            if project_root:
+                kwargs["db_path"] = project_root / "experiments" / "experiments.db"
+            record_diagnosis(
+                str(run.get("run_id")),
+                str(hard_fold_profile.get("failure_mode") or "hard_fold_blocker"),
+                severity=str(hard_fold_profile.get("severity") or "blocker"),
+                evidence={"fold_id": hard_fold_profile.get("fold_id"), "mean_val_f1": hard_fold_profile.get("mean_val_f1"), "mean_average_precision": hard_fold_profile.get("mean_average_precision"), "mean_ap_prevalence_lift": hard_fold_profile.get("mean_ap_prevalence_lift"), "summary_path": summary.get("path") if isinstance(summary, dict) else None, "recommended_action": hard_fold_profile.get("recommended_action")},
+                **kwargs,
+            )
+        except Exception:
+            pass
     full_tile_quality_actions = _quality_promotion_actions(full_tiles, {})
     artifact_dir = Path(str(run.get("artifact_dir") or ""))
     weak_fold_id = str((summary or {}).get("worst_fold_id") or "")
-    weak_loo_run = _weak_fold_loo_run(summary, weak_fold_id)
-    weak_artifact_dir = Path(str((weak_loo_run or {}).get("artifact_dir") or artifact_dir))
-    weak_run = {"artifact_dir": str(weak_artifact_dir)} if weak_artifact_dir else run
-    weak_tiles = _full_tile_metrics(weak_run, project_root) if weak_fold_id else []
-    weak_tile = next((item for item in weak_tiles if item.get("segment_id") == weak_fold_id), None) if weak_fold_id else None
-    if weak_fold_id and not weak_tile:
-        weak_tile = next((item for item in full_tiles if item.get("segment_id") == weak_fold_id), None)
-    weak_status = "not_applicable"
-    if weak_fold_id:
-        if not weak_tile:
-            weak_status = "missing"
-        elif weak_tile.get("evaluation_region_type") == "whole_segment" and weak_tile.get("eligible") is True:
-            weak_status = "done"
-        else:
-            weak_status = "warning"
+    weak_status, weak_tile, weak_loo_run, weak_artifact_dir = _weak_fold_full_tile_status(run, summary, project_root)
 
     command: list[str] | None = None
     command_text = None
@@ -623,7 +836,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
     if isinstance(hard_fold_action, dict) and hard_fold_profile.get("severity") == "blocker":
         actions.append(hard_fold_action)
     if not summary:
-        actions.append({"id": "seed_repeat_loo", "label": "Run linked seed-repeat LOO", "kind": "validation", "writes_artifacts": True})
+        actions.append(_candidate_seed_repeat_loo_action(run, project_root))
     elif weak_fold_id and weak_status != "done":
         actions.append({"id": "weak_fold_full_tile", "label": f"Run full-tile on weak fold {weak_fold_id}", "kind": "inference", "command": command, "command_text": command_text, "writes_artifacts": True, "safe_to_execute_from_dashboard": False})
     if not full_tiles:
@@ -642,6 +855,29 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
             "linked": bool(summary),
             "summary_path": summary.get("path") if summary else None,
             "seeds": summary.get("seeds") if summary else None,
+            "expected_seeds": summary.get("expected_seeds") if summary else None,
+            "expected_folds": summary.get("expected_folds") if summary else None,
+            "planned_folds": summary.get("planned_folds") if summary else None,
+            "missing_expected_folds": summary.get("missing_expected_folds", []) if summary else [],
+            "missing_expected_seed_repeats": summary.get("missing_expected_seed_repeats", []) if summary else [],
+            "folds_requested": summary.get("folds_requested") if summary else None,
+            "folds_successful": summary.get("folds_successful") if summary else None,
+            "folds_failed": summary.get("folds_failed") if summary else None,
+            "expected_task_count": summary.get("expected_task_count") if summary else None,
+            "planned_task_count": summary.get("planned_task_count") if summary else None,
+            "task_limit_applied": summary.get("task_limit_applied") if summary else None,
+            "min_seeds_for_promotion": summary.get("min_seeds_for_promotion") if summary else None,
+            "distinct_successful_seeds": summary.get("distinct_successful_seeds") if summary else None,
+            "per_fold_successful_seeds": summary.get("per_fold_successful_seeds") if summary else None,
+            "folds_with_zero_positive_validation": summary.get("folds_with_zero_positive_validation", []) if summary else [],
+            "folds_with_weak_ap_prevalence_lift": summary.get("folds_with_weak_ap_prevalence_lift", []) if summary else [],
+            "folds_with_positive_rate_alarm": positive_rate_alarm_items,
+            "folds_with_fixed_threshold_not_ok": fixed_threshold_bad_items,
+            "fixed_threshold_status_counts": summary.get("fixed_threshold_status_counts", {}) if summary else {},
+            "positive_rate_alarm_count": _summary_diagnostic_count(summary, "positive_rate_alarm_count", positive_rate_alarm_items) if summary else None,
+            "fixed_threshold_not_ok_count": _summary_diagnostic_count(summary, "fixed_threshold_not_ok_count", fixed_threshold_bad_items) if summary else None,
+            "diagnostic_summary": summary.get("diagnostic_summary", []) if summary else [],
+            "recommended_next_actions": summary.get("recommended_next_actions", []) if summary else [],
             "worst_fold_id": weak_fold_id or None,
             "worst_fold_val_f1": summary.get("worst_fold_val_f1") if summary else None,
             "worst_fold_average_precision": (summary.get("per_fold_average_precision") or {}).get(weak_fold_id) if summary and weak_fold_id else None,
@@ -657,6 +893,7 @@ def _candidate_evidence(run: dict[str, Any] | None, loo_summaries: list[dict[str
         },
         "loo_full_tile": loo_full_tiles,
         "hard_fold_profile": hard_fold_profile,
+        "linked_loo_failure_pattern": linked_loo_failure_pattern,
         "risk_summary": _positive_rate_risk_summary(run, full_tiles, loo_full_tiles),
         "weak_fold_full_tile": {
             "weak_fold_id": weak_fold_id or None,
@@ -693,6 +930,11 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
         ratio = float(pred_rate) / max(float(val_rate), 1e-6)
         if ratio > 3.5 or ratio < 0.1:
             add("pred_positive_rate_ratio_suspicious", "calibration")
+    if val_rate is not None and float(val_rate) <= 0.0:
+        add("zero_positive_validation", "validation")
+    ap_lift = _as_float(metrics.get("ap_prevalence_lift")) if metrics.get("ap_prevalence_lift") is not None else _safe_ratio(metrics.get("average_precision"), val_rate)
+    if ap_lift is not None and ap_lift < 1.25:
+        add("weak_ap_prevalence_lift", "validation")
     fixed_threshold_status = str(metrics.get("fixed_threshold_status") or "").lower()
     if fixed_threshold_status and fixed_threshold_status != "ok":
         add("fixed_threshold_status_weak", "calibration")
@@ -725,6 +967,11 @@ def _promotion_blockers(run: dict[str, Any], loo_summaries: list[dict[str, Any]]
         hard_profile = _hard_fold_profile(summary, loo_tile_diagnostics)
         if isinstance(hard_profile, dict) and hard_profile.get("severity") == "blocker":
             add("hard_fold_low_ap" if hard_profile.get("failure_mode") == "low_ap_near_prevalence" else "hard_fold_low_f1", "validation")
+        weak_status, _, _, _ = _weak_fold_full_tile_status(run, summary, project_root)
+        if summary and summary.get("worst_fold_id") and weak_status == "missing":
+            add("missing_weak_fold_full_tile_evidence", "inference")
+        elif summary and summary.get("worst_fold_id") and weak_status == "warning":
+            add("weak_fold_full_tile_quality_fail", "quality")
         if any(_quality_blocks_promotion(item) for item in loo_tile_diagnostics.get("evidence", [])):
             add("loo_full_tile_quality_fail", "quality")
     best_threshold = metrics.get("best_threshold")
@@ -762,6 +1009,10 @@ def _promotion_gate(runs: list[dict[str, Any]], loo_summaries: list[dict[str, An
     target_id = target.get("run_id") if isinstance(target, dict) else None
     has_loo = bool(target and _linked_loo_ready(target, loo_summaries, project_root))
     has_full_tile = bool(target and _full_tile_ready(target))
+    target_summary = _linked_loo_summary(target, loo_summaries, project_root) if isinstance(target, dict) else None
+    weak_status, _, _, _ = _weak_fold_full_tile_status(target, target_summary, project_root) if isinstance(target, dict) else ("not_applicable", None, None, None)
+    weak_fold_id = str((target_summary or {}).get("worst_fold_id") or "")
+    has_weak_fold_full_tile = weak_status in {"done", "not_applicable"}
     has_heldout = bool(target and (target.get("validation_setup", {}) or {}).get("mode") in {"cross-segment", "cross-scroll", "leave-one-segment-out"})
     no_blocked_promotable = bool(target and target.get("promotion_status") == "eligible")
     target_detail = f" for candidate {target_id}" if target_id else ""
@@ -770,6 +1021,7 @@ def _promotion_gate(runs: list[dict[str, Any]], loo_summaries: list[dict[str, An
         {"id": "heldout_validation", "label": "Held-out validation", "state": "done" if has_heldout else "warning", "detail": "cross-segment/scroll or LOO" if has_heldout else "missing robust held-out run"},
         {"id": "seed_repeat_loo", "label": "Seed-repeat LOO", "state": "done" if has_loo else "warning", "detail": f"promotion-ready summary linked{target_detail}" if has_loo else f"run evaluate_leave_one_out.py --seeds for candidate {target_id or '?'}"},
         {"id": "full_tile", "label": "Full-tile evidence", "state": "done" if has_full_tile else "warning", "detail": f"full-tile artifact/check linked{target_detail}" if has_full_tile else f"run infer_full_tile.py for candidate {target_id or '?'} before promotion"},
+        {"id": "weak_fold_full_tile", "label": "Weak-fold full-tile evidence", "state": "done" if has_weak_fold_full_tile else "warning", "detail": "not required" if not weak_fold_id else (f"whole-segment eligible evidence for weak fold {weak_fold_id}" if weak_status == "done" else f"run/review full-tile evidence for weak fold {weak_fold_id}")},
         {"id": "promotion_clear", "label": "No promotion blockers", "state": "done" if no_blocked_promotable else "warning", "detail": f"candidate {target_id} is eligible" if no_blocked_promotable else "blockers remain"},
     ]
     return {"criteria": criteria, "ready": all(item["state"] == "done" for item in criteria)}
@@ -875,7 +1127,7 @@ def _load_loo_summaries(project_root: Path, limit: int = 8) -> list[dict[str, An
                         rows.append({key: row.get(key) for key in ("run_id", "artifact_dir", "heldout_segment", "seed", "val_f1", "average_precision", "best_threshold", "pred_positive_rate", "val_positive_rate", "brier_score", "expected_calibration_error", "ap_prevalence_lift", "prob_mean", "prob_p95", "prob_max", "fixed_threshold", "fixed_threshold_f1", "fixed_threshold_status", "threshold_selection", "selected_threshold_reason", "returncode")})
             except Exception:
                 rows = []
-        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "folds_with_weak_ap_prevalence_lift": data.get("folds_with_weak_ap_prevalence_lift", []), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "run_ids": data.get("run_ids"), "rows": rows})
+        summaries.append({"path": str(path), "promotion_ready": bool(data.get("promotion_ready")), "warnings": data.get("promotion_warnings", []), "folds_requested": data.get("folds_requested"), "folds_successful": data.get("folds_successful"), "folds_failed": data.get("folds_failed"), "expected_folds": data.get("expected_folds"), "planned_folds": data.get("planned_folds"), "missing_expected_folds": data.get("missing_expected_folds", []), "missing_expected_seed_repeats": data.get("missing_expected_seed_repeats", []), "expected_seeds": data.get("expected_seeds"), "expected_task_count": data.get("expected_task_count"), "planned_task_count": data.get("planned_task_count"), "max_tasks": data.get("max_tasks"), "task_limit_applied": data.get("task_limit_applied"), "median_over_seeds_median_val_f1": data.get("median_over_seeds_median_val_f1"), "worst_fold_id": data.get("worst_fold_id"), "worst_fold_val_f1": data.get("worst_fold_val_f1"), "mean_average_precision": data.get("mean_average_precision"), "per_fold_val_f1": data.get("per_fold_val_f1"), "per_fold_average_precision": data.get("per_fold_average_precision"), "folds_with_zero_positive_validation": data.get("folds_with_zero_positive_validation", []), "folds_with_weak_ap_prevalence_lift": data.get("folds_with_weak_ap_prevalence_lift", []), "base_config": data.get("base_config"), "fold_map": data.get("fold_map"), "seeds": data.get("seeds"), "min_seeds_for_promotion": data.get("min_seeds_for_promotion"), "distinct_successful_seeds": data.get("distinct_successful_seeds"), "per_fold_successful_seeds": data.get("per_fold_successful_seeds"), "run_ids": data.get("run_ids"), "rows": rows})
         if len(summaries) >= limit:
             break
     return summaries
@@ -956,7 +1208,9 @@ def _leaderboard_rows(runs: list[dict[str, Any]], project_root: Path | None = No
 def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
     db_path = project_root / "experiments" / "experiments.db"
     loo_summaries = _load_loo_summaries(project_root)
-    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries, project_root), "loo_summaries": loo_summaries, "promotion_results": [], "metric_trends": [], "validation_matrix": [], "leaderboard": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": []}
+    ledger = recent_ledger_items(db_path)
+    evidence_packages = _evidence_package_files(project_root, ledger)
+    empty = {"count": 0, "best": None, "latest": None, "recent": [], "champions": {"peak_score": None, "robust_candidate": None, "promotion_eligible": None}, "decision": _decision_snapshot([], None, None, None, loo_summaries, project_root), "loo_summaries": loo_summaries, "promotion_results": [], "metric_trends": [], "validation_matrix": [], "leaderboard": [], "config_diffs": {"latest_vs_previous": [], "latest_vs_best": [], "latest_vs_baseline": []}, "hypotheses": ledger.get("hypotheses", []), "ledger": ledger, "evidence_packages": evidence_packages}
     if not db_path.exists():
         return empty
     try:
@@ -964,7 +1218,9 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         conn.row_factory = sqlite3.Row
         try:
             count = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
-            rows = conn.execute("SELECT run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir FROM experiments ORDER BY timestamp DESC LIMIT ?", (limit,)).fetchall()
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(experiments)")}
+            signature_select = ",config_signature" if "config_signature" in columns else ",NULL AS config_signature"
+            rows = conn.execute(f"SELECT run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir{signature_select} FROM experiments ORDER BY timestamp DESC LIMIT ?", (limit,)).fetchall()
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             promotion_rows = []
             if "promotion_results" in tables:
@@ -977,9 +1233,10 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         return out
 
     def row_to_run(row: sqlite3.Row) -> dict[str, Any]:
-        run = {"run_id": row["run_id"], "timestamp": row["timestamp"], "main_metric": float(row["main_metric"]), "metrics": json.loads(row["secondary_metrics_json"] or "{}"), "config": json.loads(row["config_json"] or "{}"), "artifact_dir": row["artifact_dir"]}
+        run = {"run_id": row["run_id"], "timestamp": row["timestamp"], "main_metric": float(row["main_metric"]), "metrics": json.loads(row["secondary_metrics_json"] or "{}"), "config": json.loads(row["config_json"] or "{}"), "artifact_dir": row["artifact_dir"], "config_signature": row["config_signature"]}
         run["validation_setup"] = _validation_setup(run)
         run["artifacts"] = list_artifact_files(row["artifact_dir"])
+        run["proposal_lineage"] = _proposal_lineage(run)
         run["promotion_blockers"] = _promotion_blockers(run, loo_summaries, project_root)
         blockers_only = [b for b in run["promotion_blockers"] if b.get("severity") != "warning"]
         run["promotion_status"] = "eligible" if not blockers_only else "blocked"
@@ -1029,6 +1286,11 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
                 matrix[key] = candidate
     decision = _decision_snapshot(runs, best, robust, promotable, loo_summaries, project_root)
     leaderboard = _leaderboard_rows(runs, project_root)
+    leaderboard_by_run = {row.get("run_id"): row for row in leaderboard}
+    for run in runs:
+        if run.get("run_id") in leaderboard_by_run:
+            leaderboard_by_run[run.get("run_id")]["proposal_lineage"] = run.get("proposal_lineage")
+    hypotheses = _hypotheses_from_runs(runs, ledger)
     for run in runs:
         run.pop("_normalized_loo_config", None)
     for summary in loo_summaries:
@@ -1046,5 +1308,7 @@ def load_experiments(project_root: Path, limit: int = 500) -> dict[str, Any]:
         "validation_matrix": sorted(matrix.values(), key=lambda item: (item["train_segment_id"], item["val_segment_id"])),
         "leaderboard": leaderboard,
         "config_diffs": {"latest_vs_previous": _config_diff(previous.get("config") if previous else None, latest.get("config") if latest else None), "latest_vs_best": _config_diff(best.get("config") if best else None, latest.get("config") if latest else None), "latest_vs_baseline": _config_diff(baseline.get("config") if baseline else None, latest.get("config") if latest else None)},
-        "hypotheses": [],
+        "hypotheses": hypotheses,
+        "ledger": ledger,
+        "evidence_packages": evidence_packages,
     }

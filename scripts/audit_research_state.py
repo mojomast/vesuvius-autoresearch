@@ -92,6 +92,11 @@ def _top_calibration_mining_action(mining: dict[str, Any]) -> dict[str, Any] | N
     return action
 
 
+def _meaningful_lineage(lineage: dict[str, Any]) -> dict[str, Any]:
+    keys = ("proposal_id", "hypothesis_id", "mutation_family", "changed_path", "arm_id")
+    return lineage if any(lineage.get(key) for key in keys) else {}
+
+
 def _dashboard_summary(root: Path) -> dict[str, Any]:
     summary: dict[str, Any] = {"snapshot_contract_available": False}
     try:
@@ -108,6 +113,9 @@ def _dashboard_summary(root: Path) -> dict[str, Any]:
     promotion_gate = decision.get("promotion_gate", {}) if isinstance(decision, dict) else {}
     candidate_evidence = decision.get("candidate_evidence", {}) if isinstance(decision, dict) else {}
     mining = snapshot.get("mining", {}) if isinstance(snapshot.get("mining"), dict) else {}
+    operations = snapshot.get("operations", {}) if isinstance(snapshot.get("operations"), dict) else {}
+    no_progress = operations.get("no_progress", {}) if isinstance(operations.get("no_progress"), dict) else {}
+    experiments = snapshot.get("experiments", {}) if isinstance(snapshot.get("experiments"), dict) else {}
     summary.update(
         {
             "snapshot_contract_available": True,
@@ -122,6 +130,12 @@ def _dashboard_summary(root: Path) -> dict[str, Any]:
             "top_promotion_blockers": _top_blockers(blocker_counts if isinstance(blocker_counts, dict) else {}),
             "mining": mining,
             "top_calibration_mining_action": _top_calibration_mining_action(mining),
+            "hypotheses": research_summary.get("hypotheses", []) if isinstance(research_summary, dict) else [],
+            "proposal_lineage": _meaningful_lineage(research_summary.get("proposal_lineage", {}) if isinstance(research_summary, dict) else {}),
+            "staleness": decision.get("staleness", {}) if isinstance(decision, dict) else {},
+            "latest_no_progress_cause": no_progress.get("latest"),
+            "no_progress_cause_counts": no_progress.get("counts", {}),
+            "evidence_packages": experiments.get("evidence_packages", []),
         }
     )
     return summary
@@ -193,6 +207,35 @@ def render_markdown(report: dict[str, Any]) -> str:
     if blockers:
         lines.extend(["", "## Top Promotion Blockers"])
         lines.extend(f"- `{item['code']}`: {item['count']}" for item in blockers)
+    lineage = dashboard.get("proposal_lineage") or {}
+    hypotheses = dashboard.get("hypotheses") or []
+    if lineage or hypotheses:
+        lines.extend(["", "## Hypothesis / Proposal Lineage"])
+        if lineage:
+            if lineage.get("proposal_id"):
+                lines.append(f"- Proposal: `{lineage.get('proposal_id')}`")
+            if lineage.get("hypothesis_id"):
+                lines.append(f"- Hypothesis: `{lineage.get('hypothesis_id')}`")
+            if lineage.get("mutation_family") or lineage.get("changed_path"):
+                lines.append(f"- Family: `{lineage.get('mutation_family')}` changed `{lineage.get('changed_path')}`")
+        if hypotheses:
+            lines.append(f"- Recent hypotheses: {len(hypotheses)}")
+    latest_cause = dashboard.get("latest_no_progress_cause") or {}
+    cause_counts = dashboard.get("no_progress_cause_counts") or {}
+    if latest_cause or cause_counts:
+        lines.extend(["", "## Stale / No-progress Causes"])
+        if latest_cause:
+            lines.append(f"- Latest: `{latest_cause.get('code')}` - {latest_cause.get('label')}")
+            if latest_cause.get("source"):
+                lines.append(f"- Source: `{latest_cause.get('source')}`")
+        if cause_counts:
+            lines.append("- Counts: " + ", ".join(f"`{code}`={count}" for code, count in sorted(cause_counts.items())))
+    packages = dashboard.get("evidence_packages") or []
+    if packages:
+        lines.extend(["", "## Evidence Packages"])
+        for item in packages[:5]:
+            path = item.get("relative_path") or item.get("path_json") or item.get("path_markdown") or item.get("path")
+            lines.append(f"- `{path}`")
     top_action = dashboard.get("top_calibration_mining_action") or {}
     if top_action:
         lines.extend(["", "## Top Calibration/Mining/Cap Action"])

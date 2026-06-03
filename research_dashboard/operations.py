@@ -5,10 +5,26 @@ try:
 except ImportError:
     fcntl = None
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+
+CAUSE_LABELS = {
+    "active_guard": "Active process guard",
+    "load_guard": "Load guard",
+    "mem_guard": "Memory guard",
+    "disk_guard": "Disk guard",
+    "proposal_guard": "Proposal guard",
+    "promotion_pause": "Promotion pause",
+    "promotion_evidence_required": "Promotion evidence required",
+    "signature_exhausted": "Signature exhausted",
+    "deduped_existing_run": "Deduped existing run",
+    "timeout": "Timeout",
+    "unknown_no_progress": "Unknown no-progress",
+}
 
 
 def lock_active(project_root: Path) -> bool:
@@ -59,6 +75,76 @@ def tail_log(path: Path, lines: int = 120) -> dict[str, Any]:
         return {"path": str(path), "lines": [f"<failed to read log: {exc}>"], "stat": None}
 
 
+def _latest_overnight_orchestrator_log(project_root: Path) -> Path | None:
+    root = project_root / "logs" / "overnight_safe_loop"
+    if not root.exists():
+        return None
+    candidates = sorted(root.glob("*/orchestrator.log"), key=lambda path: path.stat().st_mtime if path.exists() else 0.0, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def classify_no_progress_line(line: str) -> dict[str, Any] | None:
+    raw = line.strip()
+    if not raw:
+        return None
+    explicit = re.search(r"NO_PROGRESS_CAUSE\s+code=([a-z_]+)", raw)
+    if explicit:
+        code = explicit.group(1)
+    elif "SKIP active_guard" in raw:
+        code = "active_guard"
+    elif "SKIP load_guard" in raw:
+        code = "load_guard"
+    elif "SKIP mem_guard" in raw:
+        code = "mem_guard"
+    elif "SKIP disk_guard" in raw:
+        code = "disk_guard"
+    elif "SKIP proposal_guard" in raw:
+        code = "proposal_guard"
+    elif "Promotion gate is ready" in raw or "pausing exploration" in raw:
+        code = "promotion_pause"
+    elif "AutoResearch promotion action required" in raw or "Run linked seed-repeat LOO" in raw:
+        code = "promotion_evidence_required"
+    elif "No novel one-change proposals remain" in raw:
+        code = "signature_exhausted"
+    elif "deduped_existing_run" in raw or "deduped" in raw:
+        code = "deduped_existing_run"
+    elif "timeout" in raw.lower() or "exit_code=124" in raw:
+        code = "timeout"
+    elif "QUALITY_SKIP no new run produced" in raw or "STALE cycle produced no new run" in raw:
+        code = "unknown_no_progress"
+    else:
+        return None
+    timestamp = None
+    match = re.match(r"\[?([0-9]{4}-[0-9]{2}-[0-9]{2}T[^\]\s]+)", raw)
+    if match:
+        timestamp = match.group(1)
+    return {"code": code, "label": CAUSE_LABELS.get(code, code), "line": raw, "timestamp": timestamp, "detail": {}}
+
+
+def collect_no_progress_causes(project_root: Path, *, max_lines: int = 2000) -> dict[str, Any]:
+    sources = [project_root / "logs" / "autoresearch_guard.log", project_root / "logs" / "autoresearch.log"]
+    overnight = _latest_overnight_orchestrator_log(project_root)
+    if overnight:
+        sources.append(overnight)
+    recent: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for source in sources:
+        if not source.exists():
+            continue
+        try:
+            lines = source.read_text(errors="replace").splitlines()[-max_lines:]
+        except Exception:
+            continue
+        for line in lines:
+            item = classify_no_progress_line(line)
+            if item is None:
+                continue
+            item["source"] = str(source.relative_to(project_root)) if source.is_relative_to(project_root) else str(source)
+            recent.append(item)
+            counts[item["code"]] = counts.get(item["code"], 0) + 1
+    return {"latest": recent[-1] if recent else None, "counts": counts, "recent": recent[-20:], "sources": [str(path.relative_to(project_root)) if path.exists() and path.is_relative_to(project_root) else str(path) for path in sources if path.exists()]}
+
+
 def running_processes(project_root: Path, limit: int = 8) -> list[dict[str, Any]]:
     try:
         proc = subprocess.run(["ps", "-eo", "pid=,etimes=,command="], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
@@ -83,4 +169,14 @@ def running_processes(project_root: Path, limit: int = 8) -> list[dict[str, Any]
 
 
 def operations_snapshot(project_root: Path) -> dict[str, Any]:
-    return {"lock_active": lock_active(project_root), "processes": running_processes(project_root), "logs": tail_log(project_root / "logs" / "autoresearch.log"), "generated_at_epoch": time.time(), "environment": {"enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1"}}
+    overnight = _latest_overnight_orchestrator_log(project_root)
+    return {
+        "lock_active": lock_active(project_root),
+        "processes": running_processes(project_root),
+        "logs": tail_log(project_root / "logs" / "autoresearch.log"),
+        "guard_log": tail_log(project_root / "logs" / "autoresearch_guard.log", lines=80),
+        "overnight_log": tail_log(overnight, lines=120) if overnight else {"path": None, "lines": [], "stat": None},
+        "no_progress": collect_no_progress_causes(project_root),
+        "generated_at_epoch": time.time(),
+        "environment": {"enable_runs": os.getenv("VESUVIUS_DASHBOARD_ENABLE_RUNS") == "1"},
+    }

@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from scripts.package_next_move_evidence import build_next_move_evidence_package, main, render_markdown
+from scripts.package_next_move_evidence import build_next_move_evidence_package, main, render_markdown, write_evidence_package
 
 
 def _write_threshold_artifact(root: Path, run_id: str = "run1", segment_id: str = "seg-a") -> Path:
@@ -237,6 +237,21 @@ class PackageNextMoveEvidenceTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("# Next-Move Evidence Package", stdout.getvalue())
         self.assertIn("Threshold Cap Comparison", stdout.getvalue())
+
+    def test_write_evidence_package_creates_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            metrics = _write_threshold_artifact(root)
+            snapshot = _write_snapshot(root, metrics)
+            package = build_next_move_evidence_package(root, snapshot_json=snapshot)
+
+            paths = write_evidence_package(package, "logs/evidence_packages", reason="test")
+
+            self.assertTrue((root / paths["json"]).exists())
+            self.assertTrue((root / paths["markdown"]).exists())
+            written = json.loads((root / paths["json"]).read_text())
+            self.assertTrue(written["writes_evidence_package"])
+            self.assertEqual(written["candidate_evidence"]["candidate_run_id"], "run1")
 
 
 if __name__ == "__main__":

@@ -3,15 +3,17 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import mimetypes
 import os
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote
 from urllib.parse import parse_qs, urlparse
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from .artifacts import preview_artifact
+from .artifacts import preview_artifact, resolve_artifact_path
 from .settings import (
     apply_dashboard_settings_patch,
     create_settings_snapshot,
@@ -207,7 +209,7 @@ def _visual_artifact_analysis(project_root: Path, payload: dict) -> dict:
     context = {"name": artifact.get("name"), "kind": artifact.get("kind"), "size_bytes": artifact.get("size_bytes")}
     preview = artifact.get("preview")
     if artifact.get("kind") == "npy" and isinstance(preview, dict):
-        context["decoded_metrics"] = {key: preview.get(key) for key in ("shape", "rendered_shape", "threshold", "pred_positive_rate", "mean", "p95", "max", "metrics", "map_quality", "quality_verdict")}
+        context["decoded_metrics"] = {key: preview.get(key) for key in ("shape", "rendered_shape", "downsample", "threshold", "pred_positive_rate", "mask_positive_fraction_preview_mean", "mean", "p95", "max", "metrics", "map_quality", "quality_verdict", "blockiness", "preview_warnings")}
         for label, key in (("probability_heatmap", "heatmap_data_url"), ("threshold_mask", "mask_data_url")):
             data_url = preview.get(key)
             if isinstance(data_url, str) and len(data_url) <= MAX_VISUAL_DATA_URL_CHARS:
@@ -784,7 +786,7 @@ HTML = """<!doctype html>
       width: 100%;
       max-height: 460px;
       object-fit: contain;
-      image-rendering: pixelated;
+      image-rendering: auto;
       border-radius: 4px;
       background: #000;
     }
@@ -811,7 +813,7 @@ HTML = """<!doctype html>
       width: 100%;
       max-height: 180px;
       object-fit: contain;
-      image-rendering: pixelated;
+      image-rendering: auto;
       background: #000;
       border-radius: 4px;
       border: 1px solid rgba(255,255,255,0.05);
@@ -947,6 +949,7 @@ HTML = """<!doctype html>
         <h2>Decision Brief</h2>
         <div class="panel-val" id="ops-lock-status">-</div>
         <p class="panel-detail" id="ops-process-detail">Next action</p>
+        <p class="panel-detail" id="ops-no-progress-detail">Stale cause: none</p>
       </div>
     </section>
 
@@ -1163,6 +1166,13 @@ HTML = """<!doctype html>
         </div>
 
         <div class="panel">
+          <h2>Evidence Packages</h2>
+          <div id="evidence-packages-panel">
+            <div style="color:var(--muted);font-size:0.75rem;padding:0.25rem 0;">Scanning durable next-move packages...</div>
+          </div>
+        </div>
+
+        <div class="panel">
           <h2>Param Drift</h2>
           <div id="param-drift-panel">
             <div style="color:var(--muted);font-size:0.75rem;padding:0.25rem 0;">Comparing current params against bounds...</div>
@@ -1247,6 +1257,14 @@ HTML = """<!doctype html>
       return url.pathname + url.search;
     }
 
+    function artifactDownloadUrl(filePath) {
+      return apiUrl(`/api/artifact/download?path=${encodeURIComponent(filePath)}`);
+    }
+
+    function downloadArtifactButtonHtml(filePath) {
+      return `<a href="${esc(artifactDownloadUrl(filePath))}" download style="display:inline-block;margin-top:0.5rem;padding:0.3rem 0.55rem;border:1px solid var(--line);border-radius:6px;color:var(--accent);font-size:0.68rem;text-decoration:none;">Download full artifact</a>`;
+    }
+
     function showToast(message) {
       const wrapper = document.getElementById('toast-wrapper');
       const t = document.createElement('div');
@@ -1305,9 +1323,14 @@ HTML = """<!doctype html>
       document.getElementById('promote-detail').innerHTML = promotable.run_id ? `<span class="run-pill" style="cursor:pointer;" onclick="selectRun('${promotable.run_id}')">${esc(promotable.run_id.slice(0, 8))}</span> · eligible` : `blocked · ${esc(blockerText)}`;
       
       const ops = rawData.operations || {};
+      const noProgress = ops.no_progress || {};
+      const latestCause = noProgress.latest || {};
+      const causeCounts = noProgress.counts || {};
+      const topCauses = Object.entries(causeCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${k}:${v}`).join(', ') || 'none';
       document.getElementById('ops-lock-status').textContent = ops.lock_active ? "LOCKED" : esc(decision.status || summary.status || 'IDLE').toUpperCase().slice(0, 14);
       document.getElementById('ops-lock-status').className = `panel-val ${ops.lock_active || decision.status === 'blocked' ? 'badge-warning' : 'badge-success'}`;
       document.getElementById('ops-process-detail').textContent = `${(ops.processes || []).length} active runs · next: ${decision.next_action || summary.next_action || 'review'}`;
+      document.getElementById('ops-no-progress-detail').textContent = latestCause.code ? `stale cause: ${latestCause.code} · counts: ${topCauses}` : `stale cause: none · counts: ${topCauses}`;
       
       // Auto-select latest run initially if nothing selected
       if (!selectedRunId && score.latest_run_id) {
@@ -1317,6 +1340,7 @@ HTML = """<!doctype html>
       // 3. Render Custom Components
       renderMilestones(rawData.progress.milestones, summary.foundation_readiness);
       renderCandidateEvidence(decision.candidate_evidence || rawData.research_summary?.candidate_evidence || {});
+      renderEvidencePackages(rawData.experiments?.evidence_packages || rawData.research_summary?.evidence_packages || []);
       renderParamDrift(rawData.param_drift || {});
       renderMiningCalibrationPanel(rawData.mining);
       renderTrendChart(rawData.experiments.metric_trends);
@@ -1368,9 +1392,24 @@ HTML = """<!doctype html>
         <div class="milestone-item"><span class="milestone-label">Promotion logs</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${promoLogs}</span></div>
         <div class="milestone-item"><span class="milestone-label">Weak-fold tile</span><span class="indicator-badge ${weak.status === 'done' ? 'badge-success' : 'badge-warning'}">${esc(weak.status || 'unknown')}</span></div>
         <div style="margin-top:0.5rem;color:var(--text);font-size:0.75rem;">${esc(action.label || 'Review candidate evidence')}</div>
-        ${cmd ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(cmd).replace(/'/g, '&#39;')}')">Copy next command</button>` : ''}
+        ${cmd ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard(${jsArg(cmd)})">Copy next command</button>` : ''}
         ${runButtonHtml(action)}
       `;
+    }
+
+    function renderEvidencePackages(packages) {
+      const container = document.getElementById('evidence-packages-panel');
+      if (!container) return;
+      const rows = Array.isArray(packages) ? packages.slice(0, 8) : [];
+      if (!rows.length) {
+        container.innerHTML = '<div style="color:var(--muted);font-size:0.75rem;">No evidence packages written yet. Use <code>scripts/package_next_move_evidence.py --output-dir logs/evidence_packages</code> when a durable handoff is needed.</div>';
+        return;
+      }
+      container.innerHTML = rows.map(item => {
+        const path = item.relative_path || item.path_json || item.path_markdown || item.path || 'unknown';
+        const candidate = item.candidate_run_id ? ` · ${esc(item.candidate_run_id)}` : '';
+        return `<div class="milestone-item"><span class="milestone-label">${esc(path)}</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${esc(item.reason || item.kind || 'package')}${candidate}</span></div>`;
+      }).join('');
     }
 
     function nestedValue(obj, path) {
@@ -1442,9 +1481,9 @@ HTML = """<!doctype html>
         ${previewWarnings.length ? `<div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);">Config preview warnings: ${esc(previewWarnings.join(', '))}</div>` : ''}
         <div class="milestone-item"><span class="milestone-label">Ratio trigger</span><span style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);">${fmt(plan.ratio_threshold, 2)}x</span></div>
         <div style="color:var(--muted);font-size:0.68rem;font-family:var(--font-mono);margin-top:0.35rem;">${esc(plan.next_step || 'Run mining, retrain fold-safe, validate full-tile quality.')}</div>
-        ${firstCap.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(firstCap.command_text).replace(/'/g, '&#39;')}')">Copy read-only cap comparison</button>` : ''}
+        ${firstCap.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard(${jsArg(firstCap.command_text)})">Copy read-only cap comparison</button>` : ''}
         ${runButtonHtml(firstCap)}
-        ${first.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard('${esc(first.command_text).replace(/'/g, '&#39;')}')">Copy top mine command</button>` : ''}
+        ${first.command_text ? `<button style="margin-top:0.5rem;width:100%;font-size:0.68rem;" onclick="copyToClipboard(${jsArg(first.command_text)})">Copy top mine command</button>` : ''}
       `;
     }
 
@@ -1583,8 +1622,10 @@ HTML = """<!doctype html>
     function decodedOutputPreviewHtml(filePath, fileName, p) {
       const q = p.quality_verdict || {};
       const mq = p.map_quality || {};
+      const warnings = p.preview_warnings || [];
       return `
         <img src="${p.heatmap_data_url}" alt="Decoded probability heatmap" onclick="previewArtifact('${esc(filePath)}', '${esc(fileName)}')" style="cursor:pointer;">
+        ${warnings.length ? `<div style="margin-top:0.35rem;color:var(--warning);font-size:0.66rem;font-family:var(--font-mono);">Preview warnings: ${esc(warnings.join(', '))}</div>` : ''}
         <div class="decoded-metrics">
           <span class="indicator-badge ${verdictBadgeClass(q.verdict)}">${verdictText(q.verdict)}</span>
           <span class="pill">q=${fmt(q.score, 3)}</span>
@@ -2090,20 +2131,26 @@ HTML = """<!doctype html>
         const isImg = data.kind && ['png','jpg','jpeg','webp','gif'].includes(data.kind.toLowerCase());
         if (data.kind === 'npy' && data.preview && data.preview.heatmap_data_url) {
           const p = data.preview;
+          const previewWarnings = p.preview_warnings || [];
           const metricPills = [
             ['quality', `${verdictText(p.quality_verdict?.verdict)} ${fmt(p.quality_verdict?.score, 3)}`],
             ['map_quality', `${verdictText(p.map_quality?.verdict)} ${fmt(p.map_quality?.score, 3)}`],
             ['shape', (p.shape || []).join('x')],
             ['rendered', (p.rendered_shape || []).join('x')],
+            ['downsample', p.downsample?.method || 'none'],
             ['threshold', fmt(p.threshold, 4)],
             ['pred+', fmt(p.pred_positive_rate, 4)],
+            ['mask_preview+', fmt(p.mask_positive_fraction_preview_mean, 4)],
             ['mean', fmt(p.mean, 4)],
             ['p95', fmt(p.p95, 4)],
             ['max', fmt(p.max, 4)],
+            ['blockiness', fmt(p.blockiness?.index, 2)],
           ];
           const extraMetrics = Object.entries(p.metrics || {}).map(([k, v]) => [k, typeof v === 'number' ? fmt(v, 4) : v]);
           display.innerHTML = `
-            <div style="color:var(--muted);font-size:0.72rem;">Decoded NumPy probability map. Left is probability intensity; right is binary decoded mask at the selected threshold.</div>
+            <div style="color:var(--muted);font-size:0.72rem;">Decoded NumPy probability map. Left is area-averaged probability intensity; right is the full-resolution threshold mask downsampled as positive-pixel fraction.</div>
+            ${downloadArtifactButtonHtml(filePath)}
+            ${previewWarnings.length ? `<div style="margin-top:0.35rem;color:var(--warning);font-size:0.7rem;font-family:var(--font-mono);">Preview warnings: ${esc(previewWarnings.join(', '))}</div>` : ''}
             <div class="decoded-metrics">
               ${metricPills.concat(extraMetrics).map(([k, v]) => `<span class="pill">${esc(k)}=${esc(v)}</span>`).join('')}
             </div>
@@ -2125,11 +2172,12 @@ HTML = """<!doctype html>
             <div style="background:#000; padding:1rem; border-radius:8px; border:1px solid var(--line); display:flex; justify-content:center;">
               <img src="${data.preview}" style="max-width:100%; max-height:400px; border-radius:4px; box-shadow:0 0 20px rgba(0,0,0,0.5);" alt="Run Visual Prediction">
             </div>
+            ${downloadArtifactButtonHtml(filePath)}
             ${visualAnalysisButtonHtml(filePath, fileName)}
             <div id="visual-analysis-${safeDomId(filePath)}" style="margin-top:0.5rem;color:var(--muted);font-size:0.72rem;white-space:pre-wrap;"></div>
           `;
         } else if (data.kind === 'json' && typeof data.preview === 'object') {
-          display.innerHTML = `<pre>${esc(JSON.stringify(data.preview, null, 2))}</pre>`;
+          display.innerHTML = `${downloadArtifactButtonHtml(filePath)}<pre>${esc(JSON.stringify(data.preview, null, 2))}</pre>`;
         } else {
           // Syntax highlight text logs / scripts
           let textContent = esc(data.preview || '');
@@ -2140,7 +2188,7 @@ HTML = """<!doctype html>
             .replace(/(\\[WARNING\\]|WARNING:|WARN:)/g, '<span style="color:var(--warning); font-weight:bold;">$1</span>')
             .replace(/(\\[ERROR\\]|ERROR:|CRITICAL:)/g, '<span style="color:var(--error); font-weight:bold;">$1</span>');
             
-          display.innerHTML = `<pre>${highlighted}</pre>`;
+          display.innerHTML = `${downloadArtifactButtonHtml(filePath)}<pre>${highlighted}</pre>`;
         }
       } catch (err) {
         display.innerHTML = `<div style="color:var(--error);font-size:0.75rem;font-family:var(--font-mono);">Sync Error: ${esc(err.message)}</div>`;
@@ -2448,7 +2496,7 @@ HTML = """<!doctype html>
             <div>
               ${(f.tags || []).map(t => `<span class="pill" style="font-size:0.6rem;padding:0.1rem 0.35rem;margin:0.05rem;">${esc(t)}</span>`).join('')}
             </div>
-            <button style="padding:0.25rem 0.5rem;font-size:0.68rem;" onclick="copyToClipboard('${esc(f.command_text)}')">Copy Command</button>
+            <button style="padding:0.25rem 0.5rem;font-size:0.68rem;" onclick="copyToClipboard(${jsArg(f.command_text)})">Copy Command</button>
             ${runButtonHtml(f)}
           </div>
         </div>
@@ -2592,6 +2640,16 @@ def make_handler(project_root: Path, auth_token: str | None = None):
                 elif parsed.path == "/api/artifact":
                     path = parse_qs(parsed.query).get("path", [""])[0]
                     self._json(200, preview_artifact(project_root, path))
+                elif parsed.path == "/api/artifact/download":
+                    path = parse_qs(parsed.query).get("path", [""])[0]
+                    artifact = resolve_artifact_path(project_root, path)
+                    content_type = mimetypes.guess_type(artifact.name)[0] or "application/octet-stream"
+                    self._send(
+                        200,
+                        artifact.read_bytes(),
+                        content_type,
+                        {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(artifact.name)}"},
+                    )
                 else:
                     self._json(404, {"error": "not found"})
             except Exception as exc:

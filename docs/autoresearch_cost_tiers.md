@@ -10,6 +10,16 @@ AutoResearch assigns every generated proposal an `autoresearch.cost_tier` so cro
 
 Normal cron exploration defaults to `AUTORESEARCH_MAX_COST_TIER=normal`. Expensive proposals are reserved for explicit promotion actions, candidate-linked follow-ups, or manual runs.
 
+## Method-Family Arms
+
+AutoResearch can propose bounded method-family arms in addition to scalar hyperparameter changes:
+
+- `augmentation_policy`: toggles CPU-safe train-time flips and rotations.
+- `z_context`: proposes prepared-data-compatible 2.5D z-offset contexts such as `[-4, 0, 4]` or `[-6, -3, 0, 3, 6]`.
+- `sampling_strategy`: proposes hard-mining or warmup-then-hard sampling metadata under the existing exploration profile.
+
+These arms are enabled by default through `AUTORESEARCH_ENABLE_METHOD_FAMILY_ARMS=1` semantics and still pass through `autoresearch.cost_tier` and runner profile checks. `full_tile_inference` and `label_audit` are fail-closed/manual arms; they are not emitted as automatic training configs unless explicitly wired later.
+
 ## Training Profiles
 
 Generated exploration configs include:

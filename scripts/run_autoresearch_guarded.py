@@ -75,7 +75,14 @@ def active_autoresearch_processes() -> list[str]:
             cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "ignore")
         except Exception:
             continue
-        if str(ROOT) in cmdline and ("autoresearch.py" in cmdline or "run_experiment.py" in cmdline):
+        guarded_scripts = (
+            "autoresearch.py",
+            "run_experiment.py",
+            "scripts/evaluate_leave_one_out.py",
+            "scripts/infer_full_tile.py",
+            "scripts/run_autoresearch_guarded.py",
+        )
+        if str(ROOT) in cmdline and any(script in cmdline for script in guarded_scripts):
             active.append(f"{pid}:{cmdline[:180]}")
     return active
 
@@ -105,20 +112,25 @@ def main() -> int:
 
     if free_gib < MIN_ROOT_FREE_GIB:
         log(f"SKIP disk_guard root_free_gib={free_gib:.1f} min={MIN_ROOT_FREE_GIB:.1f}")
+        log(f"NO_PROGRESS_CAUSE code=disk_guard root_free_gib={free_gib:.1f} min={MIN_ROOT_FREE_GIB:.1f}")
         return 0
     if len(active) > MAX_ACTIVE_AUTORESEARCH:
         log(f"SKIP active_guard count={len(active)} active={active[:3]}")
+        log(f"NO_PROGRESS_CAUSE code=active_guard count={len(active)}")
         return 0
     if load1 > MAX_LOAD_HARD:
         log(f"SKIP load_guard load1={load1:.2f} load5={load5:.2f} load15={load15:.2f} max={MAX_LOAD_HARD:.2f}")
+        log(f"NO_PROGRESS_CAUSE code=load_guard load1={load1:.2f} max={MAX_LOAD_HARD:.2f}")
         return 0
     if mem_gib < MIN_MEM_HARD_GIB:
         log(f"SKIP mem_guard mem_available_gib={mem_gib:.1f} min={MIN_MEM_HARD_GIB:.1f}")
+        log(f"NO_PROGRESS_CAUSE code=mem_guard mem_available_gib={mem_gib:.1f} min={MIN_MEM_HARD_GIB:.1f}")
         return 0
 
     proposals = choose_proposals(load1, mem_gib)
     if proposals <= 0:
         log(f"SKIP proposal_guard load1={load1:.2f} mem_available_gib={mem_gib:.1f}")
+        log(f"NO_PROGRESS_CAUSE code=proposal_guard load1={load1:.2f} mem_available_gib={mem_gib:.1f}")
         return 0
 
     env = os.environ.copy()
@@ -160,6 +172,9 @@ def main() -> int:
     )
     completed = subprocess.run(cmd, cwd=ROOT, env=env)
     log(f"DONE exit_code={completed.returncode} proposals={proposals}")
+    if completed.returncode != 0:
+        code = "timeout" if completed.returncode == 124 else "unknown_no_progress"
+        log(f"NO_PROGRESS_CAUSE code={code} exit_code={completed.returncode} proposals={proposals}")
     return 0 if completed.returncode == 0 else completed.returncode
 
 

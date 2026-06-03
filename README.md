@@ -51,6 +51,7 @@ Reviewer-facing docs:
 - `REPRODUCE.md`: clean install, tests, data preparation, run, LOO, full-tile, and dashboard commands.
 - `docs/dashboard.md`: dashboard safety model, Agent Chat, safe controls, hydration/cache behavior, and shared snapshot contract.
 - `docs/autoresearch_cost_tiers.md`: proposal cost tiers and guarded overnight loop modes.
+- `docs/autonomous_self_improvement.md`: proposal ledger, failure memory, stale causes, and evidence package workflow.
 - `CITATION.cff`: citation metadata for this repo and required dataset attribution.
 - `artifacts/README.md`, `weights/README.md`, and `submission/`: templates for external artifacts and prize package metadata.
 - `docs/archive/`: dated research notes and planning audits retained for provenance, not active promotion guidance.
@@ -76,6 +77,24 @@ VESUVIUS_DASHBOARD_AGENT_BASE_URL=http://127.0.0.1:8766/api/agent/chat \
 For custom providers, set `VESUVIUS_DASHBOARD_AGENT_BASE_URL`, `VESUVIUS_DASHBOARD_AGENT_MODEL`, and `VESUVIUS_DASHBOARD_AGENT_API_KEY`, or enter a session-only key in the dashboard UI. When `VESUVIUS_DASHBOARD_AGENT_SETTINGS_WRITE=1`, the agent can propose allowlisted dashboard settings fixes; users must review and apply them, and every apply creates a reversible snapshot under `.dashboard/`. Optional decoded-output visual analysis is enabled with `VESUVIUS_DASHBOARD_VISUAL_ANALYSIS_ENABLED=1` or the versioned dashboard setting. See `docs/dashboard.md` for the safety model.
 
 For private tailnet operation, run controls and Agent Chat can be enabled without URL tokens only with `VESUVIUS_DASHBOARD_ALLOW_UNAUTHENTICATED_POSTS=1` on a trusted private binding or tailnet route. Do not combine tokenless POST mode with public Funnel exposure. When the dashboard is managed by user systemd, import updated `VESUVIUS_DASHBOARD_*` environment variables into the user manager before restarting `vesuvius-dashboard.service`.
+
+## Autonomous Self-Improvement Ledger
+
+AutoResearch now records generated proposals and outcomes in SQLite ledger tables inside `experiments/experiments.db`: `hypotheses`, `proposals`, `proposal_results`, `diagnoses`, and `evidence_packages`. Generated configs include `autoresearch.proposal_id`, `hypothesis_id`, `arm_id`, `search_signature`, and `config_signature`; completed, deduped, and failed runs are attributed back to the proposal when possible.
+
+The dashboard and audit report surface proposal lineage, recent ledger entries, structured no-progress causes, and evidence-package links. Promotion remains dashboard-gated: ledger lineage explains why a proposal exists, but it does not relax linked LOO, full-tile, fixed-threshold, positive-rate, or quality gates.
+
+Evidence packages are stdout-only by default:
+
+```bash
+.venv/bin/python scripts/package_next_move_evidence.py --markdown
+```
+
+To intentionally write package files for review, use an explicit output flag:
+
+```bash
+.venv/bin/python scripts/package_next_move_evidence.py --output-dir logs/evidence_packages --markdown
+```
 
 Quick setup from a clean clone:
 

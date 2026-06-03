@@ -68,6 +68,7 @@ Prepare a training segment and a validation segment, then regenerate configs:
 
 Outputs are written to `experiments/runs/<run_id>/` and should not be committed.
 Identical resolved configs are deduped by `config_signature`; inspect the returned `deduped` field before assuming a new run directory was created.
+AutoResearch-generated configs also include proposal lineage in `config.autoresearch`; completed, deduped, and failed attempts are recorded in the ledger tables in `experiments/experiments.db`.
 
 Expected runtime: one CPU baseline run can take minutes; seed-repeat LOO and full-tile inference are substantially slower and depend on local CPU count, storage, and public-data mirror responsiveness.
 
@@ -95,6 +96,20 @@ Before writing any mining artifacts, package the current read-only next-move evi
 ```
 
 This package requires existing local run artifacts, dashboard evidence, and full-tile outputs. It does not write run, mined-data, log, DB, `.npy`, `.npz`, or `.pt` outputs. It synthesizes whether the next move is promotion review, cap tightening, full-tile regression review, or fold-safe mining review.
+
+Write a review package intentionally when you need durable handoff files:
+
+```bash
+.venv/bin/python scripts/package_next_move_evidence.py --output-dir logs/evidence_packages --markdown
+```
+
+Inspect the current autonomous state without mutating artifacts:
+
+```bash
+.venv/bin/python scripts/audit_research_state.py --markdown
+sqlite3 experiments/experiments.db 'select proposal_id,status,created_at from proposals order by created_at desc limit 10;'
+sqlite3 experiments/experiments.db 'select proposal_id,run_id,status,error_class from proposal_results order by created_at desc limit 10;'
+```
 
 ```bash
 .venv/bin/python scripts/plan_hard_negative_retrain.py --pretty

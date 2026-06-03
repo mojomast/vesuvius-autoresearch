@@ -79,7 +79,20 @@ def _build_snapshot_uncached(root: Path) -> dict[str, Any]:
         "promotion_actions": decision.get("promotion_actions", []),
         "decision": decision,
         "champions": experiments.get("champions", {}),
+        "hypotheses": experiments.get("hypotheses", []),
+        "proposal_lineage": (experiments.get("latest") or {}).get("proposal_lineage", {}) if isinstance(experiments.get("latest"), dict) else {},
+        "evidence_packages": experiments.get("evidence_packages", []),
+        "ledger": experiments.get("ledger", {}),
     }
+    contract_status = {
+        "source_of_truth": True,
+        "producer": "research_dashboard.snapshot.build_snapshot",
+        "schema_version": SCHEMA_VERSION,
+        "serving_endpoint": "/api/research",
+        "candidate_linkage": "candidate-linked LOO/full-tile evidence only clears promotion gate",
+        "conflict_fix_status": "dashboard_contract_authoritative",
+    }
+    research_summary["contract_status"] = contract_status
     partial_snapshot = {"research_summary": research_summary, "experiments": experiments, "datasets": datasets}
     mining = build_hard_negative_plan(root, partial_snapshot)
     harness = _harness_metadata()
@@ -89,6 +102,7 @@ def _build_snapshot_uncached(root: Path) -> dict[str, Any]:
     settings_values = dashboard_settings.get("values", {})
     return {
         "schema_version": SCHEMA_VERSION,
+        "contract_status": contract_status,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "project": {"root": str(root), "exists": root.exists(), "python": ".venv/bin/python" if (root / ".venv" / "bin" / "python").exists() else "python3"},
         "inventory": build_inventory(root),

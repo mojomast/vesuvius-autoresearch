@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import autoresearch
-from autoresearch import PARAM_BOUNDS, _apply_candidate, _config_cost_tier, _generate_promotion_action_proposals, _max_allowed_cost_tier, _mutation_family, _proposal_candidates, _proposal_plan, _proposal_value_slug, _propose_configs, _search_signature
+from autoresearch import PARAM_BOUNDS, _apply_candidate, _config_cost_tier, _generate_promotion_action_proposals, _max_allowed_cost_tier, _method_family_arm_enabled, _mutation_family, _proposal_candidates, _proposal_plan, _proposal_value_slug, _propose_configs, _search_signature
 
 
 def _assert_candidates_within_bounds(config):
@@ -103,6 +103,30 @@ def test_balanced_calibration_candidate_can_apply_loss_weight():
     assert _mutation_family(("balanced_calibration",)) == "balanced_calibration"
 
 
+def test_hard_fold_sampling_calibration_candidate_applies_all_fields():
+    cfg = {"training": {"patch_sampling": "random", "positive_patch_fraction": 0.45}, "evaluation": {"max_pred_positive_rate_ratio": 3.5}}
+    value = {
+        "patch_sampling": "hard_mining",
+        "positive_patch_fraction": 0.30,
+        "hard_negative_fraction": 0.75,
+        "positive_rate_loss_weight": 0.08,
+        "positive_rate_loss_tolerance": 0.012,
+        "positive_rate_loss_target": "auto_train",
+        "max_pred_positive_rate_ratio": 2.5,
+    }
+
+    _apply_candidate(cfg, ("hard_fold_sampling_calibration",), value)
+
+    assert cfg["training"]["patch_sampling"] == "hard_mining"
+    assert cfg["training"]["positive_patch_fraction"] == 0.30
+    assert cfg["training"]["hard_negative_fraction"] == 0.75
+    assert cfg["training"]["positive_rate_loss_weight"] == 0.08
+    assert cfg["training"]["positive_rate_loss_tolerance"] == 0.012
+    assert cfg["training"]["positive_rate_loss_target"] == "auto_train"
+    assert cfg["evaluation"]["max_pred_positive_rate_ratio"] == 2.5
+    assert _mutation_family(("hard_fold_sampling_calibration",)) == "hard_fold_sampling_calibration"
+
+
 def test_torch_candidates_can_propose_4096_samples_when_budget_allows(monkeypatch):
     monkeypatch.setenv("AUTORESEARCH_TORCH_MAX_TRAIN_SAMPLES", "4096")
 
@@ -143,9 +167,24 @@ def test_positive_rate_cap_and_tolerance_participate_in_search_signature():
         "training": {"positive_rate_loss_tolerance": 0.005},
         "evaluation": {"max_pred_positive_rate_ratio": 2.5},
     }
+    changed_target = {
+        "model": {"name": "tiny_torch_unet"},
+        "training": {"positive_rate_loss_tolerance": 0.01, "positive_rate_loss_target": "auto_train"},
+        "evaluation": {"max_pred_positive_rate_ratio": 2.5},
+    }
 
     assert _search_signature(base) != _search_signature(changed_cap)
     assert _search_signature(base) != _search_signature(changed_tolerance)
+    assert _search_signature(base) != _search_signature(changed_target)
+
+
+def test_sampling_pressure_fields_participate_in_search_signature():
+    base = {"model": {"name": "tiny_torch_unet"}, "training": {"patch_sampling": "random", "positive_patch_fraction": 0.45}}
+    changed_patch_sampling = {"model": {"name": "tiny_torch_unet"}, "training": {"patch_sampling": "hard_mining", "positive_patch_fraction": 0.45}}
+    changed_positive_fraction = {"model": {"name": "tiny_torch_unet"}, "training": {"patch_sampling": "random", "positive_patch_fraction": 0.30}}
+
+    assert _search_signature(base) != _search_signature(changed_patch_sampling)
+    assert _search_signature(base) != _search_signature(changed_positive_fraction)
 
 
 def test_promotion_action_proposals_obey_param_bounds(monkeypatch):
@@ -209,6 +248,58 @@ def test_expensive_proposals_are_skipped_without_plateau_context(monkeypatch):
     assert len(proposals) == 1
     assert proposals[0][1]["autoresearch"]["cost_tier"] == "normal"
     assert proposals[0][1]["autoresearch"]["changed_path"] == "evaluation.threshold"
+
+
+def test_proposed_configs_include_proposal_ids(monkeypatch):
+    monkeypatch.setattr(autoresearch, "_reserved_signatures", lambda runs: set())
+    proposals = _propose_configs(
+        {"model": {"name": "tiny_torch_unet"}, "training": {"epochs": 5, "max_train_samples": 1024}, "evaluation": {"threshold": 0.5}},
+        [],
+        count=1,
+        lock_to_baseline_scope=False,
+        strategy_phase="exploit",
+    )
+
+    autoresearch_meta = proposals[0][1]["autoresearch"]
+    plan = _proposal_plan(proposals)
+
+    assert autoresearch_meta["proposal_id"]
+    assert autoresearch_meta["hypothesis_id"]
+    assert autoresearch_meta["config_signature"]
+    assert plan[0]["proposal_id"] == autoresearch_meta["proposal_id"]
+
+
+def test_method_family_arms_include_named_cpu_safe_training_families(monkeypatch):
+    monkeypatch.setenv("AUTORESEARCH_ENABLE_METHOD_FAMILY_ARMS", "1")
+
+    candidates = _proposal_candidates({
+        "model": {"name": "tiny_torch_unet", "base_channels": 8},
+        "dataset": {"z_offsets": [0]},
+        "training": {"epochs": 5, "max_train_samples": 1024, "augment_flips": False},
+        "evaluation": {"threshold": 0.5},
+    })
+    families = {_mutation_family(path) for path, _value, _reason in candidates}
+    reasons = "\n".join(reason for _path, _value, reason in candidates)
+
+    assert "augmentation_policy" in families
+    assert "z_context" in families
+    assert "data_sampling" in families
+    assert "hard-negative mining" in reasons or "hard mining" in reasons
+
+
+def test_full_tile_and_label_audit_arms_fail_closed(monkeypatch):
+    monkeypatch.delenv("AUTORESEARCH_ENABLE_FULL_TILE_INFERENCE_ARMS", raising=False)
+    monkeypatch.delenv("AUTORESEARCH_ENABLE_LABEL_AUDIT_ARMS", raising=False)
+
+    assert not _method_family_arm_enabled("full_tile_inference")
+    assert not _method_family_arm_enabled("label_audit")
+
+
+def test_method_family_z_context_participates_in_signature():
+    base = {"model": {"name": "tiny_torch_unet"}, "dataset": {"z_offsets": [0]}, "training": {"max_train_samples": 1024}}
+    changed = {"model": {"name": "tiny_torch_unet"}, "dataset": {"z_offsets": [-4, 0, 4]}, "training": {"max_train_samples": 1024}}
+
+    assert _search_signature(base) != _search_signature(changed)
 
 
 def test_plateau_context_defers_expensive_proposals_until_normal_options_are_used(monkeypatch):

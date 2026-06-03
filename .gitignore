@@ -1,9 +1,12 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+*.coverage
 .env
 .dashboard/
 .venv/
+*.lock
 build/
 dist/
 *.egg-info/

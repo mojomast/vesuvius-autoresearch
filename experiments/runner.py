@@ -20,6 +20,7 @@ import numpy as np
 import yaml
 
 from data.vesuvius_data import prepare_training_subset, validate_prepared_npz
+from src.autoresearch.ledger import init_ledger, record_proposal_result
 from src.autoresearch.villa_samplers import GroupStratifiedBatchSampler, StatefulShuffledSampler
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,15 @@ CONFIG_SIGNATURE_EXCLUDED_KEYS = {
     "timestamp",
     "updated_at",
     "validation_setup",
+    "proposal_id",
+    "proposal_status",
+    "proposal_score",
+    "proposal_score_components",
+    "triage_failures",
+    "score_reasons",
+    "optuna_trial_number",
+    "optuna_study_name",
+    "optuna_storage",
 }
 
 
@@ -259,6 +269,7 @@ def init_db(db_path: Path | str = DB_PATH) -> None:
             )
             """
         )
+    init_ledger(db_path)
 
 
 def _existing_run_for_signature(config_signature: str, db_path: Path | str = DB_PATH) -> Dict[str, Any] | None:
@@ -1291,8 +1302,12 @@ def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH)
     cfg = load_config(config_path)
     _enforce_run_profile(cfg)
     config_signature = canonical_experiment_config_signature(cfg)
+    autoresearch = cfg.setdefault("autoresearch", {}) if isinstance(cfg.setdefault("autoresearch", {}), dict) else {}
+    autoresearch.setdefault("config_signature", config_signature)
+    proposal_id = str(autoresearch.get("proposal_id") or "") or None
     existing = _existing_run_for_signature(config_signature, db_path)
     if existing is not None:
+        record_proposal_result(proposal_id, run_id=existing.get("run_id"), status="deduped_existing_run", db_path=db_path)
         return existing
     dataset = cfg.setdefault("dataset", {})
     data_root = Path(dataset.get("prepared_root", ROOT / "data" / "prepared")).expanduser()
@@ -1341,4 +1356,14 @@ def run_experiment(config_path: str | os.PathLike[str], db_path: Path = DB_PATH)
             "INSERT OR REPLACE INTO experiments(run_id,timestamp,config_json,main_metric,secondary_metrics_json,artifact_dir,config_signature) VALUES(?,?,?,?,?,?,?)",
             (run_id, datetime.now(timezone.utc).isoformat(), raw, main_metric, json.dumps(metrics, sort_keys=True), str(artifact_dir), config_signature),
         )
+    record_proposal_result(proposal_id, run_id=run_id, status="completed", metric_deltas=metrics, db_path=db_path)
+    strategy_name = str(os.environ.get("AUTORESEARCH_SEARCH_STRATEGY", "heuristic"))
+    if strategy_name.strip().lower() not in {"", "heuristic", "random", "current", "default"}:
+        try:
+            from src.autoresearch.search_strategy import strategy_from_env
+            observe = getattr(strategy_from_env(strategy_name), "observe", None)
+            if callable(observe):
+                observe({"run_id": run_id, "config": cfg, "metrics": metrics, "main_metric": main_metric})
+        except Exception as exc:
+            LOGGER.warning("search strategy observe failed for %s: %s", run_id, exc)
     return {"run_id": run_id, "main_metric": main_metric, "metrics": metrics, "artifact_dir": str(artifact_dir), "db_path": str(db_path), "config_signature": config_signature, "deduped": False}

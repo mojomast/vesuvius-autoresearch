@@ -12,6 +12,7 @@ For prize review, the method claim is tooling-oriented: bounded experiment gover
 4. Run leave-one-segment-out validation for robust candidates.
 5. Run full-tile inference on candidate and weak-fold segments.
 6. Use dashboard quality verdicts and read-only evidence packages to select next actions such as cap calibration, hard-fold AP/separability audit, full-tile regression review, or fold-safe hard-negative mining.
+7. Attribute each autonomous proposal to a `proposal_id`/`hypothesis_id` in the self-improvement ledger, then record completion, dedupe, or failure outcomes for future proposal scoring.
 
 ## Models
 
@@ -34,7 +35,14 @@ Promotion requires more than sampled F1:
 - Full-tile evidence on the candidate and linked LOO folds, with no quality failures.
 - Weak-fold full-tile evidence counts only when it is linked to the held-out LOO/candidate lineage, evaluates `evaluation_region.type: whole_segment`, and passes promotion checks for that segment.
 - Sampled-only hard-fold results are diagnostic. The repeated `20230530172803` blocker must be cleared by candidate-linked LOO and full-tile evidence, not by threshold-only gate relaxation.
+- Seed-repeat LOO summaries apply explicit hard-fold floors for `20230530172803`; nominal script readiness is blocked if hard-fold F1/AP is catastrophic.
 - No fold leakage from held-out segments.
+
+## Autonomous Proposal Governance
+
+Generated configs keep one-change interpretability where possible and carry `autoresearch.proposal_id`, `hypothesis_id`, `arm_id`, `mutation_family`, `changed_path`, `cost_tier`, `search_signature`, and `config_signature`. The runner records proposal outcomes in the ledger for completed, deduped, and failed attempts. This turns failed experiments into learning signals instead of silent retries.
+
+Method-family proposal arms cover `augmentation_policy`, `z_context`, and `sampling_strategy` under normal CPU-safe cost gates. `full_tile_inference` and `label_audit` remain manual/fail-closed evidence actions, not automatic cron training jobs.
 
 ## Hard-Negative Mining
 

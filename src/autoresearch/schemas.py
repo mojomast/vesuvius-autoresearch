@@ -131,6 +131,10 @@ class AutoresearchConfig(BaseModel):
     scope_policy: str | None = None
     parent_reason: str | None = None
     parent_recent_winner: str | None = None
+    proposal_id: str | None = None
+    hypothesis_id: str | None = None
+    arm_id: str | None = None
+    config_signature: str | None = None
     search_signature: list[Any] | None = None
     intent: str | None = None
     run_profile: str | None = None

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autoresearch
-from autoresearch import _CycleProfiler, _RunHistory, _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _promotion_or_fallback_proposals, _promotion_phase_manual_action, _promotion_ready_payload, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _search_signature, _set_nested, _strategy_phase
+from autoresearch import _CycleProfiler, _RunHistory, _classify_run_failures, _generate_promotion_action_proposals, _mutation_family, _pivot_bases, _prepare_autoresearch_base, _proposal_candidates, _proposal_plan, _promotion_gate, _promotion_next_action, _promotion_or_fallback_proposals, _promotion_phase_manual_action, _promotion_ready_payload, _propose_best_path, _propose_configs, _propose_from_recent_winners, _reserved_signatures, _score_proposal_candidate, _search_signature, _set_nested, _strategy_phase, _summarize_recent_failure_context
 from experiments.runner import load_config
 
 
@@ -115,6 +115,18 @@ class AutoResearchPivotTest(unittest.TestCase):
 
         self.assertEqual(prepared["training"]["epochs"], 8)
         self.assertEqual(prepared["autoresearch"]["cron_safety"]["epochs_bound"], 8)
+
+    def test_numpy_exploration_clamps_pixel_cap_before_execution(self) -> None:
+        cfg = load_config("configs/baseline.yaml")
+        cfg.setdefault("autoresearch", {})["run_profile"] = "exploration"
+        cfg.setdefault("model", {})["name"] = "tiny_numpy_mlp"
+        cfg.setdefault("training", {})["max_train_pixels"] = 1200000
+
+        with patch.dict("os.environ", {"AUTORESEARCH_EXPLORATION_MAX_TRAIN_PIXELS": "600000"}):
+            autoresearch._clamp_exploration_training_bounds(cfg)
+
+        self.assertEqual(cfg["training"]["max_train_pixels"], 600000)
+        self.assertEqual(cfg["autoresearch"]["cron_safety"]["max_train_pixels_bound"], 600000)
 
     def test_best_path_does_not_start_with_focused_numpy_when_robust_available(self) -> None:
         base = load_config("configs/baseline.yaml")
@@ -256,11 +268,61 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertNotEqual(paths[0], ("evaluation", "threshold"))
         self.assertTrue(all(proposal[1]["autoresearch"]["promotable"] is False for proposal in proposals))
 
-    def test_proposal_plan_exposes_safe_metadata(self) -> None:
+    def test_hard_fold_low_ap_action_generates_targeted_sampling_proposals(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        _set_nested(cfg, ("training", "positive_patch_fraction"), 0.45)
+        _set_nested(cfg, ("training", "hard_negative_fraction"), 0.5)
+        run = {"run_id": "candidate", "config": cfg, "main_metric": 0.1, "metrics": {"val_f1": 0.05, "average_precision": 0.025, "precision": 0.1, "recall": 0.2, "pred_positive_rate": 0.4, "val_positive_rate": 0.018, "ap_prevalence_lift": 1.2}}
+        blocker = {"blocks_promotion": True, "pattern": "hard_fold_low_ap_near_prevalence", "hard_fold_id": "20230530172803"}
 
         with patch("autoresearch._reserved_signatures", return_value=set()):
-            proposals = _propose_configs(cfg, [], count=1, lock_to_baseline_scope=False, strategy_phase="exploit")
+            proposals = _generate_promotion_action_proposals(
+                [run],
+                {"action_id": "audit_hard_fold_labels", "targeted_action_id": "hard_fold_low_ap_near_prevalence", "candidate_run_id": "candidate", "candidate_evidence": {"linked_loo_failure_pattern": blocker}},
+                count=4,
+            )
+
+        self.assertTrue(proposals)
+        changed_paths = {proposal[1]["autoresearch"]["changed_path"] for proposal in proposals}
+        self.assertTrue(changed_paths & {"hard_fold_sampling_calibration", "training.patch_sampling", "dataset.z_offsets"})
+        for _name, proposal_cfg, _reason in proposals:
+            meta = proposal_cfg["autoresearch"]
+            self.assertEqual(meta["promotion_action_id"], "hard_fold_low_ap_near_prevalence")
+            self.assertEqual(meta["linked_loo_failure_pattern"], blocker)
+            self.assertEqual(meta["diagnostic_source"], "dashboard.linked_loo_failure_pattern")
+            self.assertEqual(meta["heldout_segment"], "20230530172803")
+            self.assertTrue(meta["hard_fold_direct_screen"])
+            self.assertEqual(proposal_cfg["dataset"]["train_npz"], "data/real_cross_folds_expanded_combined/leaveout_20230530172803/train.npz")
+            self.assertEqual(proposal_cfg["dataset"]["val_npz"], "data/real_cross_folds_v2/segment_20230530172803/val.npz")
+
+    def test_hard_fold_low_ap_action_can_generate_combined_sampling_calibration_arm(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "candidate", "config": cfg, "main_metric": 0.1, "metrics": {"val_f1": 0.05, "average_precision": 0.025, "precision": 0.1, "recall": 0.2, "pred_positive_rate": 0.4, "val_positive_rate": 0.018, "ap_prevalence_lift": 1.2}}
+
+        proposals = _generate_promotion_action_proposals(
+            [run],
+            {"targeted_action_id": "hard_fold_low_ap_near_prevalence", "candidate_run_id": "candidate", "candidate_evidence": {"linked_loo_failure_pattern": {"blocks_promotion": True, "pattern": "hard_fold_low_ap_near_prevalence"}}},
+            count=12,
+        )
+
+        combined = [cfg for _name, cfg, _reason in proposals if cfg["autoresearch"]["changed_path"] == "hard_fold_sampling_calibration" and cfg.get("training", {}).get("positive_rate_loss_target") == "auto_train" and cfg.get("training", {}).get("positive_rate_loss_weight") == 0.08]
+        self.assertTrue(combined)
+        combined_cfg = combined[0]
+        self.assertEqual(combined_cfg["training"]["patch_sampling"], "hard_mining")
+        self.assertEqual(combined_cfg["training"]["positive_patch_fraction"], 0.30)
+        self.assertEqual(combined_cfg["training"]["hard_negative_fraction"], 0.75)
+        self.assertEqual(combined_cfg["training"]["positive_rate_loss_weight"], 0.08)
+        self.assertEqual(combined_cfg["training"]["positive_rate_loss_tolerance"], 0.012)
+        self.assertEqual(combined_cfg["training"]["positive_rate_loss_target"], "auto_train")
+        self.assertEqual(combined_cfg["evaluation"]["max_pred_positive_rate_ratio"], 2.5)
+        self.assertEqual(combined_cfg["autoresearch"]["mutation_family"], "hard_fold_sampling_calibration")
+
+    def test_proposal_plan_exposes_safe_metadata(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        runs = [{"run_id": "weak", "config": cfg, "main_metric": 0.1, "metrics": {"val_f1": 0.1, "average_precision": 0.1, "precision": 0.1, "recall": 0.2, "pred_positive_rate": 0.4, "val_positive_rate": 0.1, "fixed_threshold_status": "weak"}}]
+
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            proposals = _propose_configs(cfg, runs, count=1, lock_to_baseline_scope=False, strategy_phase="exploit")
 
         plan = _proposal_plan(proposals)
 
@@ -268,6 +330,90 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertFalse(plan[0]["promotable"])
         self.assertIn("seed_repeat_leave_one_out", plan[0]["promotion_required"])
         self.assertIn("mutation_family", plan[0])
+        self.assertIn("proposal_score", plan[0])
+        self.assertIn("triage_failures", plan[0])
+        self.assertIn("score_reasons", plan[0])
+
+    def test_triage_classifies_calibration_and_hard_fold_failures(self) -> None:
+        cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
+        cfg["validation_setup"] = {"mode": "spatial-same-segment"}
+        cfg.setdefault("autoresearch", {})["heldout_segment"] = "20230530172803"
+        run = {"config": cfg, "metrics": {"val_f1": 0.0, "average_precision": 0.1, "precision": 0.0, "recall": 0.0, "pred_positive_rate": 0.8, "val_positive_rate": 0.1, "best_threshold": 0.94, "fixed_threshold_status": "weak", "ap_prevalence_lift": 1.0}}
+
+        failures = _classify_run_failures(run)
+
+        self.assertIn("calibration_high", failures)
+        self.assertIn("zero_precision_recall", failures)
+        self.assertIn("ap_near_prevalence", failures)
+        self.assertIn("threshold_edge", failures)
+        self.assertIn("fixed_threshold_weak", failures)
+        self.assertIn("hard_fold_blocker", failures)
+        self.assertIn("validation_leakage", failures)
+
+    def test_scoring_prefers_hard_fold_calibration_over_threshold_only(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "hard", "config": cfg, "main_metric": 0.1, "metrics": {"val_f1": 0.1, "average_precision": 0.1, "precision": 0.1, "recall": 0.2, "pred_positive_rate": 0.6, "val_positive_rate": 0.1, "fixed_threshold_status": "weak", "ap_prevalence_lift": 1.0, "worst_fold_id": "20230530172803"}}
+
+        with patch("autoresearch._reserved_signatures", return_value=set()):
+            proposals = _propose_configs(cfg, [run], count=3, lock_to_baseline_scope=False)
+
+        self.assertTrue(proposals)
+        paths = [proposal[1]["autoresearch"]["changed_path"] for proposal in proposals]
+        self.assertNotEqual(paths[0], "evaluation.threshold")
+        self.assertIn(proposals[0][1]["autoresearch"]["mutation_family"], {"loss_calibration", "balanced_calibration", "data_sampling", "model_family"})
+        threshold_scores = [proposal[1]["autoresearch"]["proposal_score"] for proposal in proposals if proposal[1]["autoresearch"]["changed_path"] == "evaluation.threshold"]
+        if threshold_scores:
+            self.assertLess(threshold_scores[0], proposals[0][1]["autoresearch"]["proposal_score"])
+
+    def test_hard_fold_low_ap_scoring_prefers_sampling_and_z_context(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        sampling_cfg = copy.deepcopy(cfg)
+        _set_nested(sampling_cfg, ("training", "positive_patch_fraction"), 0.30)
+        z_cfg = copy.deepcopy(cfg)
+        _set_nested(z_cfg, ("dataset", "z_offsets"), [-4, 0, 4])
+        threshold_cfg = copy.deepcopy(cfg)
+        _set_nested(threshold_cfg, ("evaluation", "threshold"), 0.35)
+        context = {"failure_counts": {"hard_fold_low_ap_near_prevalence": 1, "ap_near_prevalence": 1}, "family_scores": {}, "changed_paths": set()}
+
+        sampling_score, _sampling_components, sampling_reasons = _score_proposal_candidate(("training", "positive_patch_fraction"), sampling_cfg, [], context)
+        z_score, _z_components, z_reasons = _score_proposal_candidate(("dataset", "z_offsets"), z_cfg, [], context)
+        threshold_score, _threshold_components, _threshold_reasons = _score_proposal_candidate(("evaluation", "threshold"), threshold_cfg, [], context)
+
+        self.assertGreater(sampling_score, threshold_score)
+        self.assertGreater(z_score, threshold_score)
+        self.assertIn("hard_fold_low_ap_relevant", sampling_reasons)
+        self.assertIn("hard_fold_low_ap_relevant", z_reasons)
+
+    def test_threshold_only_penalty_under_ap_near_prevalence(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        threshold_cfg = copy.deepcopy(cfg)
+        _set_nested(threshold_cfg, ("evaluation", "threshold"), 0.35)
+        loss_cfg = copy.deepcopy(cfg)
+        _set_nested(loss_cfg, ("training", "positive_rate_loss_weight"), 0.05)
+        runs = [{"config": cfg, "metrics": {"val_f1": 0.1, "average_precision": 0.1, "precision": 0.1, "recall": 0.2, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "weak", "ap_prevalence_lift": 1.0}}]
+        context = _summarize_recent_failure_context(runs)
+
+        threshold_score, threshold_components, _reasons = _score_proposal_candidate(("evaluation", "threshold"), threshold_cfg, runs, context)
+        loss_score, _loss_components, _loss_reasons = _score_proposal_candidate(("training", "positive_rate_loss_weight"), loss_cfg, runs, context)
+
+        self.assertIn("threshold_only_penalty", threshold_components)
+        self.assertLess(threshold_score, loss_score)
+
+    def test_near_duplicate_signature_skip_and_changed_path_penalty(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        duplicate = copy.deepcopy(cfg)
+        _set_nested(duplicate, ("training", "positive_rate_loss_tolerance"), 0.008)
+        duplicate.setdefault("autoresearch", {})["changed_path"] = "training.positive_rate_loss_tolerance"
+        duplicate["autoresearch"]["mutation_family"] = "loss_calibration"
+        run = {"config": duplicate, "main_metric": 0.2, "metrics": {"val_f1": 0.2, "average_precision": 0.12, "precision": 0.2, "recall": 0.4, "pred_positive_rate": 0.2, "val_positive_rate": 0.1, "fixed_threshold_status": "weak"}}
+
+        with patch("autoresearch._reserved_signatures", side_effect=lambda current_runs: {_search_signature(item.get("config", {})) for item in current_runs}):
+            proposals = _propose_configs(cfg, [run], count=8, lock_to_baseline_scope=False)
+
+        self.assertNotIn(_search_signature(duplicate), {_search_signature(proposal[1]) for proposal in proposals})
+        penalized = [proposal for proposal in proposals if proposal[1]["autoresearch"].get("changed_path") == "training.positive_rate_loss_tolerance"]
+        if penalized:
+            self.assertIn("near_duplicate_penalty", penalized[0][1]["autoresearch"]["proposal_score_components"])
 
     def test_plan_json_mode_does_not_write_configs_or_run_experiments(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
@@ -308,7 +454,7 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertIn("--seeds 11001,11018,11045", payload["command"])
         self.assertEqual(payload["proposals"], [])
 
-    def test_promotion_phase_auto_promote_runs_bounded_loo_command(self) -> None:
+    def test_promotion_phase_auto_promote_builds_bounded_loo_command_only(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
         cfg["validation_setup"] = {"mode": "leave-one-segment-out"}
         runs = [
@@ -324,13 +470,11 @@ class AutoResearchPivotTest(unittest.TestCase):
         assert payload is not None
         self.assertEqual(payload["status"], "manual_promotion_action")
         self.assertEqual(payload["next_action"], "run_seed_repeat_leave_one_out")
-        self.assertEqual(payload["automation_status"], "SUCCEEDED")
-        command_args = promote_mock.call_args.args[0]
-        self.assertIn("scripts/evaluate_leave_one_out.py", command_args)
-        self.assertIn("--seeds", command_args)
-        self.assertIn("11001,11018,11045", command_args)
-        self.assertIn("--jobs", command_args)
-        self.assertEqual(promote_mock.call_args.args[3], 123)
+        self.assertNotIn("automation_status", payload)
+        promote_mock.assert_not_called()
+        self.assertIn("scripts/evaluate_leave_one_out.py", payload["command"])
+        self.assertIn("--seeds 11001,11018,11045", payload["command"])
+        self.assertIn("--jobs", payload["command"])
 
     def test_promotion_phase_action_has_explicit_override(self) -> None:
         cfg = load_config("configs/robust_multisegment_dice035_expanded.yaml")
@@ -504,6 +648,28 @@ class AutoResearchPivotTest(unittest.TestCase):
 
         promote_mock.assert_not_called()
 
+    def test_main_skips_allowed_script_not_in_python_position(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "run1", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
+        payload = {
+            "status": "promotion_ready",
+            "next_action": "Run unsafe command",
+            "candidate_run_id": "run1",
+            "action_id": "unknown",
+            "command": "rm scripts/infer_full_tile.py",
+            "safe_to_execute_from_dashboard": False,
+            "proposals": [],
+        }
+
+        with patch.dict("os.environ", {"AUTORESEARCH_AUTO_PROMOTE": "1"}, clear=False), \
+            patch("sys.argv", ["autoresearch.py"]), \
+            patch("autoresearch._recent_runs", return_value=[run]), \
+            patch("autoresearch._promotion_ready_payload", return_value=payload), \
+            patch("autoresearch._run_automated_promotion") as promote_mock:
+            self.assertEqual(autoresearch.main(), 0)
+
+        promote_mock.assert_not_called()
+
     def test_main_generates_proposals_for_calibrate_probability_scale(self) -> None:
         cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
         run = {"run_id": "candidate", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2}}
@@ -527,6 +693,52 @@ class AutoResearchPivotTest(unittest.TestCase):
                     self.assertIn(generated_cfg["autoresearch"]["changed_path"], {"training.positive_rate_loss_weight", "training.positive_rate_loss_tolerance"})
             finally:
                 autoresearch.CONFIGS = old_configs
+
+    def test_main_targeted_linked_loo_action_skips_stale_manual_promotion_action(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "candidate", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2, "average_precision": 0.03, "pred_positive_rate": 0.4, "val_positive_rate": 0.02}}
+        payload = {
+            "status": "linked_loo_targeted_proposals",
+            "next_action": "Audit labels and sampling pressure for hard fold 20230530172803",
+            "action_id": "audit_hard_fold_labels",
+            "targeted_action_id": "hard_fold_low_ap_near_prevalence",
+            "candidate_run_id": "candidate",
+            "candidate_evidence": {"linked_loo_failure_pattern": {"blocks_promotion": True, "pattern": "hard_fold_low_ap_near_prevalence"}},
+            "proposals": [],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_configs = autoresearch.CONFIGS
+            autoresearch.CONFIGS = Path(tmpdir)
+            try:
+                with patch("sys.argv", ["autoresearch.py"]), \
+                    patch("autoresearch._recent_runs", return_value=[run]), \
+                    patch("autoresearch._promotion_ready_payload", return_value=payload), \
+                    patch("autoresearch._promotion_phase_manual_action") as manual_mock, \
+                    patch("autoresearch.subprocess.run") as run_mock:
+                    self.assertEqual(autoresearch.main(), 0)
+
+                manual_mock.assert_not_called()
+                run_mock.assert_called()
+                generated_paths = list(autoresearch.CONFIGS.glob("auto_*promotion_hard_fold_low_ap_near_prevalence*.yaml"))
+                self.assertTrue(generated_paths)
+                generated_cfg = load_config(generated_paths[0])
+                self.assertEqual(generated_cfg["autoresearch"]["promotion_action_id"], "hard_fold_low_ap_near_prevalence")
+                self.assertIn(generated_cfg["autoresearch"]["mutation_family"], {"data_sampling", "hard_fold_sampling_calibration"})
+            finally:
+                autoresearch.CONFIGS = old_configs
+
+    def test_promotion_action_proposals_include_score_metadata(self) -> None:
+        cfg = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
+        run = {"run_id": "candidate", "config": cfg, "main_metric": 0.2, "metrics": {"val_f1": 0.2, "fixed_threshold_status": "weak"}}
+
+        proposals = _generate_promotion_action_proposals([run], {"action_id": "calibrate_probability_scale", "candidate_run_id": "candidate"}, count=1)
+
+        self.assertTrue(proposals)
+        autoresearch_meta = proposals[0][1]["autoresearch"]
+        self.assertIn("proposal_score", autoresearch_meta)
+        self.assertIn("proposal_score_components", autoresearch_meta)
+        self.assertIn("score_reasons", autoresearch_meta)
+        self.assertIn("triage_failures", autoresearch_meta)
 
     def test_promotion_ready_payload_prefers_candidate_evidence_action(self) -> None:
         snapshot = {
@@ -558,6 +770,40 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(payload["candidate_run_id"], "candidate")
         self.assertIn("--public-chunk-delay-sec 0.5", payload["command"])
         self.assertIn("use_public_directory_backoff_and_chunk_pacing", payload["reasoning"])
+
+    def test_promotion_ready_payload_pauses_for_missing_weak_fold_evidence(self) -> None:
+        snapshot = {
+            "research_summary": {
+                "decision": {
+                    "next_action": "Resolve candidate evidence",
+                    "promotion_gate": {"ready": False, "criteria": [{"id": "weak_fold_full_tile", "state": "warning"}]},
+                    "candidate_evidence": {
+                        "candidate_run_id": "candidate",
+                        "weak_fold_full_tile": {"status": "missing", "command_text": "fallback command"},
+                        "promotion_actions": [{
+                            "id": "weak_fold_full_tile",
+                            "label": "Run full-tile on weak fold weakseg",
+                            "command_text": ".venv/bin/python scripts/infer_full_tile.py --segment-id weakseg",
+                            "safe_to_execute_from_dashboard": False,
+                            "writes_artifacts": True,
+                        }],
+                    },
+                }
+            }
+        }
+
+        with patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+            payload = _promotion_ready_payload()
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["status"], "promotion_evidence_required")
+        self.assertEqual(payload["action_id"], "weak_fold_full_tile")
+        self.assertEqual(payload["candidate_run_id"], "candidate")
+        self.assertIn("--segment-id weakseg", payload["command"])
+        self.assertFalse(payload["safe_to_execute_from_dashboard"])
+        self.assertTrue(payload["writes_artifacts"])
+        self.assertIn("pause_exploration_for_candidate_evidence", payload["reasoning"])
 
     def test_promotion_ready_payload_skips_pause_for_expected_compressed_probs(self) -> None:
         snapshot = {
@@ -631,6 +877,88 @@ class AutoResearchPivotTest(unittest.TestCase):
         self.assertEqual(payload["action_id"], "review_positive_rate")
         self.assertIn("scripts/plan_hard_negative_retrain.py", payload["command"])
         self.assertIn("--heldout-segment weakseg", payload["command"])
+
+    def test_promotion_ready_payload_uses_dashboard_audit_candidate(self) -> None:
+        snapshot = {
+            "research_summary": {
+                "decision": {
+                    "next_action": "Audit labels and sampling pressure for hard fold 20230530172803",
+                    "promotion_gate": {"ready": False, "criteria": [{"id": "seed_repeat_loo", "state": "warning"}]},
+                    "candidate_evidence": {
+                        "candidate_run_id": "dashboard_candidate",
+                        "candidate_artifact_dir": "experiments/runs/dashboard_candidate",
+                        "loo": {"linked": True, "ready": False, "worst_fold_id": "20230530172803"},
+                        "promotion_actions": [{
+                            "id": "audit_hard_fold_labels",
+                            "label": "Audit labels and sampling pressure for hard fold 20230530172803",
+                            "command_text": ".venv/bin/python scripts/analyze_loo_folds.py --summary-json logs/dashboard_candidate_seedrepeat_loo.summary.json --markdown",
+                            "safe_to_execute_from_dashboard": True,
+                            "writes_artifacts": False,
+                        }],
+                    },
+                    "promotion_actions": [{
+                        "id": "audit_hard_fold_labels",
+                        "label": "Audit labels and sampling pressure for hard fold 20230530172803",
+                        "command_text": ".venv/bin/python scripts/analyze_loo_folds.py --summary-json logs/dashboard_candidate_seedrepeat_loo.summary.json --markdown",
+                        "safe_to_execute_from_dashboard": True,
+                        "writes_artifacts": False,
+                    }],
+                }
+            }
+        }
+
+        with patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+            payload = _promotion_ready_payload()
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["status"], "promotion_evidence_required")
+        self.assertEqual(payload["action_id"], "audit_hard_fold_labels")
+        self.assertEqual(payload["candidate_run_id"], "dashboard_candidate")
+        self.assertIn("logs/dashboard_candidate_seedrepeat_loo.summary.json", payload["command"])
+        self.assertIn("pause_exploration_for_dashboard_candidate", payload["reasoning"])
+
+    def test_promotion_ready_payload_maps_linked_hard_fold_blocker_to_targeted_action(self) -> None:
+        blocker = {
+            "blocks_promotion": True,
+            "pattern": "hard_fold_low_ap_near_prevalence",
+            "recommended_action": "audit_hard_fold_labels_and_sampling",
+            "hard_fold_id": "20230530172803",
+        }
+        snapshot = {
+            "research_summary": {
+                "decision": {
+                    "next_action": "Audit labels and sampling pressure for hard fold 20230530172803",
+                    "promotion_gate": {"ready": False, "criteria": [{"id": "seed_repeat_loo", "state": "done"}]},
+                    "candidate_evidence": {
+                        "candidate_run_id": "dashboard_candidate",
+                        "linked_loo_failure_pattern": blocker,
+                    },
+                    "promotion_actions": [{
+                        "id": "audit_hard_fold_labels",
+                        "kind": "diagnostic",
+                        "label": "Audit labels and sampling pressure for hard fold 20230530172803",
+                        "command_text": ".venv/bin/python scripts/analyze_loo_folds.py --summary-json logs/dashboard_candidate_seedrepeat_loo.summary.json --markdown",
+                        "safe_to_execute_from_dashboard": True,
+                        "writes_artifacts": False,
+                    }],
+                }
+            }
+        }
+
+        with patch("research_dashboard.snapshot.build_snapshot", return_value=snapshot):
+            payload = _promotion_ready_payload()
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["status"], "linked_loo_targeted_proposals")
+        self.assertEqual(payload["action_id"], "audit_hard_fold_labels")
+        self.assertEqual(payload["targeted_action_id"], "hard_fold_low_ap_near_prevalence")
+        self.assertTrue(payload["linked_loo_blocks_promotion"])
+        self.assertEqual(payload["linked_loo_failure_pattern"], blocker)
+        self.assertIn("follow_dashboard_diagnostic", payload["reasoning"])
+        self.assertIn("emit_targeted_safe_hypotheses", payload["reasoning"])
+        self.assertIn("logs/dashboard_candidate_seedrepeat_loo.summary.json", payload["command"])
 
     def test_recent_winner_followups_prefer_expanded_robust_over_focused_residual_score(self) -> None:
         robust = _prepare_autoresearch_base(load_config("configs/robust_multisegment_dice035_expanded.yaml"))
@@ -897,6 +1225,21 @@ class AutoResearchPivotTest(unittest.TestCase):
 
         self.assertEqual(proposals, fallback)
         self.assertIsNone(source_action)
+
+    def test_exhausted_linked_loo_targeted_action_pauses_instead_of_fallback(self) -> None:
+        base = load_config("configs/robust_calibrated_prloss_w0p03_lr0012_prratio3_seed11018.yaml")
+        payload = {
+            "action_id": "audit_hard_fold_labels",
+            "targeted_action_id": "hard_fold_low_ap_near_prevalence",
+            "candidate_evidence": {"linked_loo_failure_pattern": {"blocks_promotion": True, "pattern": "hard_fold_low_ap_near_prevalence"}},
+        }
+
+        with patch("autoresearch._generate_promotion_action_proposals", return_value=[]), patch("autoresearch._propose_best_path") as fallback:
+            proposals, source_action = _promotion_or_fallback_proposals([], base, payload, 1)
+
+        self.assertEqual(proposals, [])
+        self.assertEqual(source_action, "hard_fold_low_ap_near_prevalence")
+        fallback.assert_not_called()
 
 
 if __name__ == "__main__":
